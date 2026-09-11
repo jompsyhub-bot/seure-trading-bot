@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 from contextlib import asynccontextmanager
 import asyncio
+import uuid
 
 import aiohttp
 
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 from .config import Settings
 from .database import Database
 from .exchange import BybitClient, ExchangeError, OKXDemoClient
+from .models import OrderIntent, OrderResult, Side
 from .security import CredentialVault
 from .web_auth import TelegramAuthError, validate_init_data
 from .automation import DemoAutomationWorker
@@ -98,6 +100,13 @@ class FuturesPreviewRequest(BaseModel):
 
 class PositionModeRequest(BaseModel):
     position_mode: Literal["net_mode", "long_short_mode"]
+
+
+class FuturesDemoOrderRequest(FuturesPreviewRequest):
+    take_profit: Decimal = Field(gt=0)
+    stop_loss: Decimal = Field(gt=0)
+    client_order_id: str = Field(min_length=8, max_length=28, pattern=r"^[A-Za-z0-9]+$")
+    confirmation: Literal["PLACE_DEMO_ORDER"]
 
 
 def telegram_user(init_data: str | None) -> dict:
@@ -332,5 +341,70 @@ async def set_futures_position_mode(request: PositionModeRequest, x_telegram_ini
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, ValueError) as exc:
         raise HTTPException(400, f"OKX position mode was not changed: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/futures/demo-order")
+async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Submit one explicitly confirmed OKX Demo SWAP market order with attached TP/SL."""
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    client = okx_demo_client_for(user_id)
+    inst_id = {"BTCUSDT": "BTC-USDT-SWAP", "ETHUSDT": "ETH-USDT-SWAP"}[request.symbol]
+    try:
+        account, instrument, price, available_balance = await asyncio.gather(client.account_config(), client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
+        leverage = Decimal(request.leverage)
+        if leverage > Decimal(instrument.get("lever") or "1"):
+            raise HTTPException(400, f"{inst_id} supports up to {instrument.get('lever')}× leverage.")
+        if request.side == "long" and not (request.stop_loss < price < request.take_profit):
+            raise HTTPException(400, "For a long order, stop loss must be below and take profit above the current price.")
+        if request.side == "short" and not (request.take_profit < price < request.stop_loss):
+            raise HTTPException(400, "For a short order, take profit must be below and stop loss above the current price.")
+        contract_notional = Decimal(instrument["ctVal"]) * Decimal(instrument.get("ctMult") or "1") * price
+        contracts = ((request.margin_usdt * leverage) / contract_notional).to_integral_value(rounding=ROUND_DOWN)
+        if contracts < Decimal(instrument["minSz"]):
+            raise HTTPException(400, "Margin is too small for the exchange minimum contract size.")
+        actual_notional = contracts * contract_notional
+        initial_margin = actual_notional / leverage
+        permitted_margin = available_balance * settings.max_demo_margin_pct / Decimal("100")
+        if initial_margin > permitted_margin:
+            raise HTTPException(400, f"Balance safety check refused {initial_margin:.2f} USDT margin; maximum is {permitted_margin:.2f} USDT.")
+        if account.get("posMode") == "long_short_mode":
+            position_side = request.side
+        else:
+            position_side = "net"
+        exchange_side = "buy" if request.side == "long" else "sell"
+        intent = OrderIntent(user_id, inst_id, Side.BUY if exchange_side == "buy" else Side.SELL, actual_notional, request.client_order_id)
+        if not database.reserve(intent):
+            existing = database.existing_order(request.client_order_id)
+            if existing:
+                return {"accepted": True, "replayed": True, "order_id": existing.order_id, "status": existing.status}
+            raise HTTPException(409, "This Demo order is already being processed. Do not submit it again.")
+        submission_started = False
+        try:
+            await client.set_leverage(inst_id, leverage, position_side)
+            # Once this request is attempted, a timeout can be ambiguous. Keep
+            # the reservation so a retry cannot accidentally double-submit.
+            submission_started = True
+            accepted = await client.place_market_swap(inst_id=inst_id, side=exchange_side, position_side=position_side, contracts=contracts, client_order_id=request.client_order_id, take_profit=request.take_profit, stop_loss=request.stop_loss)
+            order_id = accepted.get("ordId")
+            if not order_id:
+                raise ExchangeError("OKX accepted the request without an order ID; check Demo order history before retrying.")
+            detail = await client.order_detail(inst_id, order_id)
+            status = (detail or {}).get("state", "live").upper()
+            filled_price = Decimal((detail or {}).get("avgPx") or str(price))
+            filled_contracts = Decimal((detail or {}).get("accFillSz") or str(contracts))
+            database.finalize(request.client_order_id, OrderResult(order_id, status, filled_price, filled_contracts))
+        except Exception:
+            if not submission_started:
+                database.cancel_reservation(request.client_order_id)
+            raise
+        await api.state.notifier.send(user_id, f"🧪 OKX Demo order accepted\n{request.side.upper()} {inst_id}\nLeverage: {leverage}× · Contracts: {contracts}\nOrder: {order_id}\nStatus: {status}\nTP: {request.take_profit} · SL: {request.stop_loss}")
+        return {"accepted": True, "replayed": False, "exchange": "okx", "environment": "demo", "order_id": order_id, "status": status, "contracts": str(contracts), "estimated_initial_margin_usdt": str(initial_margin), "take_profit": str(request.take_profit), "stop_loss": str(request.stop_loss), "message": "Demo order accepted and reconciled. Check the OKX Demo Trading order/position screen as the source of truth."}
+    except HTTPException:
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
+        raise HTTPException(400, f"OKX Demo order was not placed: {exc}") from None
     finally:
         await client.close()
