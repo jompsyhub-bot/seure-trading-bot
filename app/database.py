@@ -1,0 +1,166 @@
+from __future__ import annotations
+
+import sqlite3
+import json
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
+
+from .models import OrderIntent, OrderResult
+
+
+class Database:
+    def __init__(self, path: Path):
+        self.path = path
+
+    def connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    @contextmanager
+    def connection(self):
+        conn = self.connect()
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    def initialize(self) -> None:
+        with self.connection() as conn:
+            conn.executescript("""
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE IF NOT EXISTS orders (
+              id INTEGER PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
+              user_id INTEGER NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL,
+              requested_notional TEXT NOT NULL, order_id TEXT, status TEXT NOT NULL,
+              fill_price TEXT, quantity TEXT, realized_pnl TEXT NOT NULL DEFAULT '0',
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id, created_at);
+            CREATE TABLE IF NOT EXISTS users (
+              telegram_user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS bybit_connections (
+              telegram_user_id INTEGER PRIMARY KEY REFERENCES users(telegram_user_id),
+              encrypted_api_key BLOB NOT NULL, encrypted_api_secret BLOB NOT NULL,
+              is_testnet INTEGER NOT NULL, environment TEXT NOT NULL DEFAULT 'testnet', permissions_json TEXT NOT NULL,
+              connected_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS user_automation_settings (
+              telegram_user_id INTEGER PRIMARY KEY REFERENCES users(telegram_user_id),
+              paper_automation_enabled INTEGER NOT NULL DEFAULT 0,
+              max_order_notional TEXT NOT NULL DEFAULT '10',
+              max_daily_loss TEXT NOT NULL DEFAULT '20', updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS automation_profiles (
+              telegram_user_id INTEGER PRIMARY KEY REFERENCES users(telegram_user_id),
+              enabled INTEGER NOT NULL DEFAULT 0,
+              strategy TEXT NOT NULL DEFAULT 'rsi_reversion_demo',
+              symbol TEXT NOT NULL DEFAULT 'BTCUSDT',
+              max_order_notional TEXT NOT NULL DEFAULT '10',
+              max_trades_per_day INTEGER NOT NULL DEFAULT 1,
+              stop_loss_pct TEXT NOT NULL DEFAULT '2',
+              take_profit_pct TEXT NOT NULL DEFAULT '4',
+              updated_at TEXT NOT NULL
+            );
+            """)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(bybit_connections)")}
+            if "environment" not in columns:
+                conn.execute("ALTER TABLE bybit_connections ADD COLUMN environment TEXT NOT NULL DEFAULT 'testnet'")
+
+    def upsert_user(self, telegram_user_id: int, username: str | None, first_name: str | None) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self.connection() as conn:
+            conn.execute("INSERT INTO users (telegram_user_id,username,first_name,created_at,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET username=excluded.username,first_name=excluded.first_name,updated_at=excluded.updated_at", (telegram_user_id, username, first_name, now, now))
+            conn.execute("INSERT OR IGNORE INTO user_automation_settings (telegram_user_id,updated_at) VALUES (?,?)", (telegram_user_id, now))
+            conn.execute("INSERT OR IGNORE INTO automation_profiles (telegram_user_id,updated_at) VALUES (?,?)", (telegram_user_id, now))
+
+    def save_bybit_connection(self, telegram_user_id: int, api_key: bytes, api_secret: bytes, environment: str, permissions: dict) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self.connection() as conn:
+            conn.execute("INSERT INTO bybit_connections (telegram_user_id,encrypted_api_key,encrypted_api_secret,is_testnet,environment,permissions_json,connected_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET encrypted_api_key=excluded.encrypted_api_key,encrypted_api_secret=excluded.encrypted_api_secret,is_testnet=excluded.is_testnet,environment=excluded.environment,permissions_json=excluded.permissions_json,updated_at=excluded.updated_at", (telegram_user_id, api_key, api_secret, int(environment == "testnet"), environment, json.dumps(permissions), now, now))
+
+    def dashboard(self, telegram_user_id: int) -> dict:
+        with self.connection() as conn:
+            row = conn.execute("SELECT u.telegram_user_id,u.first_name,c.environment,c.connected_at,s.paper_automation_enabled,s.max_order_notional,s.max_daily_loss FROM users u LEFT JOIN bybit_connections c ON c.telegram_user_id=u.telegram_user_id LEFT JOIN user_automation_settings s ON s.telegram_user_id=u.telegram_user_id WHERE u.telegram_user_id=?", (telegram_user_id,)).fetchone()
+        if not row:
+            return {"connected": False, "paper_automation_enabled": False}
+        return {"name": row["first_name"], "connected": row["connected_at"] is not None, "environment": row["environment"], "paper_automation_enabled": bool(row["paper_automation_enabled"]), "max_order_notional": row["max_order_notional"], "max_daily_loss": row["max_daily_loss"]}
+
+    def connection_environment(self, user_id: int) -> str | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT environment FROM bybit_connections WHERE telegram_user_id=?", (user_id,)).fetchone()
+        return row["environment"] if row else None
+
+    def update_paper_settings(self, telegram_user_id: int, enabled: bool, max_order_notional: Decimal, max_daily_loss: Decimal) -> None:
+        if max_order_notional <= 0 or max_daily_loss <= 0:
+            raise ValueError("Limits must be positive")
+        with self.connection() as conn:
+            conn.execute("UPDATE user_automation_settings SET paper_automation_enabled=?,max_order_notional=?,max_daily_loss=?,updated_at=? WHERE telegram_user_id=?", (int(enabled), str(max_order_notional), str(max_daily_loss), datetime.now(UTC).isoformat(), telegram_user_id))
+
+    def save_automation_profile(self, user_id: int, enabled: bool, strategy: str, symbol: str, max_order: Decimal, max_trades: int, stop_loss: Decimal, take_profit: Decimal) -> None:
+        if strategy != "rsi_reversion_demo" or symbol not in {"BTCUSDT", "ETHUSDT"}:
+            raise ValueError("Unsupported demo strategy or symbol")
+        if not (Decimal("1") <= max_order <= Decimal("50") and 1 <= max_trades <= 3 and Decimal("0.5") <= stop_loss <= Decimal("5") and Decimal("1") <= take_profit <= Decimal("10")):
+            raise ValueError("One or more limits are outside the demo safety range")
+        with self.connection() as conn:
+            conn.execute("UPDATE automation_profiles SET enabled=?,strategy=?,symbol=?,max_order_notional=?,max_trades_per_day=?,stop_loss_pct=?,take_profit_pct=?,updated_at=? WHERE telegram_user_id=?", (int(enabled), strategy, symbol, str(max_order), max_trades, str(stop_loss), str(take_profit), datetime.now(UTC).isoformat(), user_id))
+
+    def automation_profile(self, user_id: int) -> dict:
+        with self.connection() as conn:
+            row = conn.execute("SELECT enabled,strategy,symbol,max_order_notional,max_trades_per_day,stop_loss_pct,take_profit_pct FROM automation_profiles WHERE telegram_user_id=?", (user_id,)).fetchone()
+        return dict(row) if row else {}
+
+    def set_kill_switch(self, user_id: int) -> None:
+        with self.connection() as conn:
+            conn.execute("UPDATE automation_profiles SET enabled=0,updated_at=? WHERE telegram_user_id=?", (datetime.now(UTC).isoformat(), user_id))
+
+    def disconnect_bybit(self, user_id: int) -> None:
+        """Remove encrypted credentials and stop future demo scans for this user."""
+        with self.connection() as conn:
+            conn.execute("UPDATE automation_profiles SET enabled=0,updated_at=? WHERE telegram_user_id=?", (datetime.now(UTC).isoformat(), user_id))
+            conn.execute("DELETE FROM bybit_connections WHERE telegram_user_id=?", (user_id,))
+
+    def history(self, user_id: int, limit: int = 20) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT symbol,side,status,fill_price,quantity,created_at FROM orders WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def demo_automation_users(self) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT p.*,c.encrypted_api_key,c.encrypted_api_secret FROM automation_profiles p JOIN bybit_connections c ON c.telegram_user_id=p.telegram_user_id WHERE p.enabled=1 AND c.environment='demo'").fetchall()
+        return [dict(row) for row in rows]
+
+    def existing_order(self, key: str) -> OrderResult | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM orders WHERE idempotency_key=?", (key,)).fetchone()
+        if not row or not row["order_id"]:
+            return None
+        return OrderResult(row["order_id"], row["status"], Decimal(row["fill_price"]), Decimal(row["quantity"]))
+
+    def reserve(self, intent: OrderIntent) -> bool:
+        now = datetime.now(UTC).isoformat()
+        try:
+            with self.connection() as conn:
+                conn.execute("INSERT INTO orders (idempotency_key,user_id,symbol,side,requested_notional,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", (intent.idempotency_key, intent.user_id, intent.symbol, intent.side, str(intent.notional_usdt), "PENDING", now, now))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def finalize(self, key: str, result: OrderResult) -> None:
+        with self.connection() as conn:
+            conn.execute("UPDATE orders SET order_id=?,status=?,fill_price=?,quantity=?,updated_at=? WHERE idempotency_key=?", (result.order_id, result.status, str(result.price), str(result.quantity), datetime.now(UTC).isoformat(), key))
+
+    def cancel_reservation(self, key: str) -> None:
+        with self.connection() as conn:
+            conn.execute("UPDATE orders SET status='REJECTED', updated_at=? WHERE idempotency_key=? AND status='PENDING'", (datetime.now(UTC).isoformat(), key))
+
+    def today_stats(self, user_id: int) -> tuple[int, Decimal]:
+        day = datetime.now(UTC).date().isoformat()
+        with self.connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS trades, COALESCE(SUM(CAST(realized_pnl AS REAL)),0) AS pnl FROM orders WHERE user_id=? AND created_at LIKE ? AND status IN ('FILLED','NEW')", (user_id, f"{day}%")).fetchone()
+        return int(row["trades"]), Decimal(str(row["pnl"]))
