@@ -354,6 +354,8 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
     inst_id = {"BTCUSDT": "BTC-USDT-SWAP", "ETHUSDT": "ETH-USDT-SWAP"}[request.symbol]
     try:
         account, instrument, price, available_balance = await asyncio.gather(client.account_config(), client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
+        if account.get("acctLv") not in {"2", "3", "4"}:
+            raise HTTPException(400, "OKX Demo account is in Spot mode. In OKX Demo Trading, switch Account mode to Futures mode or Multi-currency margin mode before submitting a perpetual order.")
         leverage = Decimal(request.leverage)
         if leverage > Decimal(instrument.get("lever") or "1"):
             raise HTTPException(400, f"{inst_id} supports up to {instrument.get('lever')}× leverage.")
