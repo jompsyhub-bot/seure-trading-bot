@@ -96,6 +96,10 @@ class FuturesPreviewRequest(BaseModel):
     margin_usdt: Decimal = Field(gt=0)
 
 
+class PositionModeRequest(BaseModel):
+    position_mode: Literal["net_mode", "long_short_mode"]
+
+
 def telegram_user(init_data: str | None) -> dict:
     if not init_data:
         raise HTTPException(401, "Missing Telegram authorization")
@@ -105,6 +109,16 @@ def telegram_user(init_data: str | None) -> dict:
         return user
     except (TelegramAuthError, KeyError, ValueError):
         raise HTTPException(401, "Invalid Telegram authorization") from None
+
+
+def okx_demo_client_for(user_id: int) -> OKXDemoClient:
+    credentials = database.exchange_credentials(user_id)
+    if not credentials or credentials.get("provider") != "okx" or credentials.get("environment") != "demo":
+        raise HTTPException(400, "Connect an OKX Demo account first.")
+    if not settings.encryption_key or not credentials.get("encrypted_passphrase"):
+        raise HTTPException(503, "OKX Demo credentials are incomplete. Reconnect the account.")
+    vault = CredentialVault(settings.encryption_key)
+    return OKXDemoClient(vault.decrypt(credentials["encrypted_api_key"]), vault.decrypt(credentials["encrypted_api_secret"]), vault.decrypt(credentials["encrypted_passphrase"]))
 
 
 def reject_unsafe_permissions(info: dict) -> None:
@@ -261,13 +275,7 @@ async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: 
     """Calculate an OKX Demo perpetual order safely; this endpoint never submits it."""
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
-    credentials = database.exchange_credentials(user_id)
-    if not credentials or credentials.get("provider") != "okx" or credentials.get("environment") != "demo":
-        raise HTTPException(400, "Connect an OKX Demo account first.")
-    if not settings.encryption_key or not credentials.get("encrypted_passphrase"):
-        raise HTTPException(503, "OKX Demo credentials are incomplete. Reconnect the account.")
-    vault = CredentialVault(settings.encryption_key)
-    client = OKXDemoClient(vault.decrypt(credentials["encrypted_api_key"]), vault.decrypt(credentials["encrypted_api_secret"]), vault.decrypt(credentials["encrypted_passphrase"]))
+    client = okx_demo_client_for(user_id)
     inst_id = {"BTCUSDT": "BTC-USDT-SWAP", "ETHUSDT": "ETH-USDT-SWAP"}[request.symbol]
     try:
         instrument, price, available_balance = await asyncio.gather(client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
@@ -292,5 +300,37 @@ async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: 
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
         raise HTTPException(502, f"OKX futures preview unavailable: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.get("/api/futures/account")
+async def futures_account(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    client = okx_demo_client_for(int(user["id"]))
+    try:
+        account = await client.account_config()
+        levels = {"1": "Spot", "2": "Futures", "3": "Multi-currency margin", "4": "Portfolio margin"}
+        return {"exchange": "okx", "environment": "demo", "account_mode": levels.get(account.get("acctLv"), "Unknown"), "account_mode_code": account.get("acctLv"), "position_mode": account.get("posMode"), "can_change_position_mode": account.get("acctLv") != "4", "note": "Account mode is controlled in OKX Demo's website/app. Position mode changes require no open positions or pending orders."}
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"OKX account configuration unavailable: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/futures/position-mode")
+async def set_futures_position_mode(request: PositionModeRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    client = okx_demo_client_for(int(user["id"]))
+    try:
+        account = await client.account_config()
+        if account.get("acctLv") == "4" and request.position_mode != "net_mode":
+            raise HTTPException(400, "OKX Portfolio Margin only supports net position mode.")
+        changed = await client.set_position_mode(request.position_mode)
+        return {"position_mode": changed.get("posMode", request.position_mode), "message": "OKX Demo position mode updated. No order was placed."}
+    except HTTPException:
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        raise HTTPException(400, f"OKX position mode was not changed: {exc}") from None
     finally:
         await client.close()
