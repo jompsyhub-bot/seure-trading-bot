@@ -161,7 +161,9 @@ async def monitor_okx_positions(notifier: TelegramNotifier) -> None:
                 previous[user_id] = current
             except Exception:
                 continue
-        await asyncio.sleep(20)
+        # Demo monitoring interval: fast enough for TP/SL feedback without
+        # needing a separate authenticated WebSocket connection per user.
+        await asyncio.sleep(5)
 
 
 def reject_unsafe_permissions(info: dict) -> None:
