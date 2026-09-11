@@ -248,7 +248,43 @@ async def disconnect_exchange(x_telegram_init_data: str | None = Header(default=
 @api.get("/api/history")
 async def history(x_telegram_init_data: str | None = Header(default=None)) -> list[dict]:
     user = telegram_user(x_telegram_init_data)
+    await sync_okx_order_history(int(user["id"]))
     return database.history(int(user["id"]))
+
+
+async def sync_okx_order_history(user_id: int) -> None:
+    """Refresh records created by this bot; exchange data remains authoritative."""
+    if database.connection_provider(user_id) != "okx":
+        return
+    client = okx_demo_client_for(user_id)
+    try:
+        for row in database.orders_for_sync(user_id):
+            detail = await client.order_detail(row["symbol"], row["order_id"])
+            if not detail:
+                continue
+            price = Decimal(detail.get("avgPx") or detail.get("fillPx") or "0")
+            quantity = Decimal(detail.get("accFillSz") or "0")
+            pnl = Decimal(detail.get("pnl") or "0")
+            database.reconcile_exchange_order(row["idempotency_key"], detail.get("state", "unknown").upper(), price, quantity, pnl)
+    finally:
+        await client.close()
+
+
+@api.get("/api/portfolio")
+async def portfolio(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Active OKX Demo positions plus the full history of bot-originated orders."""
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    await sync_okx_order_history(user_id)
+    client = okx_demo_client_for(user_id)
+    try:
+        positions = await client.swap_positions()
+        active = [{"instrument": row.get("instId"), "side": row.get("posSide"), "contracts": row.get("pos"), "entry_price": row.get("avgPx"), "mark_price": row.get("markPx"), "unrealized_pnl": row.get("upl"), "realized_pnl": row.get("realizedPnl"), "leverage": row.get("lever"), "margin_mode": row.get("mgnMode"), "liquidation_price": row.get("liqPx") or None} for row in positions]
+        return {"exchange": "okx", "environment": "demo", "active_positions": active, "bot_trade_history": database.history(user_id)}
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation) as exc:
+        raise HTTPException(502, f"OKX portfolio sync unavailable: {exc}") from None
+    finally:
+        await client.close()
 
 
 @api.post("/api/backtest")
