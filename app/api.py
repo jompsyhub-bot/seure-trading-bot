@@ -128,6 +128,27 @@ async def health() -> dict:
     return {"ok": True, "mode": settings.trading_mode, "automation_environment": "demo-only"}
 
 
+@api.get("/health/okx")
+async def okx_connectivity() -> dict:
+    """Credential-free Render-to-OKX reachability check for the next adapter."""
+    url = "https://www.okx.com/api/v5/public/instruments"
+    try:
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, params={"instType": "SWAP", "instId": "BTC-USDT-SWAP"}) as response:
+                if response.status != 200:
+                    raise HTTPException(502, f"OKX returned HTTP {response.status}")
+                data = await response.json(content_type=None)
+        if not isinstance(data, dict) or data.get("code") != "0" or not data.get("data"):
+            raise HTTPException(502, "OKX returned an unexpected public API response")
+        instrument = data["data"][0]
+        return {"ok": True, "exchange": "okx", "instrument": instrument["instId"], "state": instrument.get("state"), "max_leverage": instrument.get("lever")}
+    except HTTPException:
+        raise
+    except (aiohttp.ClientError, TimeoutError, ValueError):
+        raise HTTPException(502, "OKX public API is unreachable from this host") from None
+
+
 @api.get("/api/dashboard")
 async def dashboard(x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
