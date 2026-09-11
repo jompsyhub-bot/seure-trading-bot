@@ -33,6 +33,7 @@ class Settings:
     max_daily_trades: int
     max_risk_per_trade_pct: Decimal
     max_position_notional: Decimal
+    max_demo_margin_pct: Decimal
     max_daily_loss: Decimal
     allowed_symbols: frozenset[str]
 
@@ -55,6 +56,7 @@ class Settings:
             live_confirmation_code=os.getenv("LIVE_CONFIRMATION_CODE"), max_daily_trades=int(os.getenv("MAX_DAILY_TRADES", "3")),
             max_risk_per_trade_pct=Decimal(os.getenv("MAX_RISK_PER_TRADE_PCT", "1")),
             max_position_notional=Decimal(os.getenv("MAX_POSITION_NOTIONAL_USDT", "50")),
+            max_demo_margin_pct=Decimal(os.getenv("MAX_DEMO_MARGIN_PCT", "90")),
             max_daily_loss=Decimal(os.getenv("MAX_DAILY_LOSS_USDT", "20")),
             allowed_symbols=frozenset(x.strip().upper() for x in os.getenv("ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT").split(",") if x.strip()),
         )
@@ -63,4 +65,6 @@ class Settings:
                 raise RuntimeError("Live mode requires ALLOW_LIVE_TRADING=true")
             if not all([settings.bybit_api_key, settings.bybit_api_secret, settings.live_confirmation_code]):
                 raise RuntimeError("Live mode requires Bybit credentials and LIVE_CONFIRMATION_CODE")
+        if not Decimal("1") <= settings.max_demo_margin_pct <= Decimal("100"):
+            raise RuntimeError("MAX_DEMO_MARGIN_PCT must be between 1 and 100")
         return settings
