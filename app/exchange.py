@@ -71,6 +71,45 @@ class OKXDemoClient:
             raise ExchangeError(message)
         return data["data"][0]
 
+    async def account_balance(self) -> Decimal:
+        request_path = "/api/v5/account/balance?ccy=USDT"
+        session = await self._session()
+        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0" or not data.get("data"):
+            raise ExchangeError(data.get("msg", "Could not retrieve OKX Demo balance"))
+        details = data["data"][0].get("details", [])
+        usdt = next((item for item in details if item.get("ccy") == "USDT"), None)
+        if not usdt:
+            return Decimal("0")
+        # availEq is the safest value for a new cross/isolated position.
+        return Decimal(usdt.get("availEq") or usdt.get("availBal") or "0")
+
+    async def swap_instrument(self, inst_id: str) -> dict:
+        session = await self._session()
+        async with session.get(f"{self.base_url}/api/v5/public/instruments", params={"instType": "SWAP", "instId": inst_id}) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0" or not data.get("data"):
+            raise ExchangeError(data.get("msg", f"No live OKX perpetual instrument found for {inst_id}"))
+        return data["data"][0]
+
+    async def last_price(self, inst_id: str) -> Decimal:
+        session = await self._session()
+        async with session.get(f"{self.base_url}/api/v5/market/ticker", params={"instId": inst_id}) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0" or not data.get("data"):
+            raise ExchangeError(data.get("msg", f"No OKX market price available for {inst_id}"))
+        return Decimal(data["data"][0]["last"])
+
+    async def _response_json(self, response: aiohttp.ClientResponse) -> dict:
+        try:
+            data = await response.json(content_type=None)
+        except (ValueError, UnicodeDecodeError):
+            raise ExchangeError(f"OKX returned a non-API response (HTTP {response.status})") from None
+        if not isinstance(data, dict):
+            raise ExchangeError(f"OKX returned an unexpected response (HTTP {response.status})")
+        return data
+
 
 class BybitClient:
     """Minimal V5 client: credentials stay in process memory and auth uses headers."""
