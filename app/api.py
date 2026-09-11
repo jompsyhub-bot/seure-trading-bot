@@ -33,12 +33,14 @@ static_dir = Path(__file__).parent / "static"
 async def lifespan(app: FastAPI):
     """Start the experimental worker only when credential encryption is available."""
     task = None
+    position_task = None
     worker = None
     notifier = TelegramNotifier(settings.telegram_token)
     app.state.notifier = notifier
     if settings.encryption_key:
         worker = DemoAutomationWorker(database, CredentialVault(settings.encryption_key), notifier)
         task = asyncio.create_task(worker.run(), name="demo-automation-worker")
+        position_task = asyncio.create_task(monitor_okx_positions(notifier), name="okx-position-monitor")
     try:
         yield
     finally:
@@ -48,6 +50,12 @@ async def lifespan(app: FastAPI):
             task.cancel()
             try:
                 await task
+            except asyncio.CancelledError:
+                pass
+        if position_task:
+            position_task.cancel()
+            try:
+                await position_task
             except asyncio.CancelledError:
                 pass
         await notifier.close()
@@ -109,6 +117,12 @@ class FuturesDemoOrderRequest(FuturesPreviewRequest):
     confirmation: Literal["PLACE_DEMO_ORDER"]
 
 
+class ClosePositionRequest(BaseModel):
+    instrument: Literal["BTC-USDT-SWAP", "ETH-USDT-SWAP"]
+    position_side: Literal["net", "long", "short"]
+    confirmation: Literal["CLOSE_DEMO_POSITION"]
+
+
 def telegram_user(init_data: str | None) -> dict:
     if not init_data:
         raise HTTPException(401, "Missing Telegram authorization")
@@ -128,6 +142,26 @@ def okx_demo_client_for(user_id: int) -> OKXDemoClient:
         raise HTTPException(503, "OKX Demo credentials are incomplete. Reconnect the account.")
     vault = CredentialVault(settings.encryption_key)
     return OKXDemoClient(vault.decrypt(credentials["encrypted_api_key"]), vault.decrypt(credentials["encrypted_api_secret"]), vault.decrypt(credentials["encrypted_passphrase"]))
+
+
+async def monitor_okx_positions(notifier: TelegramNotifier) -> None:
+    previous: dict[int, set[tuple[str, str]]] = {}
+    while True:
+        for user_id in database.okx_demo_users():
+            try:
+                client = okx_demo_client_for(user_id)
+                try:
+                    current = {(row.get("instId", ""), row.get("posSide", "")) for row in await client.swap_positions()}
+                finally:
+                    await client.close()
+                if user_id in previous:
+                    for instrument, side in previous[user_id] - current:
+                        await sync_okx_order_history(user_id)
+                        await notifier.send(user_id, f"🔔 OKX Demo position closed\n{instrument} · {side}\nA TP/SL or close order may have completed. Open trade history for the recorded outcome; OKX remains the source of truth.")
+                previous[user_id] = current
+            except Exception:
+                continue
+        await asyncio.sleep(20)
 
 
 def reject_unsafe_permissions(info: dict) -> None:
@@ -444,5 +478,59 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
         raise HTTPException(400, f"OKX Demo order was not placed: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/futures/close-position")
+async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Explicitly close one entire active OKX Demo position, never a real-money one."""
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    client = okx_demo_client_for(user_id)
+    close_key = f"close{uuid.uuid4().hex[:23]}"
+    try:
+        positions = await client.swap_positions()
+        position = next((row for row in positions if row.get("instId") == request.instrument and row.get("posSide") == request.position_side), None)
+        if not position:
+            raise HTTPException(404, "That position is no longer active. Refresh the portfolio.")
+        contracts = abs(Decimal(position["pos"]))
+        if contracts <= 0:
+            raise HTTPException(404, "That position has no contracts to close.")
+        if request.position_side == "long":
+            close_side = "sell"
+        elif request.position_side == "short":
+            close_side = "buy"
+        else:
+            close_side = "sell" if Decimal(position["pos"]) > 0 else "buy"
+        intent = OrderIntent(user_id, request.instrument, Side.SELL if close_side == "sell" else Side.BUY, Decimal("0"), close_key)
+        # The database reservation is used only as a write-ahead audit record;
+        # exchange size is contracts rather than a quote notional.
+        if not database.reserve(intent):
+            raise HTTPException(409, "Could not reserve the close request. Refresh and retry once.")
+        submission_started = False
+        try:
+            submission_started = True
+            accepted = await client.close_market_swap(inst_id=request.instrument, side=close_side, position_side=request.position_side, contracts=contracts, client_order_id=close_key)
+            order_id = accepted.get("ordId")
+            if not order_id:
+                raise ExchangeError("OKX accepted the close request without an order ID. Check OKX Demo before retrying.")
+            detail = await client.order_detail(request.instrument, order_id)
+            status = (detail or {}).get("state", "live").upper()
+            price = Decimal((detail or {}).get("avgPx") or (detail or {}).get("fillPx") or position.get("markPx") or "0")
+            filled = Decimal((detail or {}).get("accFillSz") or "0")
+            pnl = Decimal((detail or {}).get("pnl") or "0")
+            database.finalize(close_key, OrderResult(order_id, status, price, filled))
+            database.reconcile_exchange_order(close_key, status, price, filled, pnl)
+        except Exception:
+            if not submission_started:
+                database.cancel_reservation(close_key)
+            raise
+        await api.state.notifier.send(user_id, f"🧪 OKX Demo close accepted\n{request.instrument} · {request.position_side}\nOrder: {order_id}\nStatus: {status}\nRealized P&L reported by order: {pnl} USDT\nCheck OKX Demo as the source of truth.")
+        return {"closed": True, "order_id": order_id, "status": status, "realized_pnl_usdt": str(pnl), "fill_price": str(price), "contracts": str(filled or contracts), "message": "Close order accepted. The realized P&L is from OKX's order response and may update after final exchange settlement."}
+    except HTTPException:
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
+        raise HTTPException(400, f"OKX Demo position was not closed: {exc}") from None
     finally:
         await client.close()
