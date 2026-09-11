@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .database import Database
-from .exchange import BybitClient, ExchangeError
+from .exchange import BybitClient, ExchangeError, OKXDemoClient
 from .security import CredentialVault
 from .web_auth import TelegramAuthError, validate_init_data
 from .automation import DemoAutomationWorker
@@ -54,10 +54,10 @@ async def lifespan(app: FastAPI):
 api = FastAPI(title="Safe Trading Bot API", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
-class BybitConnectionRequest(BaseModel):
+class OKXDemoConnectionRequest(BaseModel):
     api_key: str = Field(min_length=8, max_length=256)
     api_secret: str = Field(min_length=16, max_length=512)
-    environment: Literal["testnet", "demo"] = "testnet"
+    passphrase: str = Field(min_length=8, max_length=256)
 
 
 class PaperSettingsRequest(BaseModel):
@@ -157,20 +157,19 @@ async def dashboard(x_telegram_init_data: str | None = Header(default=None)) -> 
     return result
 
 
-@api.post("/api/bybit/connect")
-async def connect_bybit(request: BybitConnectionRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+@api.post("/api/okx/connect")
+async def connect_okx_demo(request: OKXDemoConnectionRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     if not settings.encryption_key:
         raise HTTPException(503, "Credential vault is not configured")
-    client = BybitClient(request.api_key, request.api_secret, environment=request.environment)
+    client = OKXDemoClient(request.api_key, request.api_secret, request.passphrase)
     try:
-        info = await client.api_key_info()
-        reject_unsafe_permissions(info)
+        account = await client.account_config()
         vault = CredentialVault(settings.encryption_key)
-        database.save_bybit_connection(int(user["id"]), vault.encrypt(request.api_key), vault.encrypt(request.api_secret), request.environment, info.get("permissions", {}))
-        return {"connected": True, "environment": request.environment}
+        database.save_okx_connection(int(user["id"]), vault.encrypt(request.api_key), vault.encrypt(request.api_secret), vault.encrypt(request.passphrase), account)
+        return {"connected": True, "provider": "okx", "environment": "demo"}
     except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
-        raise HTTPException(400, f"Bybit connection rejected: {exc}") from None
+        raise HTTPException(400, f"OKX Demo connection rejected: {exc}") from None
     finally:
         await client.close()
 
@@ -189,8 +188,8 @@ async def paper_settings(request: PaperSettingsRequest, x_telegram_init_data: st
 async def automation_settings(request: AutomationProfileRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     dashboard = database.dashboard(int(user["id"]))
-    if request.enabled and dashboard.get("environment") != "demo":
-        raise HTTPException(400, "Automation can only be enabled with a connected Demo Trading account")
+    if request.enabled and (dashboard.get("environment") != "demo" or dashboard.get("provider") != "bybit"):
+        raise HTTPException(400, "OKX execution is not enabled yet. Automation remains paused until the OKX futures execution adapter is tested.")
     try:
         database.save_automation_profile(int(user["id"]), request.enabled, request.strategy, request.symbol, Decimal(request.max_order_notional), request.max_trades_per_day, Decimal(request.stop_loss_pct), Decimal(request.take_profit_pct))
     except (InvalidOperation, ValueError):
@@ -208,11 +207,11 @@ async def kill_switch(x_telegram_init_data: str | None = Header(default=None)) -
     return {"enabled": False, "message": "Automation stopped"}
 
 
-@api.delete("/api/bybit/connection")
-async def disconnect_bybit(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+@api.delete("/api/exchange/connection")
+async def disconnect_exchange(x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     database.disconnect_bybit(int(user["id"]))
-    await api.state.notifier.send(int(user["id"]), "🔒 Bybit Demo connection removed and automation stopped.")
+    await api.state.notifier.send(int(user["id"]), "🔒 Exchange Demo connection removed and automation stopped.")
     return {"connected": False}
 
 
@@ -236,8 +235,9 @@ async def backtest(request: BacktestRequest, x_telegram_init_data: str | None = 
 async def leverage_options(request: LeverageRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     environment = database.connection_environment(int(user["id"]))
-    if environment != "demo":
-        raise HTTPException(400, "Connect a Bybit Demo account before checking futures leverage")
+    provider = database.connection_provider(int(user["id"]))
+    if environment != "demo" or provider != "bybit":
+        raise HTTPException(400, "OKX futures leverage lookup will be added with the OKX execution adapter. No order can be placed yet.")
     client = BybitClient("", "", environment="demo")
     try:
         instrument = await client.linear_instrument(request.symbol)
