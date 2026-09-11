@@ -48,10 +48,27 @@ class BybitClient:
         signature = hmac.new(self.api_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
         return {"X-BAPI-API-KEY": self.api_key, "X-BAPI-TIMESTAMP": timestamp, "X-BAPI-RECV-WINDOW": window, "X-BAPI-SIGN": signature, "Content-Type": "application/json"}
 
+    async def _json(self, response: aiohttp.ClientResponse) -> dict:
+        """Convert exchange responses without leaking HTML/error pages to users.
+
+        A non-JSON response usually means an upstream WAF, regional restriction,
+        or temporary proxy failure—not an invalid user API key.
+        """
+        try:
+            data = await response.json(content_type=None)
+        except (ValueError, UnicodeDecodeError):
+            raise ExchangeError(
+                f"Bybit returned a non-API response (HTTP {response.status}). "
+                "Check that the hosting region is permitted by Bybit and retry."
+            ) from None
+        if not isinstance(data, dict):
+            raise ExchangeError(f"Bybit returned an unexpected response (HTTP {response.status})")
+        return data
+
     async def ticker(self, symbol: str) -> Decimal:
         session = await self._session()
         async with session.get(f"{self.base_url}/v5/market/tickers", params={"category": "spot", "symbol": symbol}) as response:
-            data = await response.json()
+            data = await self._json(response)
         items = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not items:
             raise ExchangeError(f"Ticker unavailable for {symbol}")
@@ -60,7 +77,7 @@ class BybitClient:
     async def instrument(self, symbol: str) -> dict:
         session = await self._session()
         async with session.get(f"{self.base_url}/v5/market/instruments-info", params={"category": "spot", "symbol": symbol}) as response:
-            data = await response.json()
+            data = await self._json(response)
         items = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not items:
             raise ExchangeError(f"Instrument unavailable for {symbol}")
@@ -70,7 +87,7 @@ class BybitClient:
         """Public linear-perpetual rules; no account secret is sent."""
         session = await self._session()
         async with session.get(f"{self.base_url}/v5/market/instruments-info", params={"category": "linear", "symbol": symbol}) as response:
-            data = await response.json()
+            data = await self._json(response)
         items = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not items:
             raise ExchangeError(f"No linear futures instrument found for {symbol}")
@@ -89,7 +106,7 @@ class BybitClient:
         body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         session = await self._session()
         async with session.post(f"{self.base_url}/v5/order/create", data=body, headers=self._headers(body)) as response:
-            data = await response.json()
+            data = await self._json(response)
         if data.get("retCode") != 0:
             raise ExchangeError(data.get("retMsg", "Bybit rejected order"))
         # Creation acknowledgement is not a fill. Reconciliation must confirm it.
@@ -99,7 +116,7 @@ class BybitClient:
         query = urlencode(sorted({"category": "spot", "orderId": order_id}.items()))
         session = await self._session()
         async with session.get(f"{self.base_url}/v5/order/realtime?{query}", headers=self._headers(query)) as response:
-            data = await response.json()
+            data = await self._json(response)
         orders = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not orders:
             raise ExchangeError(f"Could not reconcile order {order_id}")
@@ -111,7 +128,7 @@ class BybitClient:
         session = await self._session()
         query = ""
         async with session.get(f"{self.base_url}/v5/user/query-api", headers=self._headers(query)) as response:
-            data = await response.json()
+            data = await self._json(response)
         if data.get("retCode") != 0:
             raise ExchangeError(data.get("retMsg", "Bybit API key validation failed"))
         return data["result"]
@@ -119,7 +136,7 @@ class BybitClient:
     async def rsi_14(self, symbol: str, interval: str = "15") -> Decimal:
         session = await self._session()
         async with session.get(f"{self.base_url}/v5/market/kline", params={"category": "spot", "symbol": symbol, "interval": interval, "limit": "30"}) as response:
-            data = await response.json()
+            data = await self._json(response)
         rows = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or len(rows) < 15:
             raise ExchangeError(f"Insufficient market data for {symbol}")
