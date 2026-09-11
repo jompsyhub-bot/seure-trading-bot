@@ -71,6 +71,18 @@ class OKXDemoClient:
             raise ExchangeError(message)
         return data["data"][0]
 
+    async def set_position_mode(self, position_mode: str) -> dict:
+        if position_mode not in {"net_mode", "long_short_mode"}:
+            raise ValueError("Unsupported position mode")
+        request_path = "/api/v5/account/set-position-mode"
+        body = json.dumps({"posMode": position_mode}, separators=(",", ":"))
+        session = await self._session()
+        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0":
+            raise ExchangeError(data.get("msg", "OKX rejected the position mode change"))
+        return data["data"][0] if data.get("data") else {"posMode": position_mode}
+
     async def account_balance(self) -> Decimal:
         request_path = "/api/v5/account/balance?ccy=USDT"
         session = await self._session()
