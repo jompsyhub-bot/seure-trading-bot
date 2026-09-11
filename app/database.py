@@ -111,6 +111,11 @@ class SQLiteDatabase:
             row = conn.execute("SELECT provider FROM bybit_connections WHERE telegram_user_id=?", (user_id,)).fetchone()
         return row["provider"] if row else None
 
+    def exchange_credentials(self, user_id: int) -> dict | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT provider,environment,encrypted_api_key,encrypted_api_secret,encrypted_passphrase FROM bybit_connections WHERE telegram_user_id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
     def update_paper_settings(self, telegram_user_id: int, enabled: bool, max_order_notional: Decimal, max_daily_loss: Decimal) -> None:
         if max_order_notional <= 0 or max_daily_loss <= 0:
             raise ValueError("Limits must be positive")
@@ -290,6 +295,11 @@ class PostgreSQLDatabase:
         with self.connection() as conn:
             row = conn.execute("SELECT provider FROM bybit_connections WHERE telegram_user_id=%s", (user_id,)).fetchone()
         return row["provider"] if row else None
+
+    def exchange_credentials(self, user_id: int) -> dict | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT provider,environment,encrypted_api_key,encrypted_api_secret,encrypted_passphrase FROM bybit_connections WHERE telegram_user_id=%s", (user_id,)).fetchone()
+        return dict(row) if row else None
 
     def update_paper_settings(self, telegram_user_id: int, enabled: bool, max_order_notional: Decimal, max_daily_loss: Decimal) -> None:
         if max_order_notional <= 0 or max_daily_loss <= 0:
