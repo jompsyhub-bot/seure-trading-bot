@@ -6,10 +6,11 @@ from typing import Literal
 from contextlib import asynccontextmanager
 import asyncio
 import uuid
+import logging
 
 import aiohttp
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -27,6 +28,7 @@ settings = Settings.from_env()
 database = Database(settings.database_path, settings.database_url)
 database.initialize()
 static_dir = Path(__file__).parent / "static"
+log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -37,10 +39,11 @@ async def lifespan(app: FastAPI):
     worker = None
     notifier = TelegramNotifier(settings.telegram_token)
     app.state.notifier = notifier
+    app.state.futures_subscribers = {}
     if settings.encryption_key:
         worker = DemoAutomationWorker(database, CredentialVault(settings.encryption_key), notifier)
         task = asyncio.create_task(worker.run(), name="demo-automation-worker")
-        position_task = asyncio.create_task(monitor_okx_positions(notifier), name="okx-position-monitor")
+        position_task = asyncio.create_task(monitor_okx_private_events(notifier), name="okx-private-event-supervisor")
     try:
         yield
     finally:
@@ -144,26 +147,99 @@ def okx_demo_client_for(user_id: int) -> OKXDemoClient:
     return OKXDemoClient(vault.decrypt(credentials["encrypted_api_key"]), vault.decrypt(credentials["encrypted_api_secret"]), vault.decrypt(credentials["encrypted_passphrase"]))
 
 
-async def monitor_okx_positions(notifier: TelegramNotifier) -> None:
-    previous: dict[int, set[tuple[str, str]]] = {}
+async def publish_futures_event(user_id: int, event_type: str) -> None:
+    """Notify only the authenticated Mini App sessions belonging to one user."""
+    subscribers = list(getattr(api.state, "futures_subscribers", {}).get(user_id, set()))
+    for socket in subscribers:
+        try:
+            await socket.send_json({"type": event_type})
+        except (RuntimeError, WebSocketDisconnect):
+            api.state.futures_subscribers.get(user_id, set()).discard(socket)
+
+
+def active_position_keys(rows: list[dict]) -> set[tuple[str, str]]:
+    return {
+        (str(row.get("instId", "")), str(row.get("posSide", "")))
+        for row in rows
+        if Decimal(str(row.get("pos") or "0")) != 0
+    }
+
+
+async def notify_position_closed(user_id: int, notifier: TelegramNotifier, instrument: str, side: str) -> None:
+    await sync_okx_order_history(user_id)
+    await notifier.send(
+        user_id,
+        f"🔔 OKX Demo position closed\n{instrument} · {side}\n"
+        "The exchange pushed this update immediately. It may have been a TP, SL, or a manual close; the ticket is reconciling the final P&L now.",
+    )
+    await publish_futures_event(user_id, "portfolio_changed")
+
+
+async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> None:
+    """Keep one credentialed, reconnecting Demo private feed per connected user."""
+    known_positions: set[tuple[str, str]] = set()
+    delay = 1
     while True:
-        for user_id in database.okx_demo_users():
-            try:
-                client = okx_demo_client_for(user_id)
-                try:
-                    current = {(row.get("instId", ""), row.get("posSide", "")) for row in await client.swap_positions()}
-                finally:
-                    await client.close()
-                if user_id in previous:
-                    for instrument, side in previous[user_id] - current:
+        client: OKXDemoClient | None = None
+        try:
+            client = okx_demo_client_for(user_id)
+            async for event in client.private_events():
+                delay = 1
+                channel = event.get("arg", {}).get("channel")
+                rows = event.get("data") or []
+                if channel == "positions":
+                    changed = active_position_keys(rows)
+                    if event.get("action") == "snapshot":
+                        closed = known_positions - changed
+                        known_positions = changed
+                    else:
+                        closed = set()
+                        for row in rows:
+                            key = (str(row.get("instId", "")), str(row.get("posSide", "")))
+                            if Decimal(str(row.get("pos") or "0")) == 0:
+                                if key in known_positions:
+                                    known_positions.discard(key)
+                                    closed.add(key)
+                            else:
+                                known_positions.add(key)
+                    for instrument, side in closed:
+                        await notify_position_closed(user_id, notifier, instrument, side)
+                    await publish_futures_event(user_id, "portfolio_changed")
+                elif channel == "orders":
+                    # Orders is event-driven (no opening snapshot). Reconcile
+                    # bot-originated order IDs after fills or cancellations.
+                    if any(row.get("state") in {"filled", "canceled"} for row in rows):
                         await sync_okx_order_history(user_id)
-                        await notifier.send(user_id, f"🔔 OKX Demo position closed\n{instrument} · {side}\nA TP/SL or close order may have completed. Open trade history for the recorded outcome; OKX remains the source of truth.")
-                previous[user_id] = current
-            except Exception:
-                continue
-        # Demo monitoring interval: fast enough for TP/SL feedback without
-        # needing a separate authenticated WebSocket connection per user.
-        await asyncio.sleep(5)
+                        await publish_futures_event(user_id, "portfolio_changed")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("OKX Demo private feed unavailable for user %s: %s", user_id, exc)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+        finally:
+            if client:
+                await client.close()
+
+
+async def monitor_okx_private_events(notifier: TelegramNotifier) -> None:
+    """Start and stop user feeds as encrypted OKX Demo connections change."""
+    tasks: dict[int, asyncio.Task] = {}
+    try:
+        while True:
+            users = set(database.okx_demo_users())
+            for user_id in users - tasks.keys():
+                tasks[user_id] = asyncio.create_task(
+                    monitor_okx_private_user(user_id, notifier), name=f"okx-demo-private-{user_id}"
+                )
+            for user_id in set(tasks) - users:
+                tasks.pop(user_id).cancel()
+            await asyncio.sleep(15)
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks.values(), return_exceptions=True)
 
 
 def reject_unsafe_permissions(info: dict) -> None:
@@ -187,6 +263,32 @@ async def mini_app() -> FileResponse:
 @api.get("/futures")
 async def futures_ticket() -> FileResponse:
     return FileResponse(static_dir / "futures.html")
+
+
+@api.websocket("/ws/futures")
+async def futures_updates(websocket: WebSocket) -> None:
+    """Authenticated push-only signal channel for the Telegram Mini App."""
+    init_data = websocket.query_params.get("init_data")
+    try:
+        user = validate_init_data(init_data or "", settings.telegram_token)
+        user_id = int(user["id"])
+    except (TelegramAuthError, KeyError, ValueError):
+        await websocket.close(code=1008, reason="Invalid Telegram authorization")
+        return
+    database.upsert_user(user_id, user.get("username"), user.get("first_name"))
+    await websocket.accept()
+    subscribers = api.state.futures_subscribers.setdefault(user_id, set())
+    subscribers.add(websocket)
+    try:
+        await websocket.send_json({"type": "connected", "environment": "demo"})
+        while True:
+            # The Mini App sends a harmless keepalive. State is sent by the
+            # server only after an authenticated exchange event.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        subscribers.discard(websocket)
 
 
 @api.get("/health")
