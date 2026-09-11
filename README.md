@@ -33,7 +33,9 @@ uvicorn app.api:api --host 127.0.0.1 --port 8000
 
 Before first deploy, rotate any bot token which appeared in a terminal or Render log. Only one copy of the bot may run `getUpdates`: stop your local bot and any duplicate Render service before testing the deployed one.
 
-Set `MINI_APP_URL` to its public HTTPS URL and configure the same URL as the bot's Mini App in BotFather. This first phase permits **Bybit Testnet or Demo Trading only**—never mainnet. Its connection endpoint validates a key's permissions and rejects keys with transfer or withdrawal capabilities before encrypting both values in the database.
+If you need a different permitted hosting region, Render requires a new service; it cannot move an existing one. Set `RUN_TELEGRAM_POLLER=false` on the new service while you verify its dashboard, then suspend the old service and set the new service to `true`. Reuse the same `DATABASE_URL` and `CREDENTIAL_ENCRYPTION_KEY` so existing encrypted user connections continue to work.
+
+Set `MINI_APP_URL` to its public HTTPS URL and configure the same URL as the bot's Mini App in BotFather. The current connection flow permits **OKX Demo Trading only**—never mainnet. It validates the key, secret, and API passphrase before encrypting them in the database.
 
 ## Operation
 
@@ -43,7 +45,7 @@ The original single-user live path is not a public multi-user feature and must r
 
 ## Demo automation
 
-The dashboard provides one deliberately constrained experimental strategy: a 15-minute RSI reversion entry, Demo Trading only. It can only buy BTCUSDT or ETHUSDT, scans once per minute, has a 1–50 USDT order cap, a 1–3 daily-trade limit, and requires exchange-side stop-loss and take-profit values. **It is not backtested evidence, investment advice, or a promise of any outcome.** `STOP ALL AUTOMATION` immediately disables the user's profile; it cannot cancel an order that the exchange already accepted, so users must also review their Bybit open orders.
+The dashboard provides one deliberately constrained experimental strategy, but it is paused for OKX until its futures execution adapter has completed validation. **It is not backtested evidence, investment advice, or a promise of any outcome.** `STOP ALL AUTOMATION` immediately disables a user's profile; it cannot cancel an order that an exchange already accepted.
 
 The bot sends the user alerts when they start or pause automation, use the kill switch, submit a demo order, or a worker scan fails. Alerts are informational; the dashboard and Bybit remain the source of truth for order status.
 
