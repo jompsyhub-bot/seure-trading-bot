@@ -22,7 +22,7 @@ from .notifications import TelegramNotifier
 from .backtest import MarketDataError, PublicBybitMarket, run_rsi_reversion
 
 settings = Settings.from_env()
-database = Database(settings.database_path)
+database = Database(settings.database_path, settings.database_url)
 database.initialize()
 static_dir = Path(__file__).parent / "static"
 

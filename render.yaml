@@ -6,13 +6,9 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: bash start.sh
     healthCheckPath: /health
-    disk:
-      name: relay-trade-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
-      - key: DATABASE_PATH
-        value: /var/data/trading_bot.db
+      - key: DATABASE_URL
+        sync: false
       - key: TRADING_MODE
         value: paper
       - key: ALLOW_LIVE_TRADING

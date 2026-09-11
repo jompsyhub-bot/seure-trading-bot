@@ -22,15 +22,16 @@ uvicorn app.api:api --host 127.0.0.1 --port 8000
 
 ## Render deployment
 
-`render.yaml` and `start.sh` deploy the Telegram poller and Mini App API together as one Render web service. This is intentional while the project uses SQLite: both processes share the persistent `/var/data` disk. A persistent disk requires a paid Render service; Render's default filesystem is ephemeral and would otherwise erase the encrypted Bybit connections and order history on restart.
+`render.yaml` and `start.sh` deploy the Telegram poller and Mini App API together as one Render web service. User records, encrypted Bybit connections, settings, and trade history live in Supabase Postgres, so Render redeploys do not erase them.
 
 1. Put this project in a **private GitHub repository**. Never commit `.env` or `trading_bot.db`.
 2. In Render, choose **New → Blueprint**, select that repository, and deploy `render.yaml`.
-3. Enter the secret values prompted by Render. Reuse the same `CREDENTIAL_ENCRYPTION_KEY` you used locally only if you must preserve and copy an existing encrypted database; otherwise generate a new one.
-4. After Render provides `https://<service>.onrender.com`, set `MINI_APP_URL` to that exact address in the Render service environment variables, then redeploy.
-5. In BotFather, configure that same HTTPS address as the Mini App URL. Stop the local polling bot before the Render service begins polling to prevent duplicate polling conflicts.
+3. In Supabase, open **Connect**, select **Session pooler**, and copy its connection string. In Render's Environment page, add it as the secret `DATABASE_URL`. Keep the password portion private. The app creates its tables automatically at startup—do not use the Supabase SQL editor for this project.
+4. Enter the remaining secret values prompted by Render. Generate a new `CREDENTIAL_ENCRYPTION_KEY` for this deployment and keep it unchanged after launch; changing it would prevent decryption of previously saved user connections.
+5. After Render provides `https://<service>.onrender.com`, set `MINI_APP_URL` to that exact address in the Render service environment variables, then redeploy.
+6. In BotFather, configure that same HTTPS address as the Mini App URL. Stop the local polling bot before the Render service begins polling to prevent duplicate polling conflicts.
 
-For a production multi-user service, the next infrastructure upgrade is Render Postgres plus a separate worker/queue. A persistent disk can attach to only one instance and cannot scale horizontally.
+Before first deploy, rotate any bot token which appeared in a terminal or Render log. Only one copy of the bot may run `getUpdates`: stop your local bot and any duplicate Render service before testing the deployed one.
 
 Set `MINI_APP_URL` to its public HTTPS URL and configure the same URL as the bot's Mini App in BotFather. This first phase permits **Bybit Testnet or Demo Trading only**—never mainnet. Its connection endpoint validates a key's permissions and rejects keys with transfer or withdrawal capabilities before encrypting both values in the database.
 

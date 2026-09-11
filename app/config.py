@@ -21,6 +21,7 @@ class Settings:
     telegram_token: str
     admin_user_id: int
     database_path: Path
+    database_url: str | None
     mini_app_url: str | None
     trading_mode: str
     allow_live_trading: bool
@@ -46,7 +47,8 @@ class Settings:
         if mode not in {"paper", "live"}:
             raise RuntimeError("TRADING_MODE must be paper or live")
         settings = cls(
-            telegram_token=token, admin_user_id=int(admin), database_path=Path(os.getenv("DATABASE_PATH", "trading_bot.db")), mini_app_url=os.getenv("MINI_APP_URL"),
+            telegram_token=token, admin_user_id=int(admin), database_path=Path(os.getenv("DATABASE_PATH", "trading_bot.db")),
+            database_url=os.getenv("DATABASE_URL") or None, mini_app_url=os.getenv("MINI_APP_URL"),
             trading_mode=mode, allow_live_trading=_bool("ALLOW_LIVE_TRADING"),
             bybit_api_key=os.getenv("BYBIT_API_KEY"), bybit_api_secret=os.getenv("BYBIT_API_SECRET"),
             bybit_testnet=_bool("BYBIT_TESTNET", True), encryption_key=os.getenv("CREDENTIAL_ENCRYPTION_KEY"),

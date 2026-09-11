@@ -16,11 +16,15 @@ from .security import secure_equals
 from .service import TradingService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# httpx INFO messages include complete request URLs, which contain Telegram's bot
+# token. Keep transport logging quiet in production.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
 def build_app(settings: Settings) -> Application:
-    database = Database(settings.database_path)
+    database = Database(settings.database_path, settings.database_url)
     database.initialize()
     market = BybitClient(settings.bybit_api_key or "", settings.bybit_api_secret or "", settings.bybit_testnet)
     broker = PaperBroker(market) if settings.trading_mode == "paper" else market
