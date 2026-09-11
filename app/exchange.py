@@ -83,6 +83,36 @@ class OKXDemoClient:
             raise ExchangeError(data.get("msg", "OKX rejected the position mode change"))
         return data["data"][0] if data.get("data") else {"posMode": position_mode}
 
+    async def set_leverage(self, inst_id: str, leverage: Decimal, position_side: str) -> None:
+        request_path = "/api/v5/account/set-leverage"
+        body = json.dumps({"instId": inst_id, "lever": str(leverage), "mgnMode": "isolated", "posSide": position_side}, separators=(",", ":"))
+        session = await self._session()
+        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0":
+            raise ExchangeError(data.get("msg", "OKX rejected the leverage setting"))
+
+    async def place_market_swap(self, *, inst_id: str, side: str, position_side: str, contracts: Decimal, client_order_id: str, take_profit: Decimal, stop_loss: Decimal) -> dict:
+        request_path = "/api/v5/trade/order"
+        payload = {"instId": inst_id, "tdMode": "isolated", "side": side, "posSide": position_side, "ordType": "market", "sz": str(contracts), "clOrdId": client_order_id, "attachAlgoOrds": [{"attachAlgoClOrdId": f"tp{client_order_id}"[:32], "tpTriggerPx": str(take_profit), "tpTriggerPxType": "mark", "tpOrdPx": "-1", "slTriggerPx": str(stop_loss), "slTriggerPxType": "mark", "slOrdPx": "-1"}]}
+        body = json.dumps(payload, separators=(",", ":"))
+        session = await self._session()
+        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
+            data = await self._response_json(response)
+        item = data.get("data", [{}])[0]
+        if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
+            raise ExchangeError(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo order")
+        return item
+
+    async def order_detail(self, inst_id: str, order_id: str) -> dict | None:
+        request_path = f"/api/v5/trade/order?instId={inst_id}&ordId={order_id}"
+        session = await self._session()
+        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0":
+            raise ExchangeError(data.get("msg", "Could not reconcile OKX order"))
+        return data.get("data", [None])[0]
+
     async def account_balance(self) -> Decimal:
         request_path = "/api/v5/account/balance?ccy=USDT"
         session = await self._session()
