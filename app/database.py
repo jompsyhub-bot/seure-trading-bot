@@ -47,6 +47,7 @@ class SQLiteDatabase:
             CREATE TABLE IF NOT EXISTS bybit_connections (
               telegram_user_id INTEGER PRIMARY KEY REFERENCES users(telegram_user_id),
               encrypted_api_key BLOB NOT NULL, encrypted_api_secret BLOB NOT NULL,
+              encrypted_passphrase BLOB, provider TEXT NOT NULL DEFAULT 'bybit',
               is_testnet INTEGER NOT NULL, environment TEXT NOT NULL DEFAULT 'testnet', permissions_json TEXT NOT NULL,
               connected_at TEXT NOT NULL, updated_at TEXT NOT NULL
             );
@@ -71,6 +72,10 @@ class SQLiteDatabase:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(bybit_connections)")}
             if "environment" not in columns:
                 conn.execute("ALTER TABLE bybit_connections ADD COLUMN environment TEXT NOT NULL DEFAULT 'testnet'")
+            if "provider" not in columns:
+                conn.execute("ALTER TABLE bybit_connections ADD COLUMN provider TEXT NOT NULL DEFAULT 'bybit'")
+            if "encrypted_passphrase" not in columns:
+                conn.execute("ALTER TABLE bybit_connections ADD COLUMN encrypted_passphrase BLOB")
 
     def upsert_user(self, telegram_user_id: int, username: str | None, first_name: str | None) -> None:
         now = datetime.now(UTC).isoformat()
@@ -84,17 +89,27 @@ class SQLiteDatabase:
         with self.connection() as conn:
             conn.execute("INSERT INTO bybit_connections (telegram_user_id,encrypted_api_key,encrypted_api_secret,is_testnet,environment,permissions_json,connected_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET encrypted_api_key=excluded.encrypted_api_key,encrypted_api_secret=excluded.encrypted_api_secret,is_testnet=excluded.is_testnet,environment=excluded.environment,permissions_json=excluded.permissions_json,updated_at=excluded.updated_at", (telegram_user_id, api_key, api_secret, int(environment == "testnet"), environment, json.dumps(permissions), now, now))
 
+    def save_okx_connection(self, telegram_user_id: int, api_key: bytes, api_secret: bytes, passphrase: bytes, account: dict) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self.connection() as conn:
+            conn.execute("INSERT INTO bybit_connections (telegram_user_id,encrypted_api_key,encrypted_api_secret,encrypted_passphrase,provider,is_testnet,environment,permissions_json,connected_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET encrypted_api_key=excluded.encrypted_api_key,encrypted_api_secret=excluded.encrypted_api_secret,encrypted_passphrase=excluded.encrypted_passphrase,provider=excluded.provider,is_testnet=excluded.is_testnet,environment=excluded.environment,permissions_json=excluded.permissions_json,updated_at=excluded.updated_at", (telegram_user_id, api_key, api_secret, passphrase, "okx", 0, "demo", json.dumps(account), now, now))
+
     def dashboard(self, telegram_user_id: int) -> dict:
         with self.connection() as conn:
-            row = conn.execute("SELECT u.telegram_user_id,u.first_name,c.environment,c.connected_at,s.paper_automation_enabled,s.max_order_notional,s.max_daily_loss FROM users u LEFT JOIN bybit_connections c ON c.telegram_user_id=u.telegram_user_id LEFT JOIN user_automation_settings s ON s.telegram_user_id=u.telegram_user_id WHERE u.telegram_user_id=?", (telegram_user_id,)).fetchone()
+            row = conn.execute("SELECT u.telegram_user_id,u.first_name,c.provider,c.environment,c.connected_at,s.paper_automation_enabled,s.max_order_notional,s.max_daily_loss FROM users u LEFT JOIN bybit_connections c ON c.telegram_user_id=u.telegram_user_id LEFT JOIN user_automation_settings s ON s.telegram_user_id=u.telegram_user_id WHERE u.telegram_user_id=?", (telegram_user_id,)).fetchone()
         if not row:
             return {"connected": False, "paper_automation_enabled": False}
-        return {"name": row["first_name"], "connected": row["connected_at"] is not None, "environment": row["environment"], "paper_automation_enabled": bool(row["paper_automation_enabled"]), "max_order_notional": row["max_order_notional"], "max_daily_loss": row["max_daily_loss"]}
+        return {"name": row["first_name"], "connected": row["connected_at"] is not None, "provider": row["provider"], "environment": row["environment"], "paper_automation_enabled": bool(row["paper_automation_enabled"]), "max_order_notional": row["max_order_notional"], "max_daily_loss": row["max_daily_loss"]}
 
     def connection_environment(self, user_id: int) -> str | None:
         with self.connection() as conn:
             row = conn.execute("SELECT environment FROM bybit_connections WHERE telegram_user_id=?", (user_id,)).fetchone()
         return row["environment"] if row else None
+
+    def connection_provider(self, user_id: int) -> str | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT provider FROM bybit_connections WHERE telegram_user_id=?", (user_id,)).fetchone()
+        return row["provider"] if row else None
 
     def update_paper_settings(self, telegram_user_id: int, enabled: bool, max_order_notional: Decimal, max_daily_loss: Decimal) -> None:
         if max_order_notional <= 0 or max_daily_loss <= 0:
@@ -132,7 +147,7 @@ class SQLiteDatabase:
 
     def demo_automation_users(self) -> list[dict]:
         with self.connection() as conn:
-            rows = conn.execute("SELECT p.*,c.encrypted_api_key,c.encrypted_api_secret FROM automation_profiles p JOIN bybit_connections c ON c.telegram_user_id=p.telegram_user_id WHERE p.enabled=1 AND c.environment='demo'").fetchall()
+            rows = conn.execute("SELECT p.*,c.encrypted_api_key,c.encrypted_api_secret FROM automation_profiles p JOIN bybit_connections c ON c.telegram_user_id=p.telegram_user_id WHERE p.enabled=1 AND c.provider='bybit' AND c.environment='demo'").fetchall()
         return [dict(row) for row in rows]
 
     def existing_order(self, key: str) -> OrderResult | None:
@@ -215,6 +230,7 @@ class PostgreSQLDatabase:
         CREATE TABLE IF NOT EXISTS bybit_connections (
           telegram_user_id BIGINT PRIMARY KEY REFERENCES users(telegram_user_id),
           encrypted_api_key BYTEA NOT NULL, encrypted_api_secret BYTEA NOT NULL,
+          encrypted_passphrase BYTEA, provider TEXT NOT NULL DEFAULT 'bybit',
           is_testnet BOOLEAN NOT NULL, environment TEXT NOT NULL DEFAULT 'testnet',
           permissions_json TEXT NOT NULL, connected_at TIMESTAMPTZ NOT NULL,
           updated_at TIMESTAMPTZ NOT NULL
@@ -234,7 +250,12 @@ class PostgreSQLDatabase:
         );
         """
         with self.connection() as conn:
+            # app.main and app.api start together on Render. Serialize schema
+            # changes so first deploys cannot race on ALTER TABLE.
+            conn.execute("SELECT pg_advisory_xact_lock(68422147)")
             conn.execute(schema)
+            conn.execute("ALTER TABLE bybit_connections ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'bybit'")
+            conn.execute("ALTER TABLE bybit_connections ADD COLUMN IF NOT EXISTS encrypted_passphrase BYTEA")
 
     def upsert_user(self, telegram_user_id: int, username: str | None, first_name: str | None) -> None:
         now = datetime.now(UTC)
@@ -248,17 +269,27 @@ class PostgreSQLDatabase:
         with self.connection() as conn:
             conn.execute("INSERT INTO bybit_connections (telegram_user_id,encrypted_api_key,encrypted_api_secret,is_testnet,environment,permissions_json,connected_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(telegram_user_id) DO UPDATE SET encrypted_api_key=EXCLUDED.encrypted_api_key,encrypted_api_secret=EXCLUDED.encrypted_api_secret,is_testnet=EXCLUDED.is_testnet,environment=EXCLUDED.environment,permissions_json=EXCLUDED.permissions_json,updated_at=EXCLUDED.updated_at", (telegram_user_id, api_key, api_secret, environment == "testnet", environment, json.dumps(permissions), now, now))
 
+    def save_okx_connection(self, telegram_user_id: int, api_key: bytes, api_secret: bytes, passphrase: bytes, account: dict) -> None:
+        now = datetime.now(UTC)
+        with self.connection() as conn:
+            conn.execute("INSERT INTO bybit_connections (telegram_user_id,encrypted_api_key,encrypted_api_secret,encrypted_passphrase,provider,is_testnet,environment,permissions_json,connected_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(telegram_user_id) DO UPDATE SET encrypted_api_key=EXCLUDED.encrypted_api_key,encrypted_api_secret=EXCLUDED.encrypted_api_secret,encrypted_passphrase=EXCLUDED.encrypted_passphrase,provider=EXCLUDED.provider,is_testnet=EXCLUDED.is_testnet,environment=EXCLUDED.environment,permissions_json=EXCLUDED.permissions_json,updated_at=EXCLUDED.updated_at", (telegram_user_id, api_key, api_secret, passphrase, "okx", False, "demo", json.dumps(account), now, now))
+
     def dashboard(self, telegram_user_id: int) -> dict:
         with self.connection() as conn:
-            row = conn.execute("SELECT u.telegram_user_id,u.first_name,c.environment,c.connected_at,s.paper_automation_enabled,s.max_order_notional,s.max_daily_loss FROM users u LEFT JOIN bybit_connections c ON c.telegram_user_id=u.telegram_user_id LEFT JOIN user_automation_settings s ON s.telegram_user_id=u.telegram_user_id WHERE u.telegram_user_id=%s", (telegram_user_id,)).fetchone()
+            row = conn.execute("SELECT u.telegram_user_id,u.first_name,c.provider,c.environment,c.connected_at,s.paper_automation_enabled,s.max_order_notional,s.max_daily_loss FROM users u LEFT JOIN bybit_connections c ON c.telegram_user_id=u.telegram_user_id LEFT JOIN user_automation_settings s ON s.telegram_user_id=u.telegram_user_id WHERE u.telegram_user_id=%s", (telegram_user_id,)).fetchone()
         if not row:
             return {"connected": False, "paper_automation_enabled": False}
-        return {"name": row["first_name"], "connected": row["connected_at"] is not None, "environment": row["environment"], "paper_automation_enabled": bool(row["paper_automation_enabled"]), "max_order_notional": row["max_order_notional"], "max_daily_loss": row["max_daily_loss"]}
+        return {"name": row["first_name"], "connected": row["connected_at"] is not None, "provider": row["provider"], "environment": row["environment"], "paper_automation_enabled": bool(row["paper_automation_enabled"]), "max_order_notional": row["max_order_notional"], "max_daily_loss": row["max_daily_loss"]}
 
     def connection_environment(self, user_id: int) -> str | None:
         with self.connection() as conn:
             row = conn.execute("SELECT environment FROM bybit_connections WHERE telegram_user_id=%s", (user_id,)).fetchone()
         return row["environment"] if row else None
+
+    def connection_provider(self, user_id: int) -> str | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT provider FROM bybit_connections WHERE telegram_user_id=%s", (user_id,)).fetchone()
+        return row["provider"] if row else None
 
     def update_paper_settings(self, telegram_user_id: int, enabled: bool, max_order_notional: Decimal, max_daily_loss: Decimal) -> None:
         if max_order_notional <= 0 or max_daily_loss <= 0:
@@ -295,7 +326,7 @@ class PostgreSQLDatabase:
 
     def demo_automation_users(self) -> list[dict]:
         with self.connection() as conn:
-            rows = conn.execute("SELECT p.*,c.encrypted_api_key,c.encrypted_api_secret FROM automation_profiles p JOIN bybit_connections c ON c.telegram_user_id=p.telegram_user_id WHERE p.enabled=TRUE AND c.environment='demo'").fetchall()
+            rows = conn.execute("SELECT p.*,c.encrypted_api_key,c.encrypted_api_secret FROM automation_profiles p JOIN bybit_connections c ON c.telegram_user_id=p.telegram_user_id WHERE p.enabled=TRUE AND c.provider='bybit' AND c.environment='demo'").fetchall()
         return [dict(row) for row in rows]
 
     def existing_order(self, key: str) -> OrderResult | None:
