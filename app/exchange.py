@@ -113,6 +113,15 @@ class OKXDemoClient:
             raise ExchangeError(data.get("msg", "Could not reconcile OKX order"))
         return data.get("data", [None])[0]
 
+    async def swap_positions(self) -> list[dict]:
+        request_path = "/api/v5/account/positions?instType=SWAP"
+        session = await self._session()
+        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0":
+            raise ExchangeError(data.get("msg", "Could not retrieve OKX Demo positions"))
+        return [row for row in data.get("data", []) if Decimal(row.get("pos") or "0") != 0]
+
     async def account_balance(self) -> Decimal:
         request_path = "/api/v5/account/balance?ccy=USDT"
         session = await self._session()
