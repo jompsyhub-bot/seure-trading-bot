@@ -93,7 +93,7 @@ class FuturesPreviewRequest(BaseModel):
     symbol: Literal["BTCUSDT", "ETHUSDT"]
     side: Literal["long", "short"]
     leverage: int = Field(ge=1, le=100)
-    margin_usdt: Decimal = Field(gt=0, le=Decimal("10000"))
+    margin_usdt: Decimal = Field(gt=0)
 
 
 def telegram_user(init_data: str | None) -> dict:
@@ -276,8 +276,6 @@ async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: 
         if leverage > maximum_leverage:
             raise HTTPException(400, f"{inst_id} supports up to {maximum_leverage}× leverage on OKX.")
         requested_notional = request.margin_usdt * leverage
-        if requested_notional > settings.max_position_notional:
-            raise HTTPException(400, f"Requested exposure is {requested_notional} USDT; this bot's hard position limit is {settings.max_position_notional} USDT.")
         multiplier = Decimal(instrument.get("ctMult") or "1")
         contract_value = Decimal(instrument["ctVal"]) * multiplier
         contract_notional = contract_value * price
@@ -286,9 +284,10 @@ async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: 
             raise HTTPException(400, f"Margin is too small for OKX's {instrument['minSz']} contract minimum at the current price.")
         actual_notional = contracts * contract_notional
         initial_margin = actual_notional / leverage
-        if initial_margin > available_balance:
-            raise HTTPException(400, f"Insufficient Demo balance: about {initial_margin:.2f} USDT margin is needed, but only {available_balance:.2f} USDT is available.")
-        return {"preview_only": True, "exchange": "okx", "environment": "demo", "instrument": inst_id, "side": request.side, "mark_price": str(price), "leverage": str(leverage), "contracts": str(contracts), "contract_notional_usdt": str(contract_notional), "estimated_notional_usdt": str(actual_notional), "estimated_initial_margin_usdt": str(initial_margin), "available_usdt": str(available_balance), "remaining_usdt_before_fees": str(available_balance - initial_margin), "position_mode": "Not changed by this preview", "liquidation_price": "Not estimated: it depends on OKX risk tiers, maintenance margin, account mode, and other positions.", "next_step": "No order was placed. Execution requires a separate confirmation-and-reconciliation build step."}
+        permitted_margin = available_balance * settings.max_demo_margin_pct / Decimal("100")
+        if initial_margin > permitted_margin:
+            raise HTTPException(400, f"Balance safety check: about {initial_margin:.2f} USDT margin is needed. This ticket permits up to {permitted_margin:.2f} USDT ({settings.max_demo_margin_pct}% of your {available_balance:.2f} USDT Demo balance), leaving a buffer for fees and adverse moves.")
+        return {"preview_only": True, "exchange": "okx", "environment": "demo", "instrument": inst_id, "side": request.side, "mark_price": str(price), "leverage": str(leverage), "contracts": str(contracts), "contract_notional_usdt": str(contract_notional), "estimated_notional_usdt": str(actual_notional), "estimated_initial_margin_usdt": str(initial_margin), "available_usdt": str(available_balance), "maximum_recommended_margin_usdt": str(permitted_margin), "remaining_usdt_before_fees": str(available_balance - initial_margin), "position_mode": "Not changed by this preview", "liquidation_price": "Not estimated: it depends on OKX risk tiers, maintenance margin, account mode, and other positions.", "next_step": "No order was placed. Execution requires a separate confirmation-and-reconciliation build step."}
     except HTTPException:
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
