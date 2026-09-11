@@ -104,6 +104,24 @@ class OKXDemoClient:
             raise ExchangeError(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo order")
         return item
 
+    async def close_market_swap(self, *, inst_id: str, side: str, position_side: str, contracts: Decimal, client_order_id: str) -> dict:
+        """Submit a reduce-only market order for an existing OKX Demo swap position."""
+        if side not in {"buy", "sell"}:
+            raise ValueError("A close order must use buy or sell")
+        if position_side not in {"net", "long", "short"}:
+            raise ValueError("Unsupported OKX position side")
+        if contracts <= 0:
+            raise ValueError("Close size must be greater than zero")
+        request_path = "/api/v5/trade/order"
+        body = json.dumps({"instId": inst_id, "tdMode": "isolated", "side": side, "posSide": position_side, "ordType": "market", "sz": str(contracts), "reduceOnly": True, "clOrdId": client_order_id}, separators=(",", ":"))
+        session = await self._session()
+        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
+            data = await self._response_json(response)
+        item = data.get("data", [{}])[0]
+        if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
+            raise ExchangeError(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo close order")
+        return item
+
     async def order_detail(self, inst_id: str, order_id: str) -> dict | None:
         request_path = f"/api/v5/trade/order?instId={inst_id}&ordId={order_id}"
         session = await self._session()
