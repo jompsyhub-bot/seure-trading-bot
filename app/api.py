@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
 from typing import Literal
 from contextlib import asynccontextmanager
@@ -87,6 +87,13 @@ class BacktestRequest(BaseModel):
 
 class LeverageRequest(BaseModel):
     symbol: Literal["BTCUSDT", "ETHUSDT"]
+
+
+class FuturesPreviewRequest(BaseModel):
+    symbol: Literal["BTCUSDT", "ETHUSDT"]
+    side: Literal["long", "short"]
+    leverage: int = Field(ge=1, le=100)
+    margin_usdt: Decimal = Field(gt=0, le=Decimal("10000"))
 
 
 def telegram_user(init_data: str | None) -> dict:
@@ -236,14 +243,55 @@ async def leverage_options(request: LeverageRequest, x_telegram_init_data: str |
     user = telegram_user(x_telegram_init_data)
     environment = database.connection_environment(int(user["id"]))
     provider = database.connection_provider(int(user["id"]))
-    if environment != "demo" or provider != "bybit":
-        raise HTTPException(400, "OKX futures leverage lookup will be added with the OKX execution adapter. No order can be placed yet.")
-    client = BybitClient("", "", environment="demo")
+    if environment != "demo" or provider != "okx":
+        raise HTTPException(400, "Connect an OKX Demo account before checking futures rules.")
+    inst_id = {"BTCUSDT": "BTC-USDT-SWAP", "ETHUSDT": "ETH-USDT-SWAP"}[request.symbol]
+    client = OKXDemoClient("", "", "")
     try:
-        instrument = await client.linear_instrument(request.symbol)
-        limits = instrument["leverageFilter"]
-        return {"symbol": request.symbol, "min_leverage": limits["minLeverage"], "max_leverage": limits["maxLeverage"], "leverage_step": limits["leverageStep"], "tick_size": instrument["priceFilter"]["tickSize"], "min_qty": instrument["lotSizeFilter"]["minOrderQty"]}
+        instrument = await client.swap_instrument(inst_id)
+        return {"symbol": request.symbol, "instrument": inst_id, "min_leverage": "1", "max_leverage": instrument.get("lever", "1"), "leverage_step": "1", "tick_size": instrument["tickSz"], "min_contracts": instrument["minSz"], "contract_value": instrument["ctVal"], "contract_currency": instrument["ctValCcy"], "state": instrument["state"]}
     except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
         raise HTTPException(502, f"Futures rules unavailable: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/futures/preview")
+async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Calculate an OKX Demo perpetual order safely; this endpoint never submits it."""
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    credentials = database.exchange_credentials(user_id)
+    if not credentials or credentials.get("provider") != "okx" or credentials.get("environment") != "demo":
+        raise HTTPException(400, "Connect an OKX Demo account first.")
+    if not settings.encryption_key or not credentials.get("encrypted_passphrase"):
+        raise HTTPException(503, "OKX Demo credentials are incomplete. Reconnect the account.")
+    vault = CredentialVault(settings.encryption_key)
+    client = OKXDemoClient(vault.decrypt(credentials["encrypted_api_key"]), vault.decrypt(credentials["encrypted_api_secret"]), vault.decrypt(credentials["encrypted_passphrase"]))
+    inst_id = {"BTCUSDT": "BTC-USDT-SWAP", "ETHUSDT": "ETH-USDT-SWAP"}[request.symbol]
+    try:
+        instrument, price, available_balance = await asyncio.gather(client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
+        maximum_leverage = Decimal(instrument.get("lever") or "1")
+        leverage = Decimal(request.leverage)
+        if leverage > maximum_leverage:
+            raise HTTPException(400, f"{inst_id} supports up to {maximum_leverage}× leverage on OKX.")
+        requested_notional = request.margin_usdt * leverage
+        if requested_notional > settings.max_position_notional:
+            raise HTTPException(400, f"Requested exposure is {requested_notional} USDT; this bot's hard position limit is {settings.max_position_notional} USDT.")
+        multiplier = Decimal(instrument.get("ctMult") or "1")
+        contract_value = Decimal(instrument["ctVal"]) * multiplier
+        contract_notional = contract_value * price
+        contracts = (requested_notional / contract_notional).to_integral_value(rounding=ROUND_DOWN)
+        if contracts < Decimal(instrument["minSz"]):
+            raise HTTPException(400, f"Margin is too small for OKX's {instrument['minSz']} contract minimum at the current price.")
+        actual_notional = contracts * contract_notional
+        initial_margin = actual_notional / leverage
+        if initial_margin > available_balance:
+            raise HTTPException(400, f"Insufficient Demo balance: about {initial_margin:.2f} USDT margin is needed, but only {available_balance:.2f} USDT is available.")
+        return {"preview_only": True, "exchange": "okx", "environment": "demo", "instrument": inst_id, "side": request.side, "mark_price": str(price), "leverage": str(leverage), "contracts": str(contracts), "contract_notional_usdt": str(contract_notional), "estimated_notional_usdt": str(actual_notional), "estimated_initial_margin_usdt": str(initial_margin), "available_usdt": str(available_balance), "remaining_usdt_before_fees": str(available_balance - initial_margin), "position_mode": "Not changed by this preview", "liquidation_price": "Not estimated: it depends on OKX risk tiers, maintenance margin, account mode, and other positions.", "next_step": "No order was placed. Execution requires a separate confirmation-and-reconciliation build step."}
+    except HTTPException:
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
+        raise HTTPException(502, f"OKX futures preview unavailable: {exc}") from None
     finally:
         await client.close()
