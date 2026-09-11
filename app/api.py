@@ -36,10 +36,13 @@ async def lifespan(app: FastAPI):
     """Start the experimental worker only when credential encryption is available."""
     task = None
     position_task = None
+    ticker_task = None
     worker = None
     notifier = TelegramNotifier(settings.telegram_token)
     app.state.notifier = notifier
     app.state.futures_subscribers = {}
+    app.state.futures_price_preferences = {}
+    ticker_task = asyncio.create_task(monitor_okx_public_prices(), name="okx-demo-public-tickers")
     if settings.encryption_key:
         worker = DemoAutomationWorker(database, CredentialVault(settings.encryption_key), notifier)
         task = asyncio.create_task(worker.run(), name="demo-automation-worker")
@@ -59,6 +62,12 @@ async def lifespan(app: FastAPI):
             position_task.cancel()
             try:
                 await position_task
+            except asyncio.CancelledError:
+                pass
+        if ticker_task:
+            ticker_task.cancel()
+            try:
+                await ticker_task
             except asyncio.CancelledError:
                 pass
         await notifier.close()
@@ -155,6 +164,47 @@ async def publish_futures_event(user_id: int, event_type: str) -> None:
             await socket.send_json({"type": event_type})
         except (RuntimeError, WebSocketDisconnect):
             api.state.futures_subscribers.get(user_id, set()).discard(socket)
+
+
+async def publish_live_price(instrument: str, price: str) -> None:
+    preferences = getattr(api.state, "futures_price_preferences", {})
+    for socket, selected_instrument in list(preferences.items()):
+        if selected_instrument != instrument:
+            continue
+        try:
+            await socket.send_json({"type": "ticker", "instrument": instrument, "price": price})
+        except (RuntimeError, WebSocketDisconnect):
+            preferences.pop(socket, None)
+
+
+async def monitor_okx_public_prices() -> None:
+    """One server-side public feed for the two supported Demo swap markets."""
+    instruments = {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
+    delay = 1
+    while True:
+        client = OKXDemoClient("", "", "")
+        try:
+            async for update in client.public_ticker_events(instruments):
+                delay = 1
+                await publish_live_price(str(update["instId"]), str(update["last"]))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("OKX Demo public ticker feed unavailable: %s", exc)
+            # Keep the ticket informative during a transient WebSocket outage.
+            # This uses public, credential-free REST and is intentionally only
+            # a fallback; the WebSocket remains the normal real-time path.
+            try:
+                ordered_instruments = sorted(instruments)
+                prices = await asyncio.gather(*(client.last_price(instrument) for instrument in ordered_instruments))
+                for instrument, price in zip(ordered_instruments, prices, strict=True):
+                    await publish_live_price(instrument, str(price))
+            except Exception as fallback_exc:
+                log.warning("OKX Demo ticker fallback unavailable: %s", fallback_exc)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+        finally:
+            await client.close()
 
 
 def active_position_keys(rows: list[dict]) -> set[tuple[str, str]]:
@@ -279,16 +329,24 @@ async def futures_updates(websocket: WebSocket) -> None:
     await websocket.accept()
     subscribers = api.state.futures_subscribers.setdefault(user_id, set())
     subscribers.add(websocket)
+    api.state.futures_price_preferences[websocket] = "BTC-USDT-SWAP"
     try:
-        await websocket.send_json({"type": "connected", "environment": "demo"})
+        await websocket.send_json({"type": "connected", "environment": "demo", "price_instrument": "BTC-USDT-SWAP"})
         while True:
-            # The Mini App sends a harmless keepalive. State is sent by the
-            # server only after an authenticated exchange event.
-            await websocket.receive_text()
+            message = await websocket.receive_text()
+            try:
+                payload = json.loads(message)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "subscribe_ticker":
+                instrument = payload.get("instrument")
+                if instrument in {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}:
+                    api.state.futures_price_preferences[websocket] = instrument
     except WebSocketDisconnect:
         pass
     finally:
         subscribers.discard(websocket)
+        api.state.futures_price_preferences.pop(websocket, None)
 
 
 @api.get("/health")
