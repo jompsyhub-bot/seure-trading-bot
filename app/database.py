@@ -147,8 +147,17 @@ class SQLiteDatabase:
 
     def history(self, user_id: int, limit: int = 20) -> list[dict]:
         with self.connection() as conn:
-            rows = conn.execute("SELECT symbol,side,status,fill_price,quantity,created_at FROM orders WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit)).fetchall()
+            rows = conn.execute("SELECT order_id,symbol,side,status,fill_price,quantity,realized_pnl,created_at,updated_at FROM orders WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit)).fetchall()
         return [dict(row) for row in rows]
+
+    def orders_for_sync(self, user_id: int, limit: int = 30) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT idempotency_key,order_id,symbol FROM orders WHERE user_id=? AND order_id IS NOT NULL ORDER BY updated_at DESC LIMIT ?", (user_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def reconcile_exchange_order(self, key: str, status: str, price: Decimal, quantity: Decimal, realized_pnl: Decimal) -> None:
+        with self.connection() as conn:
+            conn.execute("UPDATE orders SET status=?,fill_price=?,quantity=?,realized_pnl=?,updated_at=? WHERE idempotency_key=?", (status, str(price), str(quantity), str(realized_pnl), datetime.now(UTC).isoformat(), key))
 
     def demo_automation_users(self) -> list[dict]:
         with self.connection() as conn:
@@ -331,8 +340,17 @@ class PostgreSQLDatabase:
 
     def history(self, user_id: int, limit: int = 20) -> list[dict]:
         with self.connection() as conn:
-            rows = conn.execute("SELECT symbol,side,status,fill_price,quantity,created_at FROM orders WHERE user_id=%s ORDER BY id DESC LIMIT %s", (user_id, limit)).fetchall()
+            rows = conn.execute("SELECT order_id,symbol,side,status,fill_price,quantity,realized_pnl,created_at,updated_at FROM orders WHERE user_id=%s ORDER BY id DESC LIMIT %s", (user_id, limit)).fetchall()
         return [dict(row) for row in rows]
+
+    def orders_for_sync(self, user_id: int, limit: int = 30) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT idempotency_key,order_id,symbol FROM orders WHERE user_id=%s AND order_id IS NOT NULL ORDER BY updated_at DESC LIMIT %s", (user_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def reconcile_exchange_order(self, key: str, status: str, price: Decimal, quantity: Decimal, realized_pnl: Decimal) -> None:
+        with self.connection() as conn:
+            conn.execute("UPDATE orders SET status=%s,fill_price=%s,quantity=%s,realized_pnl=%s,updated_at=%s WHERE idempotency_key=%s", (status, str(price), str(quantity), str(realized_pnl), datetime.now(UTC), key))
 
     def demo_automation_users(self) -> list[dict]:
         with self.connection() as conn:
