@@ -49,7 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     context.bot_data["database"].upsert_user(user.id, user.username, user.first_name)
     settings: Settings = context.bot_data["settings"]
-    text = "Welcome. Connect Bybit and manage your paper-trading settings through the secure dashboard. Never send API keys in chat."
+    text = "Welcome. Connect OKX Demo Trading and manage your paper-trading settings through the secure dashboard. Never send API credentials in chat."
     if settings.mini_app_url:
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Open trading dashboard", web_app=WebAppInfo(settings.mini_app_url))]])
         await update.effective_message.reply_text(text, reply_markup=keyboard)
