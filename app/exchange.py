@@ -20,13 +20,11 @@ class ExchangeError(RuntimeError):
 
 
 class OKXDemoClient:
-    """Read-only validation client for OKX Demo Trading.
-
-    Order execution is intentionally not included until its futures-specific
-    risk, contract-sizing, and reconciliation layer has been tested.
-    """
+    """OKX Demo futures adapter, including authenticated private updates."""
 
     base_url = "https://www.okx.com"
+    # This is the documented Demo environment, not the live private feed.
+    demo_private_ws_url = "wss://wspap.okx.com:8443/ws/v5/private"
 
     def __init__(self, api_key: str, api_secret: str, passphrase: str):
         self.api_key = api_key
@@ -44,6 +42,53 @@ class OKXDemoClient:
         if self.session:
             await self.session.close()
             self.session = None
+
+    async def private_events(self):
+        """Yield authenticated OKX Demo private-channel events.
+
+        Credentials are used only to establish the server-side connection; they
+        are never sent to the browser or included in event payloads.
+        """
+        timestamp = str(int(time.time()))
+        prehash = f"{timestamp}GET/users/self/verify"
+        signature = base64.b64encode(
+            hmac.new(self.api_secret.encode(), prehash.encode(), hashlib.sha256).digest()
+        ).decode()
+        session = await self._session()
+        async with session.ws_connect(
+            self.demo_private_ws_url, heartbeat=20, receive_timeout=45
+        ) as socket:
+            await socket.send_json({"op": "login", "args": [{
+                "apiKey": self.api_key,
+                "passphrase": self.passphrase,
+                "timestamp": timestamp,
+                "sign": signature,
+            }]})
+            authenticated = False
+            async for message in socket:
+                if message.type == aiohttp.WSMsgType.TEXT:
+                    if message.data == "ping":
+                        await socket.send_str("pong")
+                        continue
+                    try:
+                        payload = json.loads(message.data)
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("event") == "login":
+                        if payload.get("code") != "0":
+                            raise ExchangeError(payload.get("msg", "OKX Demo WebSocket login failed"))
+                        authenticated = True
+                        await socket.send_json({"id": uuid.uuid4().hex[:24], "op": "subscribe", "args": [
+                            {"channel": "positions", "instType": "ANY", "extraParams": '{"updateInterval":"0"}'},
+                            {"channel": "orders", "instType": "SWAP"},
+                        ]})
+                        continue
+                    if payload.get("event") == "error":
+                        raise ExchangeError(payload.get("msg", "OKX Demo WebSocket subscription failed"))
+                    if authenticated and payload.get("arg"):
+                        yield payload
+                elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
+                    raise ExchangeError("OKX Demo WebSocket disconnected")
 
     def _headers(self, method: str, request_path: str, body: str = "") -> dict[str, str]:
         timestamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
