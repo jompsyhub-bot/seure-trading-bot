@@ -5,8 +5,10 @@ import hmac
 import json
 import time
 import uuid
+import base64
 from urllib.parse import urlencode
 from decimal import Decimal, ROUND_DOWN
+from datetime import UTC, datetime
 
 import aiohttp
 
@@ -15,6 +17,59 @@ from .models import OrderIntent, OrderResult
 
 class ExchangeError(RuntimeError):
     pass
+
+
+class OKXDemoClient:
+    """Read-only validation client for OKX Demo Trading.
+
+    Order execution is intentionally not included until its futures-specific
+    risk, contract-sizing, and reconciliation layer has been tested.
+    """
+
+    base_url = "https://www.okx.com"
+
+    def __init__(self, api_key: str, api_secret: str, passphrase: str):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.passphrase = passphrase
+        self.session: aiohttp.ClientSession | None = None
+
+    async def _session(self) -> aiohttp.ClientSession:
+        if self.session is None:
+            connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=15))
+        return self.session
+
+    async def close(self) -> None:
+        if self.session:
+            await self.session.close()
+            self.session = None
+
+    def _headers(self, method: str, request_path: str, body: str = "") -> dict[str, str]:
+        timestamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        prehash = f"{timestamp}{method.upper()}{request_path}{body}"
+        signature = base64.b64encode(hmac.new(self.api_secret.encode(), prehash.encode(), hashlib.sha256).digest()).decode()
+        return {
+            "OK-ACCESS-KEY": self.api_key,
+            "OK-ACCESS-SIGN": signature,
+            "OK-ACCESS-TIMESTAMP": timestamp,
+            "OK-ACCESS-PASSPHRASE": self.passphrase,
+            "x-simulated-trading": "1",
+            "Content-Type": "application/json",
+        }
+
+    async def account_config(self) -> dict:
+        request_path = "/api/v5/account/config"
+        session = await self._session()
+        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+            try:
+                data = await response.json(content_type=None)
+            except (ValueError, UnicodeDecodeError):
+                raise ExchangeError(f"OKX returned a non-API response (HTTP {response.status})") from None
+        if not isinstance(data, dict) or data.get("code") != "0" or not data.get("data"):
+            message = data.get("msg", "OKX Demo API validation failed") if isinstance(data, dict) else "OKX Demo API validation failed"
+            raise ExchangeError(message)
+        return data["data"][0]
 
 
 class BybitClient:
