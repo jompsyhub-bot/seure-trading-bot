@@ -90,6 +90,33 @@ class OKXDemoClient:
                 elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
                     raise ExchangeError("OKX Demo WebSocket disconnected")
 
+    async def public_ticker_events(self, instruments: set[str]):
+        """Yield public Demo ticker updates without exposing an OKX socket to Telegram's WebView."""
+        session = await self._session()
+        async with session.ws_connect(
+            "wss://wspap.okx.com:8443/ws/v5/public", heartbeat=20, receive_timeout=45
+        ) as socket:
+            await socket.send_json({"op": "subscribe", "args": [
+                {"channel": "tickers", "instId": instrument} for instrument in sorted(instruments)
+            ]})
+            async for message in socket:
+                if message.type == aiohttp.WSMsgType.TEXT:
+                    if message.data == "ping":
+                        await socket.send_str("pong")
+                        continue
+                    try:
+                        payload = json.loads(message.data)
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("event") == "error":
+                        raise ExchangeError(payload.get("msg", "OKX Demo ticker subscription failed"))
+                    if payload.get("arg", {}).get("channel") == "tickers":
+                        for row in payload.get("data") or []:
+                            if row.get("instId") in instruments and row.get("last"):
+                                yield row
+                elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
+                    raise ExchangeError("OKX Demo public ticker feed disconnected")
+
     def _headers(self, method: str, request_path: str, body: str = "") -> dict[str, str]:
         timestamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         prehash = f"{timestamp}{method.upper()}{request_path}{body}"
