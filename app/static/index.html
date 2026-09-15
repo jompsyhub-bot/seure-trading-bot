@@ -10,7 +10,7 @@
   --bg:#0b1020; --card:#151e33; --border:#283858;
   --text:#eef3ff; --muted:#a8b4cd;
   --accent:#628cff; --accent-soft:#9db6ff;
-  --good:#4dddac; --warn:#f3c46c; --danger:#6c2d41; --field:#202c45;
+  --good:#4dddac; --warn:#f3c46c; --danger:#c75161; --field:#202c45;
 }
 *{box-sizing:border-box}
 body{
@@ -25,6 +25,7 @@ header b{font-size:16px;letter-spacing:.2px}
   border-radius:999px;padding:4px 9px;white-space:nowrap}
 h1{font-size:24px;margin:10px 0 6px}
 h2{font-size:17px;margin:0 0 8px}
+h3{font-size:15px;margin:14px 0 6px}
 p{margin:8px 0}
 .muted{color:var(--muted)}
 .view{display:none;animation:fade .18s ease}
@@ -34,7 +35,7 @@ p{margin:8px 0}
   border-radius:14px;padding:16px;margin:14px 0}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .metric{font-size:21px;font-weight:700;margin-top:6px}
-.good{color:var(--good)} .warn{color:var(--warn)}
+.good{color:var(--good)} .warn{color:var(--warn)} .loss{color:#ff8997}
 label{display:block;font-size:13px;color:var(--muted);margin-top:10px}
 input,select,button{
   width:100%;border:0;border-radius:10px;padding:12px;margin:6px 0;
@@ -48,6 +49,7 @@ button:active{filter:brightness(.9)}
 button:disabled{opacity:.55;cursor:not-allowed}
 button.stop{background:var(--danger)}
 button.ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
+button.mini{width:auto;padding:6px 10px;font-size:12px;margin:0;background:var(--danger)}
 .checkbox{display:flex;align-items:center;gap:10px;margin:10px 0;font-size:14px}
 .checkbox input{width:auto;margin:0;accent-color:var(--accent)}
 .nav{position:fixed;bottom:0;left:0;right:0;background:#121a2c;
@@ -66,6 +68,11 @@ table{width:100%;font-size:13px;border-collapse:collapse}
 td,th{padding:9px 0;text-align:left;border-bottom:1px solid var(--border)}
 th{color:var(--muted);font-weight:500;font-size:12px}
 .empty{color:var(--muted);text-align:center;padding:20px 0;font-size:14px}
+.feed{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.price{font-size:24px;font-weight:800;line-height:1.2}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:#a8b4cd;margin-right:6px;vertical-align:middle}
+.dot.on{background:var(--good)}
 #toast{
   position:fixed;bottom:84px;left:50%;transform:translateX(-50%) translateY(20px);
   background:#1d2a45;border:1px solid var(--border);color:var(--text);
@@ -84,7 +91,7 @@ th{color:var(--muted);font-weight:500;font-size:12px}
   <span class="tag">DEMO ONLY</span>
 </header>
 
-<!-- ============ ACCOUNT (default view) ============ -->
+<!-- ============ ACCOUNT (default when disconnected) ============ -->
 <section id="account" class="view active">
   <h1>Connect your account</h1>
   <p class="muted">Link an OKX Demo API key to get started.</p>
@@ -160,6 +167,82 @@ th{color:var(--muted);font-weight:500;font-size:12px}
   </div>
 </section>
 
+<!-- ============ FUTURES ============ -->
+<section id="futures" class="view">
+  <p class="muted" style="margin-top:10px">OKX DEMO · FUTURES TICKET</p>
+  <h1 style="margin-top:0">Perpetuals</h1>
+
+  <div class="card feed">
+    <div>
+      <span id="feedDot" class="dot"></span>
+      <span id="feedState" class="muted">Connecting live feed…</span>
+    </div>
+    <div style="text-align:right">
+      <div id="priceSymbol" class="muted">BTC-USDT-SWAP</div>
+      <div id="livePrice" class="price">—</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Account readiness</h2>
+    <button class="ghost" onclick="futAccount()">Check account &amp; position mode</button>
+    <p id="accountText" class="good"></p>
+    <label for="positionMode">Position mode</label>
+    <select id="positionMode">
+      <option value="net_mode">Net mode</option>
+      <option value="long_short_mode">Long/short mode</option>
+    </select>
+    <button class="ghost" onclick="setMode()">Set Demo position mode</button>
+  </div>
+
+  <div class="card">
+    <h2>Order plan</h2>
+    <label for="futSymbol">Market</label>
+    <select id="futSymbol" onchange="subscribeTicker()">
+      <option>BTCUSDT</option>
+      <option>ETHUSDT</option>
+    </select>
+    <button class="ghost" onclick="rules()">Load live contract rules</button>
+    <p id="range" class="good"></p>
+
+    <div id="ticket" class="hidden">
+      <div class="grid">
+        <div>
+          <label for="side">Side</label>
+          <select id="side">
+            <option value="long">Long</option>
+            <option value="short">Short</option>
+          </select>
+        </div>
+        <div>
+          <label for="leverage">Leverage</label>
+          <select id="leverage"></select>
+        </div>
+      </div>
+      <label for="margin">Margin (USDT)</label>
+      <input id="margin" inputmode="decimal" value="1" placeholder="1">
+      <button class="ghost" onclick="preview()">Calculate live preview</button>
+
+      <div id="protection" class="hidden">
+        <div class="grid">
+          <div><label for="tp">Take-profit price</label><input id="tp" inputmode="decimal" placeholder="0.00"></div>
+          <div><label for="sl">Stop-loss price</label><input id="sl" inputmode="decimal" placeholder="0.00"></div>
+        </div>
+        <button class="stop" onclick="place()">Confirm &amp; place Demo order</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="futResult" class="card hidden"></div>
+
+  <div class="card">
+    <h2>Active trades &amp; bot history</h2>
+    <p class="muted">Updates live on OKX Demo private-feed events, with a five-second recovery refresh.</p>
+    <button class="ghost" onclick="loadPortfolio()">Refresh now</button>
+    <div id="portfolioOutput" class="muted">Loading…</div>
+  </div>
+</section>
+
 <!-- ============ ACTIVITY ============ -->
 <section id="activity" class="view">
   <h1>Activity</h1>
@@ -171,7 +254,7 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 <nav class="nav">
   <button data-view="overview" onclick="go('overview',this)"><span class="ico">🏠</span>Home</button>
   <button data-view="automate" onclick="go('automate',this)"><span class="ico">⚙️</span>Automate</button>
-  <button data-view="futures"  onclick="openFutures()"><span class="ico">📈</span>Futures</button>
+  <button data-view="futures"  onclick="go('futures',this)"><span class="ico">📈</span>Futures</button>
   <button data-view="activity" onclick="go('activity',this)"><span class="ico">🧾</span>Activity</button>
   <button data-view="account"  onclick="go('account',this)"><span class="ico">👤</span>Account</button>
 </nav>
@@ -179,6 +262,9 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 <div id="toast"></div>
 
 <script>
+/* =========================================================
+   Bootstrap
+========================================================= */
 const tg = window.Telegram?.WebApp;
 tg?.ready?.();
 tg?.expand?.();
@@ -211,6 +297,9 @@ function toast(message, isError = false) {
   toast._t = setTimeout(() => { el.className = ''; }, 2600);
 }
 
+/* =========================================================
+   Navigation
+========================================================= */
 function go(id, btn) {
   if (!state.connected && id !== 'account') {
     toast('Connect an account first');
@@ -221,18 +310,16 @@ function go(id, btn) {
     v.classList.toggle('active', v.id === id));
   document.querySelectorAll('.nav button').forEach(b =>
     b.classList.toggle('active', b === btn || b.dataset.view === id));
+  if (id === 'futures') initFutures();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function openFutures() {
-  if (!state.connected) { toast('Connect an account first'); return go('account'); }
-  window.location.href = 'futures.html';
-}
-
+/* =========================================================
+   Dashboard / automation / activity
+========================================================= */
 function render(d) {
   state.connected = !!d.connected;
 
-  // Account view
   document.getElementById('connectForm').classList.toggle('hidden', state.connected);
   document.getElementById('accountInfo').classList.toggle('hidden', !state.connected);
   if (state.connected) {
@@ -242,7 +329,6 @@ function render(d) {
     document.getElementById('accountEnv').textContent = env;
   }
 
-  // Home
   document.getElementById('welcome').textContent =
     d.name ? `Welcome, ${d.name}` : 'Your trading space';
   document.getElementById('summary').textContent = state.connected
@@ -260,7 +346,6 @@ function render(d) {
   autoEl.textContent = autoOn ? 'ACTIVE' : 'PAUSED';
   autoEl.className = `metric ${autoOn ? 'good' : 'warn'}`;
 
-  // Automate form
   const a = d.automation || {};
   document.getElementById('enabled').checked = !!a.enabled;
   document.getElementById('symbol').value   = a.symbol || 'BTCUSDT';
@@ -309,6 +394,16 @@ async function connect() {
   }
 }
 
+async function disconnect() {
+  if (!confirm('Disconnect this account?')) return;
+  try {
+    await api('/api/exchange/connection', { method: 'DELETE' });
+    await load();
+    toast('Account disconnected');
+    go('account', document.querySelector('.nav button[data-view="account"]'));
+  } catch (e) { toast(e.message, true); }
+}
+
 async function saveAuto() {
   try {
     await api('/api/automation', {
@@ -336,16 +431,6 @@ async function kill() {
   } catch (e) { toast(e.message, true); }
 }
 
-async function disconnect() {
-  if (!confirm('Disconnect this account?')) return;
-  try {
-    await api('/api/exchange/connection', { method: 'DELETE' });
-    await load();
-    toast('Account disconnected');
-    go('account', document.querySelector('.nav button[data-view="account"]'));
-  } catch (e) { toast(e.message, true); }
-}
-
 async function history() {
   const el = document.getElementById('history');
   try {
@@ -367,6 +452,253 @@ async function history() {
   }
 }
 
+/* =========================================================
+   Futures (merged from futures.html)
+========================================================= */
+let futInitialized = false;
+let futSocket = null, futKeepalive = null, futRetry = null;
+let futBusy = false, futOrderKey = '', futLatestPrice = null;
+
+const fut$ = id => document.getElementById(id);
+const futInstrument = () =>
+  fut$('futSymbol').value === 'BTCUSDT' ? 'BTC-USDT-SWAP' : 'ETH-USDT-SWAP';
+
+function initFutures() {
+  if (futInitialized) return;
+  futInitialized = true;
+  connectFutFeed();
+  loadPortfolio();
+  setInterval(loadPortfolio, 5000);
+}
+
+function futShowPrice(value) {
+  futLatestPrice = value;
+  fut$('livePrice').textContent = `${Number(value || 0).toFixed(2)} USDT`;
+  fut$('priceSymbol').textContent = futInstrument();
+}
+
+function subscribeTicker() {
+  futLatestPrice = null;
+  fut$('livePrice').textContent = '—';
+  fut$('priceSymbol').textContent = futInstrument();
+  fut$('feedDot').classList.remove('on');
+  fut$('feedState').textContent = 'Switching live price…';
+  if (futSocket?.readyState === WebSocket.OPEN) {
+    futSocket.send(JSON.stringify({ type: 'subscribe_ticker', instrument: futInstrument() }));
+  }
+}
+
+function connectFutFeed() {
+  clearTimeout(futRetry);
+  if (!tg?.initData) return;
+  if (futSocket?.readyState === WebSocket.OPEN ||
+      futSocket?.readyState === WebSocket.CONNECTING) return;
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  fut$('feedState').textContent = 'Connecting secure feed…';
+
+  try {
+    futSocket = new WebSocket(
+      `${proto}://${location.host}/ws/futures?init_data=${encodeURIComponent(tg.initData)}`
+    );
+    futSocket.onopen = () => {
+      subscribeTicker();
+      clearInterval(futKeepalive);
+      futKeepalive = setInterval(() => {
+        if (futSocket?.readyState === WebSocket.OPEN) {
+          futSocket.send(JSON.stringify({ type: 'keepalive' }));
+        }
+      }, 25000);
+    };
+    futSocket.onmessage = e => {
+      try {
+        const m = JSON.parse(e.data);
+        if (m.type === 'portfolio_changed') loadPortfolio();
+        if (m.type === 'ticker') {
+          futShowPrice(m.price);
+          fut$('feedDot').classList.add('on');
+          fut$('feedState').textContent = 'Live OKX Demo price';
+        }
+      } catch {}
+    };
+    futSocket.onclose = () => {
+      clearInterval(futKeepalive);
+      fut$('feedDot').classList.remove('on');
+      fut$('feedState').textContent = 'Secure feed reconnecting…';
+      futRetry = setTimeout(connectFutFeed, 3000);
+    };
+  } catch {
+    futRetry = setTimeout(connectFutFeed, 3000);
+  }
+}
+
+async function futAccount() {
+  try {
+    const d = await api('/api/futures/account');
+    fut$('accountText').textContent = `${d.account_mode} · ${d.position_mode}`;
+    const sel = fut$('positionMode');
+    sel.value = d.position_mode;
+    sel.disabled = !d.can_change_position_mode;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function setMode() {
+  const mode = fut$('positionMode').value;
+  if (!confirm(`Set OKX Demo position mode to ${mode}?`)) return;
+  try {
+    const r = await api('/api/futures/position-mode', {
+      method: 'POST',
+      body: JSON.stringify({ position_mode: mode })
+    });
+    toast(r.message || 'Position mode updated');
+    futAccount();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rules() {
+  try {
+    const d = await api('/api/futures/leverage-options', {
+      method: 'POST',
+      body: JSON.stringify({ symbol: fut$('futSymbol').value })
+    });
+    fut$('ticket').classList.remove('hidden');
+    fut$('range').textContent =
+      `${d.instrument}: 1×–${d.max_leverage}× · min ${d.min_contracts} contract(s)`;
+    const lev = fut$('leverage');
+    lev.innerHTML = '';
+    for (let x = 1; x <= Math.min(+d.max_leverage, 100); x++) {
+      lev.add(new Option(`${x}×`, x));
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+async function preview() {
+  try {
+    const d = await api('/api/futures/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        symbol: fut$('futSymbol').value,
+        side: fut$('side').value,
+        leverage: +fut$('leverage').value,
+        margin_usdt: fut$('margin').value
+      })
+    });
+    fut$('protection').classList.remove('hidden');
+    const res = fut$('futResult');
+    res.classList.remove('hidden');
+    const shownPrice = futLatestPrice ?? d.mark_price;
+    res.innerHTML = `
+      <h2>Live preview · no order placed</h2>
+      <p><strong>Current OKX price</strong> ${Number(shownPrice || 0).toFixed(2)} USDT</p>
+      <p>Contracts: <b>${d.contracts}</b></p>
+      <p>Exposure: ${Number(d.estimated_notional_usdt || 0).toFixed(2)} USDT ·
+         Margin: ${Number(d.estimated_initial_margin_usdt || 0).toFixed(2)} USDT</p>
+      <p>Available: ${Number(d.available_usdt || 0).toFixed(2)} USDT ·
+         Recommended ceiling: ${Number(d.maximum_recommended_margin_usdt || 0).toFixed(2)} USDT</p>
+    `;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function place() {
+  const tp = fut$('tp').value.trim();
+  const sl = fut$('sl').value.trim();
+  if (!tp || !sl) return toast('TP and SL are required.', true);
+  if (!futOrderKey) futOrderKey = crypto.randomUUID().replaceAll('-', '').slice(0, 28);
+  const side = fut$('side').value;
+  if (!confirm(`Place ONE OKX DEMO ${side.toUpperCase()} market order?\nTP ${tp} · SL ${sl}`)) return;
+  try {
+    const d = await api('/api/futures/demo-order', {
+      method: 'POST',
+      body: JSON.stringify({
+        symbol: fut$('futSymbol').value,
+        side,
+        leverage: +fut$('leverage').value,
+        margin_usdt: fut$('margin').value,
+        take_profit: tp,
+        stop_loss: sl,
+        client_order_id: futOrderKey,
+        confirmation: 'PLACE_DEMO_ORDER'
+      })
+    });
+    fut$('futResult').innerHTML =
+      `<h2>Demo order accepted</h2><p>${d.order_id} · ${d.status}</p>`;
+    futOrderKey = '';
+    loadPortfolio();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function closePosition(inst, side) {
+  if (!confirm(`Close the entire ${side} position for ${inst} at market on OKX DEMO?`)) return;
+  try {
+    const d = await api('/api/futures/close-position', {
+      method: 'POST',
+      body: JSON.stringify({
+        instrument: inst,
+        position_side: side,
+        confirmation: 'CLOSE_DEMO_POSITION'
+      })
+    });
+    toast(`Close accepted. Realized P&L: ${Number(d.realized_pnl_usdt || 0).toFixed(2)} USDT`);
+    loadPortfolio();
+  } catch (e) { toast(e.message, true); }
+}
+
+function pnl(v) {
+  const n = Number(v || 0).toFixed(2);
+  return `<span class="${Number(v || 0) < 0 ? 'loss' : 'good'}">${n} USDT</span>`;
+}
+
+async function loadPortfolio() {
+  if (futBusy) return;
+  futBusy = true;
+  try {
+    const d = await api('/api/portfolio');
+    const p = d.active_positions || [];
+    const h = d.bot_trade_history || [];
+
+    const active = p.length
+      ? `<table>
+          <tr><th>Market</th><th>Live P&amp;L</th><th></th></tr>
+          ${p.map(x => `<tr>
+            <td>${x.instrument}<br>
+              <span class="muted">
+                ${x.side} · ${x.contracts} cts · ${x.leverage}×<br>
+                Entry ${Number(x.entry_price || 0).toFixed(2)} ·
+                Mark ${Number(x.mark_price || 0).toFixed(2)}
+              </span>
+            </td>
+            <td>${pnl(x.unrealized_pnl)}</td>
+            <td><button class="mini" onclick="closePosition('${x.instrument}','${x.side}')">Close</button></td>
+          </tr>`).join('')}
+        </table>`
+      : 'No active OKX Demo positions.';
+
+    const hist = h.length
+      ? `<table>
+          <tr><th>Trade</th><th>Fill / status</th><th>Realized P&amp;L</th></tr>
+          ${h.map(x => `<tr>
+            <td>${x.symbol}<br><span class="muted">${x.side}</span></td>
+            <td>${x.status}<br>
+              <span class="muted">${Number(x.fill_price || 0).toFixed(2)} · ${x.quantity || '0'} cts</span>
+            </td>
+            <td>${pnl(x.realized_pnl)}</td>
+          </tr>`).join('')}
+        </table>`
+      : 'No bot-originated orders yet.';
+
+    fut$('portfolioOutput').innerHTML =
+      `<h3>Active positions (${p.length})</h3>${active}
+       <h3>Bot trade history</h3>${hist}`;
+  } catch (e) {
+    fut$('portfolioOutput').textContent = e.message;
+  } finally {
+    futBusy = false;
+  }
+}
+
+/* =========================================================
+   Boot
+========================================================= */
 load();
 </script>
 </body>
