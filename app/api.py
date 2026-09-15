@@ -315,6 +315,11 @@ async def futures_ticket() -> FileResponse:
     return FileResponse(static_dir / "futures.html")
 
 
+@api.get("/backtest")
+async def backtest_screen() -> FileResponse:
+    return FileResponse(static_dir / "backtest.html")
+
+
 @api.websocket("/ws/futures")
 async def futures_updates(websocket: WebSocket) -> None:
     """Authenticated push-only signal channel for the Telegram Mini App."""
