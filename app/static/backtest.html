@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+body{font:16px system-ui;background:#0b1020;color:#edf3ff;margin:0;padding:18px}main{max-width:540px;margin:auto}.card{background:#151e33;border:1px solid #283858;border-radius:14px;padding:15px;margin:13px 0}select,input,button{width:100%;box-sizing:border-box;padding:11px;margin:6px 0;border:0;border-radius:9px;font-size:15px}select,input{background:#202c45;color:white}button{background:#628cff;color:white;font-weight:bold}.muted{color:#a8b4cd}.warn{color:#f3c46c}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{font-size:21px;font-weight:bold;margin-top:5px}
+</style></head><body><main>
+<p class="muted">RELAY TRADE · RESEARCH</p><h1>Strategy backtest</h1>
+<div class="card"><p class="muted">Historical simulation only. It cannot start automation or place a trade.</p><p class="muted">Assumes next-candle entries, 0.10% fee each side, 0.05% entry slippage, and stop-loss first if both targets occur within one candle.</p><select id="symbol"><option>BTCUSDT</option><option>ETHUSDT</option></select><select id="interval"><option value="15">15 minute candles</option><option value="60">1 hour candles</option></select><div class="grid"><input id="rsi" value="30" placeholder="RSI threshold"><input id="order" value="10" placeholder="Order size USDT"><input id="stop" value="2" placeholder="Stop loss %"><input id="take" value="4" placeholder="Take profit %"></div><button onclick="run()">Run historical backtest</button></div>
+<div id="result" class="card muted">Choose settings and run a simulation.</div>
+<button onclick="location.href='/'">← Back to dashboard</button>
+</main><script>
+const tg=window.Telegram?.WebApp;tg?.ready();const H=()=>({'Content-Type':'application/json','X-Telegram-Init-Data':tg?.initData||''});
+async function run(){result.textContent='Loading historical candles…';try{const r=await fetch('/api/backtest',{method:'POST',headers:H(),body:JSON.stringify({symbol:symbol.value,interval:interval.value,rsi_threshold:+rsi.value,stop_loss_pct:+stop.value,take_profit_pct:+take.value,order_notional:+order.value})}),d=await r.json();if(!r.ok)throw Error(d.detail||'Backtest failed');const m=d.metrics;result.innerHTML=`<h2>Results</h2><div class="grid"><div>Return<div class="metric">${m.return_pct}%</div></div><div>Trades<div class="metric">${m.trades}</div></div><div>Win rate<div class="metric">${m.win_rate}%</div></div><div>Profit factor<div class="metric">${m.profit_factor??'—'}</div></div><div>Max drawdown<div class="metric">${m.max_drawdown_pct}%</div></div><div>Ending equity<div class="metric">$${m.ending_equity}</div></div></div><p class="muted">Modeled fees: $${m.fees}. Historical results do not predict future performance.</p>`}catch(e){result.innerHTML=`<span class="warn">${e.message}</span>`}}
+</script></body></html>
