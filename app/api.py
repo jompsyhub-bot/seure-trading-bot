@@ -647,9 +647,13 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
             raise
         await api.state.notifier.send(user_id, f"🧪 OKX Demo order accepted\n{request.side.upper()} {inst_id}\nLeverage: {leverage}× · Contracts: {contracts}\nOrder: {order_id}\nStatus: {status}\nTP: {request.take_profit} · SL: {request.stop_loss}")
         return {"accepted": True, "replayed": False, "exchange": "okx", "environment": "demo", "order_id": order_id, "status": status, "contracts": str(contracts), "estimated_initial_margin_usdt": str(initial_margin), "take_profit": str(request.take_profit), "stop_loss": str(request.stop_loss), "message": "Demo order accepted and reconciled. Check the OKX Demo Trading order/position screen as the source of truth."}
-    except HTTPException:
+    except HTTPException as exc:
+        # Safe diagnostic: never include credentials, init data, or request IDs.
+        # It makes user-facing 4xx safety rejections visible in Render logs.
+        log.info("OKX Demo order rejected: instrument=%s status=%s reason=%s", inst_id, exc.status_code, exc.detail)
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
+        log.warning("OKX Demo order exchange rejection: instrument=%s reason=%s", inst_id, exc)
         raise HTTPException(400, f"OKX Demo order was not placed: {exc}") from None
     finally:
         await client.close()
