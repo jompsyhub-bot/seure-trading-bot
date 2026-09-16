@@ -8,6 +8,7 @@ import asyncio
 import uuid
 import logging
 import json
+
 import aiohttp
 
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
@@ -323,15 +324,20 @@ async def backtest_screen() -> FileResponse:
 @api.websocket("/ws/futures")
 async def futures_updates(websocket: WebSocket) -> None:
     """Authenticated push-only signal channel for the Telegram Mini App."""
-    init_data = websocket.query_params.get("init_data")
+    await websocket.accept()
     try:
-        user = validate_init_data(init_data or "", settings.telegram_token)
+        # Sending init data as the first WebSocket message keeps it out of the
+        # URL, which Uvicorn and hosting access logs otherwise record.
+        auth_message = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+        auth_payload = json.loads(auth_message)
+        if auth_payload.get("type") != "authenticate":
+            raise ValueError("Missing WebSocket authentication")
+        user = validate_init_data(auth_payload.get("init_data") or "", settings.telegram_token)
         user_id = int(user["id"])
-    except (TelegramAuthError, KeyError, ValueError):
+    except (asyncio.TimeoutError, TelegramAuthError, KeyError, ValueError, json.JSONDecodeError):
         await websocket.close(code=1008, reason="Invalid Telegram authorization")
         return
     database.upsert_user(user_id, user.get("username"), user.get("first_name"))
-    await websocket.accept()
     subscribers = api.state.futures_subscribers.setdefault(user_id, set())
     subscribers.add(websocket)
     api.state.futures_price_preferences[websocket] = "BTC-USDT-SWAP"
