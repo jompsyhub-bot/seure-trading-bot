@@ -22,6 +22,17 @@ class ExchangeError(RuntimeError):
     pass
 
 
+class OrderRejected(ExchangeError):
+    """OKX explicitly rejected the order with a structured error response.
+
+    This is *not* ambiguous — the order was definitively not placed, so the
+    reservation it held can be safely released. Network timeouts and
+    connection drops do *not* raise this; they stay ambiguous on purpose so
+    a retry cannot accidentally double-submit.
+    """
+    pass
+
+
 class OKXDemoClient:
     """OKX Demo futures adapter, including authenticated private updates."""
 
@@ -227,7 +238,10 @@ class OKXDemoClient:
             data = await self._response_json(response)
         item = data.get("data", [{}])[0]
         if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
-            raise ExchangeError(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo order")
+            # Structured exchange rejection — the order was definitively not
+            # placed. OrderRejected lets the caller release the reservation
+            # so a corrected retry is not blocked by a stale lock.
+            raise OrderRejected(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo order")
         return item
 
     async def close_market_swap(self, *, inst_id: str, side: str, position_side: str, contracts: Decimal, client_order_id: str) -> dict:
@@ -244,7 +258,7 @@ class OKXDemoClient:
             data = await self._response_json(response)
         item = data.get("data", [{}])[0]
         if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
-            raise ExchangeError(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo close order")
+            raise OrderRejected(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo close order")
         return item
 
     async def order_detail(self, inst_id: str, order_id: str) -> dict | None:
@@ -280,23 +294,29 @@ class OKXDemoClient:
 
     async def swap_instrument(self, inst_id: str) -> dict:
         session = await self._session()
-        async with session.get(f"{self.base_url}/api/v5/public/instruments", params={"instType": "SWAP", "instId": inst_id}) as response:
+        async with session.get(
+            f"{self.base_url}/api/v5/public/instruments",
+            params={"instType": "SWAP", "instId": inst_id},
+            headers={"x-simulated-trading": "1"},
+        ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0" or not data.get("data"):
             raise ExchangeError(data.get("msg", f"No live OKX perpetual instrument found for {inst_id}"))
         return data["data"][0]
 
     async def list_swap_instruments(self) -> list[dict]:
-        """Return every SWAP instrument currently in live-trading state.
+        """Return SWAP instruments available on OKX Demo Trading.
 
-        Public endpoint, no credentials required. Used by the UI to populate
-        the symbol dropdown with whatever OKX actually offers, so the bot is
-        not limited to a hardcoded pair of markets.
+        The `x-simulated-trading: 1` header makes OKX return the Demo
+        instrument list rather than the production one. Without it, we
+        would offer markets that exist on live OKX but are not tradeable
+        in Demo, and orders on them would be rejected.
         """
         session = await self._session()
         async with session.get(
             f"{self.base_url}/api/v5/public/instruments",
             params={"instType": "SWAP"},
+            headers={"x-simulated-trading": "1"},
         ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0" or not isinstance(data.get("data"), list):
