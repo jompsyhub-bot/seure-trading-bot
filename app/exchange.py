@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import time
 import uuid
 import base64
@@ -13,6 +14,8 @@ from datetime import UTC, datetime
 import aiohttp
 
 from .models import OrderIntent, OrderResult
+
+log = logging.getLogger(__name__)
 
 
 class ExchangeError(RuntimeError):
@@ -25,6 +28,7 @@ class OKXDemoClient:
     base_url = "https://www.okx.com"
     # This is the documented Demo environment, not the live private feed.
     demo_private_ws_url = "wss://wspap.okx.com:8443/ws/v5/private"
+    demo_public_ws_url = "wss://wspap.okx.com:8443/ws/v5/public"
 
     def __init__(self, api_key: str, api_secret: str, passphrase: str):
         self.api_key = api_key
@@ -91,14 +95,29 @@ class OKXDemoClient:
                     raise ExchangeError("OKX Demo WebSocket disconnected")
 
     async def public_ticker_events(self, instruments: set[str]):
-        """Yield public Demo ticker updates without exposing an OKX socket to Telegram's WebView."""
+        """Yield public Demo price updates as fast as OKX Demo will send them.
+
+        We prefer the `bbo-tbt` channel (Best Bid / Offer, tick-by-tick) because
+        the `tickers` channel on the Demo environment is throttled by OKX to a
+        slower cadence, which users perceive as a 10–15 second price lag. If the
+        Demo endpoint rejects `bbo-tbt` for any reason we transparently fall
+        back to `tickers` so the feed never goes dark.
+        """
         session = await self._session()
         async with session.ws_connect(
-            "wss://wspap.okx.com:8443/ws/v5/public", heartbeat=20, receive_timeout=45
+            self.demo_public_ws_url,
+            heartbeat=15,
+            receive_timeout=30,
         ) as socket:
+            subscribed_channel = "bbo-tbt"
             await socket.send_json({"op": "subscribe", "args": [
-                {"channel": "tickers", "instId": instrument} for instrument in sorted(instruments)
+                {"channel": "bbo-tbt", "instId": instrument}
+                for instrument in sorted(instruments)
             ]})
+
+            last_log = time.monotonic()
+            tick_count = 0
+
             async for message in socket:
                 if message.type == aiohttp.WSMsgType.TEXT:
                     if message.data == "ping":
@@ -108,12 +127,67 @@ class OKXDemoClient:
                         payload = json.loads(message.data)
                     except json.JSONDecodeError:
                         continue
-                    if payload.get("event") == "error":
+
+                    event = payload.get("event")
+
+                    if event == "error":
+                        # bbo-tbt not supported on this endpoint — fall back.
+                        if subscribed_channel == "bbo-tbt":
+                            msg = payload.get("msg", "")
+                            log.warning("OKX Demo rejected bbo-tbt, falling back to tickers: %s", msg)
+                            await socket.send_json({"op": "subscribe", "args": [
+                                {"channel": "tickers", "instId": instrument}
+                                for instrument in sorted(instruments)
+                            ]})
+                            subscribed_channel = "tickers"
+                            continue
                         raise ExchangeError(payload.get("msg", "OKX Demo ticker subscription failed"))
-                    if payload.get("arg", {}).get("channel") == "tickers":
+
+                    if event == "subscribe":
+                        log.info(
+                            "OKX Demo public feed subscribed: channel=%s inst=%s",
+                            payload.get("arg", {}).get("channel"),
+                            payload.get("arg", {}).get("instId"),
+                        )
+                        continue
+
+                    channel = payload.get("arg", {}).get("channel")
+
+                    if channel == "bbo-tbt":
+                        for row in payload.get("data") or []:
+                            inst = row.get("instId")
+                            if inst not in instruments:
+                                continue
+                            bids = row.get("bids") or []
+                            asks = row.get("asks") or []
+                            if not bids or not asks:
+                                continue
+                            try:
+                                bid = Decimal(bids[0][0])
+                                ask = Decimal(asks[0][0])
+                            except (ValueError, IndexError, TypeError):
+                                continue
+                            mid = (bid + ask) / Decimal("2")
+                            tick_count += 1
+                            yield {"instId": inst, "last": str(mid), "ts": row.get("ts")}
+
+                    elif channel == "tickers":
                         for row in payload.get("data") or []:
                             if row.get("instId") in instruments and row.get("last"):
+                                tick_count += 1
                                 yield row
+
+                    # Periodic heartbeat log so we can see the actual tick rate
+                    # in Render logs without spamming every message.
+                    now = time.monotonic()
+                    if now - last_log >= 30:
+                        log.info(
+                            "OKX Demo public feed stats: channel=%s ticks_last_30s=%d",
+                            subscribed_channel, tick_count,
+                        )
+                        last_log = now
+                        tick_count = 0
+
                 elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
                     raise ExchangeError("OKX Demo public ticker feed disconnected")
 
