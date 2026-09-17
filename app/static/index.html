@@ -164,6 +164,18 @@ th{color:var(--muted);font-weight:500;font-size:12px}
   color: var(--accent-soft);
 }
 .chip:disabled { opacity: 0.35; cursor: not-allowed; }
+.chip.mini-chip {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  margin: 0;
+  background: rgba(98, 140, 255, 0.08);
+  color: var(--accent-soft);
+  border-color: transparent;
+}
+.chip.mini-chip.good  { background: rgba(77, 221, 172, 0.10); color: var(--good); }
+.chip.mini-chip.loss  { background: rgba(255, 137, 151, 0.10); color: #ff8997; }
 
 .warning {
   background: rgba(243, 196, 108, 0.08);
@@ -312,13 +324,6 @@ input[type="range"].lev-slider {
       rgba(255, 137, 151, 0.35) 100%);
   position: relative;
   cursor: pointer;
-}
-input[type="range"].lev-slider::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  border-radius: 4px;
-  pointer-events: none;
 }
 input[type="range"].lev-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -496,7 +501,7 @@ input[type="range"].lev-slider::-moz-range-thumb {
 
     <!-- 1. Direction -->
     <div class="step-label"><span class="step-num">1</span> Direction</div>
-    <select id="futSymbol" onchange="futSubscribeTicker();futLoadLeverageOptions()">
+    <select id="futSymbol" onchange="futOnSymbolChange()">
       <option>BTCUSDT</option>
       <option>ETHUSDT</option>
     </select>
@@ -555,23 +560,31 @@ input[type="range"].lev-slider::-moz-range-thumb {
 
     <!-- 3. Protection -->
     <div class="step-label"><span class="step-num">3</span> Protection</div>
-    <p class="hint">Take profit locks in a win. Stop loss caps your loss. Both are required for Demo orders.</p>
+    <p class="hint">Enter the exact exit prices. Percentages and dollar P&amp;L update as you type.</p>
     <div class="grid">
       <div>
-        <label class="good">Take profit · % gain</label>
-        <input id="tpPct" inputmode="decimal" value="4" oninput="futUpdateProtection()">
-        <div id="tpPrice"  class="hint"></div>
+        <label class="good">Take profit · price</label>
+        <input id="tp" inputmode="decimal" placeholder="0.00"
+               oninput="futProtectionTouched = true; futUpdateProtection()">
+        <div class="chip-row">
+          <button class="chip mini-chip good" onclick="futQuickTp(1)">+1%</button>
+          <button class="chip mini-chip good" onclick="futQuickTp(2)">+2%</button>
+          <button class="chip mini-chip good" onclick="futQuickTp(5)">+5%</button>
+        </div>
         <div id="tpProfit" class="hint good"></div>
       </div>
       <div>
-        <label class="loss">Stop loss · % loss</label>
-        <input id="slPct" inputmode="decimal" value="2" oninput="futUpdateProtection()">
-        <div id="slPrice" class="hint"></div>
-        <div id="slLoss"  class="hint loss"></div>
+        <label class="loss">Stop loss · price</label>
+        <input id="sl" inputmode="decimal" placeholder="0.00"
+               oninput="futProtectionTouched = true; futUpdateProtection()">
+        <div class="chip-row">
+          <button class="chip mini-chip loss" onclick="futQuickSl(1)">-1%</button>
+          <button class="chip mini-chip loss" onclick="futQuickSl(2)">-2%</button>
+          <button class="chip mini-chip loss" onclick="futQuickSl(5)">-5%</button>
+        </div>
+        <div id="slLoss" class="hint loss"></div>
       </div>
     </div>
-    <input type="hidden" id="tp">
-    <input type="hidden" id="sl">
 
     <!-- 4. Review -->
     <div class="step-label"><span class="step-num">4</span> Review &amp; place</div>
@@ -809,6 +822,7 @@ let futSocket = null, futKeepalive = null, futRetry = null;
 let futBusy = false, futOrderKey = '', futLatestPrice = null;
 let futInstrumentMeta = null;
 let futLevMax = 1, futLevMin = 1, futLevStep = 1;
+let futProtectionTouched = false;
 
 const fut$ = id => document.getElementById(id);
 const futInstrument = () =>
@@ -822,6 +836,17 @@ function futInit() {
   futLoadLeverageOptions();
   loadPortfolio();
   setInterval(loadPortfolio, 5000);
+}
+
+/* ---------- Symbol change: reset TP/SL to sensible defaults ---------- */
+function futOnSymbolChange() {
+  futSubscribeTicker();
+  futLoadLeverageOptions();
+  futProtectionTouched = false;
+  fut$('tp').value = '';
+  fut$('sl').value = '';
+  // If we already have a price cached, re-populate immediately
+  futUpdateProtection();
 }
 
 /* ---------- Live feed ---------- */
@@ -977,7 +1002,6 @@ async function futLoadLeverageOptions() {
 function futSetLeverage(v) {
   const slider = fut$('levSlider');
 
-  // Special case: 'max' string means jump to the exchange maximum
   if (v === 'max') {
     v = futLevMax;
     slider.value = futLevMax;
@@ -991,7 +1015,7 @@ function futSetLeverage(v) {
     v = futLevMax;
   }
 
-  // Sync the hidden <select> so preview/place see the right value
+  // Sync the hidden <select>
   const sel = fut$('leverage');
   let matched = false;
   for (const opt of sel.options) {
@@ -1008,14 +1032,6 @@ function futSetLeverage(v) {
 }
 
 function futUpdateSliderUI(v) {
-  const slider = fut$('levSlider');
-  const pct = futLevMax > futLevMin
-    ? ((v - futLevMin) / (futLevMax - futLevMin)) * 100
-    : 0;
-  // Optional: we could tint the thumb differently per risk; the track gradient
-  // already communicates risk zones, so we only update the readout here.
-  slider.style.setProperty('--pct', `${pct}%`);
-
   const display = fut$('levDisplay');
   display.textContent = `${v}×`;
 
@@ -1062,14 +1078,21 @@ function futUpdateLeverageWarning() {
   }
 }
 
-/* ---------- Input handlers ---------- */
+/* ---------- Side, margin, size ---------- */
 function futSetSide(side) {
+  const changed = fut$('side').value !== side;
   fut$('side').value = side;
   fut$('btnLong').classList.toggle('active', side === 'long');
   fut$('btnShort').classList.toggle('active', side === 'short');
   fut$('sideHint').textContent = side === 'long'
     ? 'Long: you profit when price goes up.'
     : 'Short: you profit when price goes down.';
+
+  // If the user hasn't touched TP/SL, re-populate for the new direction.
+  if (changed && !futProtectionTouched) {
+    fut$('tp').value = '';
+    fut$('sl').value = '';
+  }
   futUpdateProtection();
 }
 
@@ -1091,86 +1114,155 @@ function futUpdatePreviewNumbers() {
     : '—';
 }
 
+/* ---------- Protection (price-based) ---------- */
+function futQuickTp(pct) {
+  const entry = parseFloat(futLatestPrice);
+  if (!entry) return toast('Waiting for live price…', true);
+  const side = fut$('side').value;
+  const price = side === 'long'
+    ? entry * (1 + pct / 100)
+    : entry * (1 - pct / 100);
+  fut$('tp').value = price.toFixed(2);
+  futProtectionTouched = true;
+  futUpdateProtection();
+}
+
+function futQuickSl(pct) {
+  const entry = parseFloat(futLatestPrice);
+  if (!entry) return toast('Waiting for live price…', true);
+  const side = fut$('side').value;
+  const price = side === 'long'
+    ? entry * (1 - pct / 100)
+    : entry * (1 + pct / 100);
+  fut$('sl').value = price.toFixed(2);
+  futProtectionTouched = true;
+  futUpdateProtection();
+}
+
 function futUpdateProtection() {
   const entry = parseFloat(futLatestPrice);
   const side = fut$('side').value;
   const margin = parseFloat(fut$('margin').value) || 0;
   const leverage = parseInt(fut$('levSlider').value) || 1;
   const notional = margin * leverage;
-  const tpPct = parseFloat(fut$('tpPct').value) || 0;
-  const slPct = parseFloat(fut$('slPct').value) || 0;
 
-  const tpEl = fut$('tpPrice'), slEl = fut$('slPrice');
-  const tpProfitEl = fut$('tpProfit'), slLossEl = fut$('slLoss');
+  const tpEl = fut$('tpProfit');
+  const slEl = fut$('slLoss');
 
-  if (!entry || !margin) {
+  // Auto-populate sensible defaults once we have a live price, unless the
+  // user has already typed their own values.
+  if (entry && !futProtectionTouched) {
+    if (!fut$('tp').value) {
+      fut$('tp').value = (side === 'long' ? entry * 1.02 : entry * 0.98).toFixed(2);
+    }
+    if (!fut$('sl').value) {
+      fut$('sl').value = (side === 'long' ? entry * 0.99 : entry * 1.01).toFixed(2);
+    }
+  }
+
+  const tp = parseFloat(fut$('tp').value);
+  const sl = parseFloat(fut$('sl').value);
+
+  if (!entry) {
+    tpEl.className = 'hint good';
     tpEl.textContent = 'Waiting for live price…';
+    slEl.className = 'hint loss';
     slEl.textContent = 'Waiting for live price…';
-    tpProfitEl.textContent = '';
-    slLossEl.textContent = '';
-    fut$('tp').value = '';
-    fut$('sl').value = '';
     return;
   }
 
-  let tpPrice, slPrice;
-  if (side === 'long') {
-    tpPrice = entry * (1 + tpPct / 100);
-    slPrice = entry * (1 - slPct / 100);
+  /* ---- Take profit ---- */
+  if (tp) {
+    const tpPct = side === 'long'
+      ? (tp / entry - 1) * 100
+      : (1 - tp / entry) * 100;
+    const tpPnl = notional * (tpPct / 100);
+    const wrongSide = side === 'long' ? tp <= entry : tp >= entry;
+    if (wrongSide) {
+      tpEl.className = 'hint loss';
+      tpEl.textContent = `⚠️ Must be ${side === 'long' ? 'above' : 'below'} $${entry.toFixed(2)}`;
+    } else if (!margin) {
+      tpEl.className = 'hint good';
+      tpEl.textContent = `+${tpPct.toFixed(2)}%`;
+    } else {
+      tpEl.className = 'hint good';
+      tpEl.textContent = `+${tpPct.toFixed(2)}%  ·  +$${tpPnl.toFixed(2)}`;
+    }
   } else {
-    tpPrice = entry * (1 - tpPct / 100);
-    slPrice = entry * (1 + slPct / 100);
+    tpEl.className = 'hint good';
+    tpEl.textContent = 'Enter a price above the market';
   }
 
-  fut$('tp').value = tpPrice.toFixed(2);
-  fut$('sl').value = slPrice.toFixed(2);
-
-  tpEl.textContent = `≈ $${tpPrice.toFixed(2)}`;
-  slEl.textContent = `≈ $${slPrice.toFixed(2)}`;
-
-  const tpProfit = notional * (tpPct / 100);
-  const slLoss = notional * (slPct / 100);
-
-  tpProfitEl.textContent = `+$${tpProfit.toFixed(2)}  ·  ${(tpPct * leverage).toFixed(1)}% of margin`;
-  slLossEl.textContent = `-$${slLoss.toFixed(2)}  ·  ${(slPct * leverage).toFixed(1)}% of margin`;
+  /* ---- Stop loss ---- */
+  if (sl) {
+    const slPct = side === 'long'
+      ? (1 - sl / entry) * 100
+      : (sl / entry - 1) * 100;
+    const slLoss = notional * (slPct / 100);
+    const wrongSide = side === 'long' ? sl >= entry : sl <= entry;
+    if (wrongSide) {
+      slEl.className = 'hint loss';
+      slEl.textContent = `⚠️ Must be ${side === 'long' ? 'below' : 'above'} $${entry.toFixed(2)}`;
+    } else if (!margin) {
+      slEl.className = 'hint loss';
+      slEl.textContent = `-${slPct.toFixed(2)}%`;
+    } else {
+      slEl.className = 'hint loss';
+      slEl.textContent = `-${slPct.toFixed(2)}%  ·  -$${Math.abs(slLoss).toFixed(2)}`;
+    }
+  } else {
+    slEl.className = 'hint loss';
+    slEl.textContent = 'Enter a price below the market';
+  }
 }
 
 /* ---------- Preview ---------- */
 async function futPreview() {
   const margin = parseFloat(fut$('margin').value) || 0;
+  const entry = parseFloat(futLatestPrice);
+  const side = fut$('side').value;
+  const tp = parseFloat(fut$('tp').value);
+  const sl = parseFloat(fut$('sl').value);
+
   if (!margin) return toast('Enter a margin amount first', true);
-  if (!futLatestPrice) return toast('Waiting for live price…', true);
+  if (!entry) return toast('Waiting for live price…', true);
+  if (!tp || !sl) return toast('Enter take profit and stop loss prices', true);
+
+  if (side === 'long' && !(sl < entry && entry < tp)) {
+    return toast('For a long: SL below and TP above current price', true);
+  }
+  if (side === 'short' && !(tp < entry && entry < sl)) {
+    return toast('For a short: TP below and SL above current price', true);
+  }
 
   try {
     const d = await api('/api/futures/preview', {
       method: 'POST',
       body: JSON.stringify({
         symbol: fut$('futSymbol').value,
-        side: fut$('side').value,
+        side,
         leverage: parseInt(fut$('levSlider').value),
         margin_usdt: fut$('margin').value
       })
     });
 
-    futUpdateProtection();
-
     fut$('protection').classList.remove('hidden');
     const res = fut$('futResult');
     res.classList.remove('hidden');
 
-    const side = fut$('side').value;
     const symbol = fut$('futSymbol').value;
     const lev = parseInt(fut$('levSlider').value);
-    const entry = parseFloat(d.mark_price);
+    const marketPrice = parseFloat(d.mark_price);
     const notional = parseFloat(d.estimated_notional_usdt);
-    const tp = parseFloat(fut$('tp').value);
-    const sl = parseFloat(fut$('sl').value);
-    const tpPnl = side === 'long'
-      ? notional * (tp / entry - 1)
-      : notional * (1 - tp / entry);
-    const slPnl = side === 'long'
-      ? notional * (sl / entry - 1)
-      : notional * (1 - sl / entry);
+
+    const tpPct = side === 'long'
+      ? (tp / marketPrice - 1) * 100
+      : (1 - tp / marketPrice) * 100;
+    const slPct = side === 'long'
+      ? (1 - sl / marketPrice) * 100
+      : (sl / marketPrice - 1) * 100;
+    const tpPnl = notional * (tpPct / 100);
+    const slPnl = notional * (slPct / 100);
 
     const available = parseFloat(d.available_usdt);
     const marginPct = (margin / available * 100).toFixed(1);
@@ -1183,12 +1275,12 @@ async function futPreview() {
       <table class="summary-table">
         <tr><td class="muted">Market</td><td><b>${symbol}</b></td></tr>
         <tr><td class="muted">Direction</td><td><b class="${side === 'long' ? 'good' : 'loss'}">${side === 'long' ? '↑ Long' : '↓ Short'}</b></td></tr>
-        <tr><td class="muted">Entry price</td><td>$${entry.toFixed(2)}</td></tr>
+        <tr><td class="muted">Entry price</td><td>$${marketPrice.toFixed(2)}</td></tr>
         <tr><td class="muted">Margin</td><td>$${margin.toFixed(2)} <span class="muted">(${marginPct}% of balance)</span></td></tr>
         <tr><td class="muted">Leverage</td><td>${lev}×</td></tr>
         <tr><td class="muted">Position size</td><td>$${notional.toFixed(2)}</td></tr>
-        <tr><td class="muted">Take profit</td><td>$${tp.toFixed(2)} <span class="good">(+$${tpPnl.toFixed(2)})</span></td></tr>
-        <tr><td class="muted">Stop loss</td><td>$${sl.toFixed(2)} <span class="loss">(-$${Math.abs(slPnl).toFixed(2)})</span></td></tr>
+        <tr><td class="muted">Take profit</td><td>$${tp.toFixed(2)} <span class="good">(+${tpPct.toFixed(2)}% · +$${tpPnl.toFixed(2)})</span></td></tr>
+        <tr><td class="muted">Stop loss</td><td>$${sl.toFixed(2)} <span class="loss">(-${slPct.toFixed(2)}% · -$${Math.abs(slPnl).toFixed(2)})</span></td></tr>
       </table>
     `;
     res.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1197,13 +1289,23 @@ async function futPreview() {
 
 /* ---------- Place ---------- */
 async function futPlace() {
-  futUpdateProtection();
-  const tp = fut$('tp').value.trim();
-  const sl = fut$('sl').value.trim();
-  if (!tp || !sl) return toast('Set take profit and stop loss first', true);
+  const entry = parseFloat(futLatestPrice);
+  const side = fut$('side').value;
+  const tp = parseFloat(fut$('tp').value);
+  const sl = parseFloat(fut$('sl').value);
+
+  if (!tp || !sl) return toast('Set take profit and stop loss prices first', true);
+  if (entry) {
+    if (side === 'long' && !(sl < entry && entry < tp)) {
+      return toast('For a long: SL below and TP above current price', true);
+    }
+    if (side === 'short' && !(tp < entry && entry < sl)) {
+      return toast('For a short: TP below and SL above current price', true);
+    }
+  }
+
   if (!futOrderKey) futOrderKey = crypto.randomUUID().replaceAll('-', '').slice(0, 28);
 
-  const side = fut$('side').value;
   const symbol = fut$('futSymbol').value;
   const margin = fut$('margin').value;
   const leverage = parseInt(fut$('levSlider').value);
@@ -1211,7 +1313,7 @@ async function futPlace() {
   if (!confirm(
     `Place ONE OKX DEMO ${side.toUpperCase()} order?\n\n` +
     `${symbol} · ${leverage}× · margin $${margin}\n` +
-    `TP $${parseFloat(tp).toFixed(2)} · SL $${parseFloat(sl).toFixed(2)}\n\n` +
+    `TP $${tp.toFixed(2)} · SL $${sl.toFixed(2)}\n\n` +
     `This uses Demo money only.`
   )) return;
 
