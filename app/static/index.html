@@ -246,6 +246,123 @@ details.advanced summary::before {
 }
 details.advanced[open] summary::before { transform: rotate(90deg); }
 details.advanced[open] summary { margin-bottom: 12px; }
+
+/* ── Leverage slider ─────────────────────── */
+.lev-slider-wrap {
+  margin: 14px 0 8px;
+  padding: 14px 12px 10px;
+  background: rgba(98, 140, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.lev-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+.lev-header-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.lev-display {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent-soft);
+  transition: color .15s;
+}
+.lev-display.risk-low  { color: var(--good); }
+.lev-display.risk-mid  { color: var(--warn); }
+.lev-display.risk-high { color: #ff8997; }
+.lev-risk-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-left: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  vertical-align: middle;
+  background: rgba(77, 221, 172, 0.15);
+  color: var(--good);
+}
+.lev-display.risk-mid  ~ .lev-risk-tag { background: rgba(243, 196, 108, 0.15); color: var(--warn); }
+.lev-display.risk-high ~ .lev-risk-tag { background: rgba(255, 137, 151, 0.15); color: #ff8997; }
+
+input[type="range"].lev-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  outline: none;
+  padding: 0;
+  margin: 8px 0 4px;
+  border: none;
+  background:
+    linear-gradient(to right,
+      rgba(77, 221, 172, 0.25) 0%,
+      rgba(77, 221, 172, 0.25) 20%,
+      rgba(243, 196, 108, 0.30) 20%,
+      rgba(243, 196, 108, 0.30) 50%,
+      rgba(255, 137, 151, 0.35) 50%,
+      rgba(255, 137, 151, 0.35) 100%);
+  position: relative;
+  cursor: pointer;
+}
+input[type="range"].lev-slider::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: 4px;
+  pointer-events: none;
+}
+input[type="range"].lev-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  background: #fff;
+  border: 3px solid var(--accent);
+  border-radius: 50%;
+  cursor: grab;
+  box-shadow: 0 2px 10px rgba(0,0,0,.5);
+  transition: transform .1s;
+}
+input[type="range"].lev-slider::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.15);
+}
+input[type="range"].lev-slider::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  background: #fff;
+  border: 3px solid var(--accent);
+  border-radius: 50%;
+  cursor: grab;
+  box-shadow: 0 2px 10px rgba(0,0,0,.5);
+}
+.lev-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  padding: 0 4px;
+}
+.lev-ticks span:nth-child(2) {
+  opacity: 0.6;
+}
+.lev-source {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 8px;
+  text-align: center;
+  font-style: italic;
+}
 </style>
 </head>
 <body>
@@ -402,12 +519,31 @@ details.advanced[open] summary { margin-bottom: 12px; }
     <input id="margin" inputmode="decimal" value="1" placeholder="1.00"
            oninput="futUpdatePreviewNumbers();futUpdateProtection()">
 
-    <label style="margin-top:12px">Leverage · multiplies both gains and losses</label>
-    <div class="chip-row" id="leverageChips">
-      <button class="chip" data-lev="1"  onclick="futSetLeverage(1)">1×</button>
-      <button class="chip" data-lev="2"  onclick="futSetLeverage(2)">2×</button>
-      <button class="chip" data-lev="5"  onclick="futSetLeverage(5)">5×</button>
-      <button class="chip" data-lev="10" onclick="futSetLeverage(10)">10×</button>
+    <label style="margin-top:14px">Leverage · multiplies both gains and losses</label>
+    <div class="lev-slider-wrap">
+      <div class="lev-header">
+        <span class="lev-header-label">Leverage</span>
+        <div>
+          <span id="levDisplay" class="lev-display risk-low">1×</span>
+          <span id="levRiskTag" class="lev-risk-tag">Low risk</span>
+        </div>
+      </div>
+      <input id="levSlider" class="lev-slider" type="range"
+             min="1" max="100" value="1" step="1"
+             oninput="futSetLeverage(this.value)">
+      <div class="lev-ticks">
+        <span id="levMinLabel">1×</span>
+        <span id="levMidLabel">50×</span>
+        <span id="levMaxLabel">100×</span>
+      </div>
+      <div class="lev-source" id="levSource">Loading exchange limits…</div>
+    </div>
+
+    <div class="chip-row">
+      <button class="chip" data-lev="1"   onclick="futSetLeverage(1)">1×</button>
+      <button class="chip" data-lev="5"   onclick="futSetLeverage(5)">5×</button>
+      <button class="chip" data-lev="10"  onclick="futSetLeverage(10)">10×</button>
+      <button class="chip" data-lev="max" onclick="futSetLeverage('max')">Max</button>
     </div>
     <select id="leverage" class="hidden"></select>
     <div id="leverageWarning" class="warning hidden"></div>
@@ -672,6 +808,7 @@ let futReady = false;
 let futSocket = null, futKeepalive = null, futRetry = null;
 let futBusy = false, futOrderKey = '', futLatestPrice = null;
 let futInstrumentMeta = null;
+let futLevMax = 1, futLevMin = 1, futLevStep = 1;
 
 const fut$ = id => document.getElementById(id);
 const futInstrument = () =>
@@ -786,7 +923,7 @@ async function futSetMode() {
   } catch (e) { toast(e.message, true); }
 }
 
-/* ---------- Leverage options ---------- */
+/* ---------- Leverage options (auto-detected from exchange) ---------- */
 async function futLoadLeverageOptions() {
   try {
     const d = await api('/api/futures/leverage-options', {
@@ -794,27 +931,134 @@ async function futLoadLeverageOptions() {
       body: JSON.stringify({ symbol: fut$('futSymbol').value })
     });
     futInstrumentMeta = d;
+
+    futLevMin  = Math.max(1, parseInt(d.min_leverage) || 1);
+    futLevMax  = Math.max(futLevMin, parseInt(d.max_leverage) || 1);
+    futLevStep = Math.max(1, parseInt(d.leverage_step) || 1);
+
+    // Configure the slider
+    const slider = fut$('levSlider');
+    slider.min = futLevMin;
+    slider.max = futLevMax;
+    slider.step = futLevStep;
+
+    // Configure the ticks
+    fut$('levMinLabel').textContent = `${futLevMin}×`;
+    fut$('levMaxLabel').textContent = `${futLevMax}×`;
+    const mid = Math.round((futLevMin + futLevMax) / 2);
+    fut$('levMidLabel').textContent = `${mid}×`;
+
+    fut$('levSource').textContent =
+      `${d.instrument} supports ${futLevMin}× – ${futLevMax}× · loaded live from OKX`;
+
+    // Update the hidden <select> used by preview/place code
     const sel = fut$('leverage');
     sel.innerHTML = '';
-    const max = Math.min(parseInt(d.max_leverage) || 1, 100);
-    for (let x = 1; x <= max; x++) sel.add(new Option(`${x}×`, x));
+    for (let x = futLevMin; x <= futLevMax; x += futLevStep) {
+      sel.add(new Option(`${x}×`, x));
+    }
 
-    // Disable chips above the max
-    document.querySelectorAll('.chip[data-lev]').forEach(b => {
-      const val = parseFloat(b.dataset.lev);
-      b.disabled = val > max;
-    });
-
-    const starting = Math.min(5, max);
+    // Choose a sensible starting leverage
+    const starting = Math.min(5, futLevMax);
     sel.value = starting;
-    document.querySelectorAll('.chip[data-lev]').forEach(b => {
-      b.classList.toggle('active', parseFloat(b.dataset.lev) === starting);
-    });
+    slider.value = starting;
+    futUpdateSliderUI(starting);
+    futUpdateLeverageChips(starting);
     futUpdateLeverageWarning();
     futUpdatePreviewNumbers();
     futUpdateProtection();
   } catch (e) {
     console.warn('Leverage options unavailable:', e.message);
+    fut$('levSource').textContent = 'Could not load exchange leverage limits.';
+  }
+}
+
+/* ---------- Slider + chip sync ---------- */
+function futSetLeverage(v) {
+  const slider = fut$('levSlider');
+
+  // Special case: 'max' string means jump to the exchange maximum
+  if (v === 'max') {
+    v = futLevMax;
+    slider.value = futLevMax;
+  }
+
+  v = parseInt(v);
+  if (isNaN(v)) return;
+  if (v < futLevMin) v = futLevMin;
+  if (v > futLevMax) {
+    toast(`${futInstrumentMeta?.instrument || 'This market'} supports up to ${futLevMax}× leverage`, true);
+    v = futLevMax;
+  }
+
+  // Sync the hidden <select> so preview/place see the right value
+  const sel = fut$('leverage');
+  let matched = false;
+  for (const opt of sel.options) {
+    if (+opt.value === v) { sel.value = v; matched = true; break; }
+  }
+  if (!matched) { sel.add(new Option(`${v}×`, v)); sel.value = v; }
+
+  slider.value = v;
+  futUpdateSliderUI(v);
+  futUpdateLeverageChips(v);
+  futUpdateLeverageWarning();
+  futUpdatePreviewNumbers();
+  futUpdateProtection();
+}
+
+function futUpdateSliderUI(v) {
+  const slider = fut$('levSlider');
+  const pct = futLevMax > futLevMin
+    ? ((v - futLevMin) / (futLevMax - futLevMin)) * 100
+    : 0;
+  // Optional: we could tint the thumb differently per risk; the track gradient
+  // already communicates risk zones, so we only update the readout here.
+  slider.style.setProperty('--pct', `${pct}%`);
+
+  const display = fut$('levDisplay');
+  display.textContent = `${v}×`;
+
+  let risk = 'low', label = 'Low risk';
+  if (v >= 20)      { risk = 'high'; label = 'Very high risk'; }
+  else if (v >= 10) { risk = 'high'; label = 'High risk'; }
+  else if (v >= 5)  { risk = 'mid';  label = 'Moderate risk'; }
+
+  display.classList.remove('risk-low', 'risk-mid', 'risk-high');
+  display.classList.add(`risk-${risk}`);
+
+  const tag = fut$('levRiskTag');
+  tag.textContent = label;
+}
+
+function futUpdateLeverageChips(v) {
+  document.querySelectorAll('.chip[data-lev]').forEach(b => {
+    const dataLev = b.dataset.lev;
+    if (dataLev === 'max') {
+      b.classList.toggle('active', v === futLevMax);
+      b.disabled = futLevMax <= futLevMin;
+    } else {
+      const n = parseFloat(dataLev);
+      b.classList.toggle('active', n === v);
+      b.disabled = n < futLevMin || n > futLevMax;
+    }
+  });
+}
+
+function futUpdateLeverageWarning() {
+  const lev = parseInt(fut$('levSlider').value) || 1;
+  const el = fut$('leverageWarning');
+  if (lev >= 20) {
+    el.textContent = `⚠️ ${lev}× is extremely aggressive. A ${(100 / lev).toFixed(2)}% move against you wipes out your full margin.`;
+    el.classList.remove('hidden');
+  } else if (lev >= 10) {
+    el.textContent = `⚠️ ${lev}× is aggressive. A ${(100 / lev).toFixed(1)}% move against you wipes out your full margin.`;
+    el.classList.remove('hidden');
+  } else if (lev >= 5) {
+    el.textContent = `${lev}× is moderate risk. Small price moves have a large effect on your margin.`;
+    el.classList.remove('hidden');
+  } else {
+    el.classList.add('hidden');
   }
 }
 
@@ -838,42 +1082,9 @@ function futSetMargin(v) {
   futUpdateProtection();
 }
 
-function futSetLeverage(v) {
-  const sel = fut$('leverage');
-  const max = futInstrumentMeta ? parseInt(futInstrumentMeta.max_leverage) : 100;
-  if (v > max) {
-    toast(`${futInstrumentMeta?.instrument || 'This market'} supports up to ${max}× leverage`, true);
-    return;
-  }
-  let found = false;
-  for (const opt of sel.options) { if (+opt.value === v) { found = true; break; } }
-  if (!found) sel.add(new Option(`${v}×`, v));
-  sel.value = v;
-  document.querySelectorAll('.chip[data-lev]').forEach(b => {
-    b.classList.toggle('active', parseFloat(b.dataset.lev) === v);
-  });
-  futUpdateLeverageWarning();
-  futUpdatePreviewNumbers();
-  futUpdateProtection();
-}
-
-function futUpdateLeverageWarning() {
-  const lev = parseFloat(fut$('leverage').value) || 1;
-  const el = fut$('leverageWarning');
-  if (lev >= 10) {
-    el.textContent = `⚠️ ${lev}× is aggressive. A ${(100 / lev).toFixed(1)}% move against you wipes out your full margin.`;
-    el.classList.remove('hidden');
-  } else if (lev >= 5) {
-    el.textContent = `${lev}× is moderate risk. Small price moves have a large effect on your margin.`;
-    el.classList.remove('hidden');
-  } else {
-    el.classList.add('hidden');
-  }
-}
-
 function futUpdatePreviewNumbers() {
   const margin = parseFloat(fut$('margin').value) || 0;
-  const leverage = parseFloat(fut$('leverage').value) || 1;
+  const leverage = parseInt(fut$('levSlider').value) || 1;
   const notional = margin * leverage;
   fut$('positionSize').textContent = margin
     ? `$${notional.toFixed(2)}  (${margin.toFixed(2)} × ${leverage}×)`
@@ -884,7 +1095,7 @@ function futUpdateProtection() {
   const entry = parseFloat(futLatestPrice);
   const side = fut$('side').value;
   const margin = parseFloat(fut$('margin').value) || 0;
-  const leverage = parseFloat(fut$('leverage').value) || 1;
+  const leverage = parseInt(fut$('levSlider').value) || 1;
   const notional = margin * leverage;
   const tpPct = parseFloat(fut$('tpPct').value) || 0;
   const slPct = parseFloat(fut$('slPct').value) || 0;
@@ -936,7 +1147,7 @@ async function futPreview() {
       body: JSON.stringify({
         symbol: fut$('futSymbol').value,
         side: fut$('side').value,
-        leverage: +fut$('leverage').value,
+        leverage: parseInt(fut$('levSlider').value),
         margin_usdt: fut$('margin').value
       })
     });
@@ -949,7 +1160,7 @@ async function futPreview() {
 
     const side = fut$('side').value;
     const symbol = fut$('futSymbol').value;
-    const lev = +fut$('leverage').value;
+    const lev = parseInt(fut$('levSlider').value);
     const entry = parseFloat(d.mark_price);
     const notional = parseFloat(d.estimated_notional_usdt);
     const tp = parseFloat(fut$('tp').value);
@@ -995,7 +1206,7 @@ async function futPlace() {
   const side = fut$('side').value;
   const symbol = fut$('futSymbol').value;
   const margin = fut$('margin').value;
-  const leverage = fut$('leverage').value;
+  const leverage = parseInt(fut$('levSlider').value);
 
   if (!confirm(
     `Place ONE OKX DEMO ${side.toUpperCase()} order?\n\n` +
@@ -1010,7 +1221,7 @@ async function futPlace() {
       body: JSON.stringify({
         symbol,
         side,
-        leverage: +leverage,
+        leverage,
         margin_usdt: margin,
         take_profit: tp,
         stop_loss: sl,
