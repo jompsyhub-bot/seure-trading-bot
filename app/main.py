@@ -64,11 +64,22 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def futures(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open the single-page Mini App on its Futures tab.
+
+    Futures used to live at {MINI_APP_URL}/futures as a standalone page with no
+    navigation, which trapped users. It is now a tab inside the main dashboard,
+    so we always open the root and the user taps the Futures tab.
+    """
     s: Settings = context.bot_data["settings"]
     if not s.mini_app_url:
         await update.effective_message.reply_text("The Mini App URL is not configured.")
         return
-    await update.effective_message.reply_text("Open the Demo futures trade ticket. It checks allowed leverage only; it does not place an order.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Open futures ticket", web_app=WebAppInfo(f"{s.mini_app_url.rstrip('/')}/futures"))]]))
+    await update.effective_message.reply_text(
+        "Open the dashboard and tap the Futures tab to reach the Demo trade ticket.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Open trading dashboard", web_app=WebAppInfo(s.mini_app_url))
+        ]]),
+    )
 
 
 async def _trade(update: Update, context: ContextTypes.DEFAULT_TYPE, side: Side) -> None:
