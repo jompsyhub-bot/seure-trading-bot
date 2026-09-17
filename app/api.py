@@ -12,7 +12,7 @@ import json
 import aiohttp
 
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
@@ -30,6 +30,15 @@ database = Database(settings.database_path, settings.database_url)
 database.initialize()
 static_dir = Path(__file__).parent / "static"
 log = logging.getLogger(__name__)
+
+# Browsers and Telegram's WebView cache HTML aggressively. These headers
+# force the Mini App shell to re-fetch on every open, so a fresh deploy is
+# picked up immediately instead of after the cache expires.
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
 
 @asynccontextmanager
@@ -308,17 +317,22 @@ def reject_unsafe_permissions(info: dict) -> None:
 
 @api.get("/")
 async def mini_app() -> FileResponse:
-    return FileResponse(static_dir / "index.html")
+    return FileResponse(static_dir / "index.html", headers=NO_CACHE_HEADERS)
 
 
 @api.get("/futures")
-async def futures_ticket() -> FileResponse:
-    return FileResponse(static_dir / "futures.html")
+async def futures_ticket() -> RedirectResponse:
+    # Legacy two-page URL. Futures is now a tab inside the single-page Mini
+    # App, so a stale cached link lands the user back on the working SPA
+    # instead of a bare standalone page with no navigation.
+    return RedirectResponse(url="/", status_code=302)
 
 
 @api.get("/backtest")
-async def backtest_screen() -> FileResponse:
-    return FileResponse(static_dir / "backtest.html")
+async def backtest_screen() -> RedirectResponse:
+    # Backtest was removed from the Mini App UI. Keep the route as a redirect
+    # so any bookmarks or cached links still resolve safely.
+    return RedirectResponse(url="/", status_code=302)
 
 
 @api.websocket("/ws/futures")
