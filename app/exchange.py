@@ -1,471 +1,861 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
-import logging
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from pathlib import Path
+from typing import Literal
+from contextlib import asynccontextmanager
+import asyncio
 import time
 import uuid
-import base64
-from urllib.parse import urlencode
-from decimal import Decimal, ROUND_DOWN
-from datetime import UTC, datetime
+import logging
+import json
 
 import aiohttp
 
-from .models import OrderIntent, OrderResult
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel, Field
 
+from .config import Settings
+from .database import Database
+from .exchange import BybitClient, ExchangeError, OKXDemoClient
+from .models import OrderIntent, OrderResult, Side
+from .security import CredentialVault
+from .web_auth import TelegramAuthError, validate_init_data
+from .automation import DemoAutomationWorker
+from .notifications import TelegramNotifier
+from .backtest import MarketDataError, PublicBybitMarket, run_rsi_reversion
+
+settings = Settings.from_env()
+database = Database(settings.database_path, settings.database_url)
+database.initialize()
+static_dir = Path(__file__).parent / "static"
 log = logging.getLogger(__name__)
 
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
-class ExchangeError(RuntimeError):
-    pass
+# Two markets we always keep tick-fresh. Anything else is added on demand
+# when a Mini App session selects it, so the bot is not limited to a pair.
+DEFAULT_PRICE_INSTRUMENTS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP")
+
+# Server-side cache so we don't hit OKX every time a Mini App opens.
+_instruments_cache: dict = {"data": None, "ts": 0.0}
+INSTRUMENTS_CACHE_TTL = 300  # seconds
 
 
-class OKXDemoClient:
-    """OKX Demo futures adapter, including authenticated private updates."""
-
-    base_url = "https://www.okx.com"
-    # This is the documented Demo environment, not the live private feed.
-    demo_private_ws_url = "wss://wspap.okx.com:8443/ws/v5/private"
-    demo_public_ws_url = "wss://wspap.okx.com:8443/ws/v5/public"
-
-    def __init__(self, api_key: str, api_secret: str, passphrase: str):
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.passphrase = passphrase
-        self.session: aiohttp.ClientSession | None = None
-
-    async def _session(self) -> aiohttp.ClientSession:
-        if self.session is None:
-            connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=15))
-        return self.session
-
-    async def close(self) -> None:
-        if self.session:
-            await self.session.close()
-            self.session = None
-
-    async def private_events(self):
-        """Yield authenticated OKX Demo private-channel events.
-
-        Credentials are used only to establish the server-side connection; they
-        are never sent to the browser or included in event payloads.
-        """
-        timestamp = str(int(time.time()))
-        prehash = f"{timestamp}GET/users/self/verify"
-        signature = base64.b64encode(
-            hmac.new(self.api_secret.encode(), prehash.encode(), hashlib.sha256).digest()
-        ).decode()
-        session = await self._session()
-        async with session.ws_connect(
-            self.demo_private_ws_url, heartbeat=20, receive_timeout=45
-        ) as socket:
-            await socket.send_json({"op": "login", "args": [{
-                "apiKey": self.api_key,
-                "passphrase": self.passphrase,
-                "timestamp": timestamp,
-                "sign": signature,
-            }]})
-            authenticated = False
-            async for message in socket:
-                if message.type == aiohttp.WSMsgType.TEXT:
-                    if message.data == "ping":
-                        await socket.send_str("pong")
-                        continue
-                    try:
-                        payload = json.loads(message.data)
-                    except json.JSONDecodeError:
-                        continue
-                    if payload.get("event") == "login":
-                        if payload.get("code") != "0":
-                            raise ExchangeError(payload.get("msg", "OKX Demo WebSocket login failed"))
-                        authenticated = True
-                        await socket.send_json({"id": uuid.uuid4().hex[:24], "op": "subscribe", "args": [
-                            {"channel": "positions", "instType": "ANY", "extraParams": '{"updateInterval":"0"}'},
-                            {"channel": "orders", "instType": "SWAP"},
-                        ]})
-                        continue
-                    if payload.get("event") == "error":
-                        raise ExchangeError(payload.get("msg", "OKX Demo WebSocket subscription failed"))
-                    if authenticated and payload.get("arg"):
-                        yield payload
-                elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
-                    raise ExchangeError("OKX Demo WebSocket disconnected")
-
-    async def public_ticker_events(self, instruments: set[str]):
-        """Yield public Demo price updates as fast as OKX Demo will send them.
-
-        We prefer the `bbo-tbt` channel (Best Bid / Offer, tick-by-tick) because
-        the `tickers` channel on the Demo environment is throttled by OKX to a
-        slower cadence, which users perceive as a 10–15 second price lag. If the
-        Demo endpoint rejects `bbo-tbt` for any reason we transparently fall
-        back to `tickers` so the feed never goes dark.
-        """
-        session = await self._session()
-        async with session.ws_connect(
-            self.demo_public_ws_url,
-            heartbeat=15,
-            receive_timeout=30,
-        ) as socket:
-            subscribed_channel = "bbo-tbt"
-            await socket.send_json({"op": "subscribe", "args": [
-                {"channel": "bbo-tbt", "instId": instrument}
-                for instrument in sorted(instruments)
-            ]})
-
-            last_log = time.monotonic()
-            tick_count = 0
-
-            async for message in socket:
-                if message.type == aiohttp.WSMsgType.TEXT:
-                    if message.data == "ping":
-                        await socket.send_str("pong")
-                        continue
-                    try:
-                        payload = json.loads(message.data)
-                    except json.JSONDecodeError:
-                        continue
-
-                    event = payload.get("event")
-
-                    if event == "error":
-                        # bbo-tbt not supported on this endpoint — fall back.
-                        if subscribed_channel == "bbo-tbt":
-                            msg = payload.get("msg", "")
-                            log.warning("OKX Demo rejected bbo-tbt, falling back to tickers: %s", msg)
-                            await socket.send_json({"op": "subscribe", "args": [
-                                {"channel": "tickers", "instId": instrument}
-                                for instrument in sorted(instruments)
-                            ]})
-                            subscribed_channel = "tickers"
-                            continue
-                        raise ExchangeError(payload.get("msg", "OKX Demo ticker subscription failed"))
-
-                    if event == "subscribe":
-                        log.info(
-                            "OKX Demo public feed subscribed: channel=%s inst=%s",
-                            payload.get("arg", {}).get("channel"),
-                            payload.get("arg", {}).get("instId"),
-                        )
-                        continue
-
-                    channel = payload.get("arg", {}).get("channel")
-
-                    if channel == "bbo-tbt":
-                        for row in payload.get("data") or []:
-                            inst = row.get("instId")
-                            if inst not in instruments:
-                                continue
-                            bids = row.get("bids") or []
-                            asks = row.get("asks") or []
-                            if not bids or not asks:
-                                continue
-                            try:
-                                bid = Decimal(bids[0][0])
-                                ask = Decimal(asks[0][0])
-                            except (ValueError, IndexError, TypeError):
-                                continue
-                            mid = (bid + ask) / Decimal("2")
-                            tick_count += 1
-                            yield {"instId": inst, "last": str(mid), "ts": row.get("ts")}
-
-                    elif channel == "tickers":
-                        for row in payload.get("data") or []:
-                            if row.get("instId") in instruments and row.get("last"):
-                                tick_count += 1
-                                yield row
-
-                    # Periodic heartbeat log so we can see the actual tick rate
-                    # in Render logs without spamming every message.
-                    now = time.monotonic()
-                    if now - last_log >= 30:
-                        log.info(
-                            "OKX Demo public feed stats: channel=%s ticks_last_30s=%d",
-                            subscribed_channel, tick_count,
-                        )
-                        last_log = now
-                        tick_count = 0
-
-                elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
-                    raise ExchangeError("OKX Demo public ticker feed disconnected")
-
-    def _headers(self, method: str, request_path: str, body: str = "") -> dict[str, str]:
-        timestamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-        prehash = f"{timestamp}{method.upper()}{request_path}{body}"
-        signature = base64.b64encode(hmac.new(self.api_secret.encode(), prehash.encode(), hashlib.sha256).digest()).decode()
-        return {
-            "OK-ACCESS-KEY": self.api_key,
-            "OK-ACCESS-SIGN": signature,
-            "OK-ACCESS-TIMESTAMP": timestamp,
-            "OK-ACCESS-PASSPHRASE": self.passphrase,
-            "x-simulated-trading": "1",
-            "Content-Type": "application/json",
-        }
-
-    async def account_config(self) -> dict:
-        request_path = "/api/v5/account/config"
-        session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the experimental worker only when credential encryption is available."""
+    task = None
+    position_task = None
+    ticker_task = None
+    worker = None
+    notifier = TelegramNotifier(settings.telegram_token)
+    app.state.notifier = notifier
+    app.state.futures_subscribers = {}
+    app.state.futures_price_preferences = {}
+    ticker_task = asyncio.create_task(monitor_okx_public_prices(), name="okx-demo-public-tickers")
+    if settings.encryption_key:
+        worker = DemoAutomationWorker(database, CredentialVault(settings.encryption_key), notifier)
+        task = asyncio.create_task(worker.run(), name="demo-automation-worker")
+        position_task = asyncio.create_task(monitor_okx_private_events(notifier), name="okx-private-event-supervisor")
+    try:
+        yield
+    finally:
+        if worker:
+            worker.running = False
+        if task:
+            task.cancel()
             try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if position_task:
+            position_task.cancel()
+            try:
+                await position_task
+            except asyncio.CancelledError:
+                pass
+        if ticker_task:
+            ticker_task.cancel()
+            try:
+                await ticker_task
+            except asyncio.CancelledError:
+                pass
+        await notifier.close()
+
+
+api = FastAPI(title="Safe Trading Bot API", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Request models — symbol fields are now plain strings, validated server-side.
+# ---------------------------------------------------------------------------
+
+class OKXDemoConnectionRequest(BaseModel):
+    api_key: str = Field(min_length=8, max_length=256)
+    api_secret: str = Field(min_length=16, max_length=512)
+    passphrase: str = Field(min_length=8, max_length=256)
+
+
+class PaperSettingsRequest(BaseModel):
+    enabled: bool
+    max_order_notional: str
+    max_daily_loss: str
+
+
+class AutomationProfileRequest(BaseModel):
+    enabled: bool
+    strategy: Literal["rsi_reversion_demo"]
+    symbol: str = Field(min_length=2, max_length=32)
+    max_order_notional: str
+    max_trades_per_day: int = Field(ge=1, le=3)
+    stop_loss_pct: str
+    take_profit_pct: str
+
+
+class BacktestRequest(BaseModel):
+    symbol: Literal["BTCUSDT", "ETHUSDT"]
+    interval: Literal["15", "60"] = "15"
+    rsi_threshold: float = Field(ge=15, le=45)
+    stop_loss_pct: float = Field(ge=0.5, le=5)
+    take_profit_pct: float = Field(ge=1, le=10)
+    order_notional: float = Field(ge=1, le=50)
+
+
+class LeverageRequest(BaseModel):
+    symbol: str = Field(min_length=2, max_length=32)
+
+
+class FuturesPreviewRequest(BaseModel):
+    symbol: str = Field(min_length=2, max_length=32)
+    side: Literal["long", "short"]
+    leverage: int = Field(ge=1, le=100)
+    margin_usdt: Decimal = Field(gt=0)
+
+
+class PositionModeRequest(BaseModel):
+    position_mode: Literal["net_mode", "long_short_mode"]
+
+
+class FuturesDemoOrderRequest(FuturesPreviewRequest):
+    take_profit: Decimal = Field(gt=0)
+    stop_loss: Decimal = Field(gt=0)
+    client_order_id: str = Field(min_length=8, max_length=28, pattern=r"^[A-Za-z0-9]+$")
+    confirmation: Literal["PLACE_DEMO_ORDER"]
+
+
+class ClosePositionRequest(BaseModel):
+    instrument: str = Field(min_length=3, max_length=32)
+    position_side: Literal["net", "long", "short"]
+    confirmation: Literal["CLOSE_DEMO_POSITION"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def resolve_okx_swap_inst_id(symbol: str) -> str:
+    """Normalize a user-facing symbol to an OKX SWAP instId.
+
+    Accepted input formats (all case-insensitive):
+        "BTC-USDT-SWAP"  -> "BTC-USDT-SWAP"   (already canonical)
+        "BTC-USDT"       -> "BTC-USDT-SWAP"
+        "BTC/USDT"       -> "BTC-USDT-SWAP"
+        "BTCUSDT"        -> "BTC-USDT-SWAP"
+        "BTC"            -> "BTC-USDT-SWAP"   (assumes USDT quote)
+    """
+    s = (symbol or "").upper().strip().replace("/", "-")
+    if not s:
+        raise HTTPException(400, "Symbol is required.")
+    if s.endswith("-SWAP"):
+        return s
+    if "-" in s:
+        return f"{s}-SWAP"
+    for quote in ("USDT", "USDC", "USD"):
+        if s.endswith(quote) and len(s) > len(quote):
+            return f"{s[:-len(quote)]}-{quote}-SWAP"
+    return f"{s}-USDT-SWAP"
+
+
+def watched_instruments() -> list[str]:
+    """Union of every instrument any live session is currently viewing.
+
+    Always includes the two defaults so the common BTC / ETH view is
+    instant. Grows and shrinks automatically as users open and close
+    the Mini App.
+    """
+    prefs = getattr(api.state, "futures_price_preferences", {}) or {}
+    watched = set(DEFAULT_PRICE_INSTRUMENTS)
+    for inst in prefs.values():
+        if isinstance(inst, str) and inst:
+            watched.add(inst)
+    return sorted(watched)
+
+
+def telegram_user(init_data: str | None) -> dict:
+    if not init_data:
+        raise HTTPException(401, "Missing Telegram authorization")
+    try:
+        user = validate_init_data(init_data, settings.telegram_token)
+        database.upsert_user(int(user["id"]), user.get("username"), user.get("first_name"))
+        return user
+    except (TelegramAuthError, KeyError, ValueError):
+        raise HTTPException(401, "Invalid Telegram authorization") from None
+
+
+def okx_demo_client_for(user_id: int) -> OKXDemoClient:
+    credentials = database.exchange_credentials(user_id)
+    if not credentials or credentials.get("provider") != "okx" or credentials.get("environment") != "demo":
+        raise HTTPException(400, "Connect an OKX Demo account first.")
+    if not settings.encryption_key or not credentials.get("encrypted_passphrase"):
+        raise HTTPException(503, "OKX Demo credentials are incomplete. Reconnect the account.")
+    vault = CredentialVault(settings.encryption_key)
+    return OKXDemoClient(vault.decrypt(credentials["encrypted_api_key"]), vault.decrypt(credentials["encrypted_api_secret"]), vault.decrypt(credentials["encrypted_passphrase"]))
+
+
+async def publish_futures_event(user_id: int, event_type: str) -> None:
+    """Notify only the authenticated Mini App sessions belonging to one user."""
+    subscribers = list(getattr(api.state, "futures_subscribers", {}).get(user_id, set()))
+    for socket in subscribers:
+        try:
+            await socket.send_json({"type": event_type})
+        except (RuntimeError, WebSocketDisconnect):
+            api.state.futures_subscribers.get(user_id, set()).discard(socket)
+
+
+async def publish_live_price(instrument: str, price: str) -> None:
+    preferences = getattr(api.state, "futures_price_preferences", {})
+    for socket, selected_instrument in list(preferences.items()):
+        if selected_instrument != instrument:
+            continue
+        try:
+            await socket.send_json({"type": "ticker", "instrument": instrument, "price": price})
+        except (RuntimeError, WebSocketDisconnect):
+            preferences.pop(socket, None)
+
+
+async def _rest_price_poller() -> None:
+    """Guaranteed 1 Hz REST top-up for every instrument any user is viewing.
+
+    This is the reliable path. OKX Demo's WebSocket is throttled, so we
+    poll the public REST ticker endpoint once per second for the union of
+    instruments any live session has selected, plus BTC / ETH. Polls only
+    what's actually being watched — no unbounded growth as more symbols
+    become available.
+    """
+    while True:
+        try:
+            instruments = watched_instruments()
+            if instruments:
+                client = OKXDemoClient("", "", "")
+                try:
+                    results = await asyncio.gather(
+                        *(client.last_price(inst) for inst in instruments),
+                        return_exceptions=True,
+                    )
+                finally:
+                    await client.close()
+                for inst, result in zip(instruments, results, strict=True):
+                    if isinstance(result, Exception):
+                        continue
+                    await publish_live_price(inst, str(result))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.debug("REST price poll iteration failed: %s", exc)
+        await asyncio.sleep(1.0)
+
+
+async def monitor_okx_public_prices() -> None:
+    """Fan out prices via REST 1 Hz poll + bonus WebSocket push for BTC/ETH.
+
+    The REST poll is the guaranteed path and covers any instrument any user
+    is viewing. The WebSocket to OKX Demo gives opportunistic faster ticks
+    for the two most popular markets but is best-effort only.
+    """
+    default_instruments = set(DEFAULT_PRICE_INSTRUMENTS)
+    rest_task = asyncio.create_task(_rest_price_poller(), name="okx-rest-price-poller")
+    delay = 1
+    try:
+        while True:
+            client = OKXDemoClient("", "", "")
+            try:
+                async for update in client.public_ticker_events(default_instruments):
+                    delay = 1
+                    await publish_live_price(str(update["instId"]), str(update["last"]))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("OKX Demo public ticker feed unavailable: %s", exc)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+            finally:
+                await client.close()
+    finally:
+        rest_task.cancel()
+        try:
+            await rest_task
+        except asyncio.CancelledError:
+            pass
+
+
+def active_position_keys(rows: list[dict]) -> set[tuple[str, str]]:
+    return {
+        (str(row.get("instId", "")), str(row.get("posSide", "")))
+        for row in rows
+        if Decimal(str(row.get("pos") or "0")) != 0
+    }
+
+
+async def notify_position_closed(user_id: int, notifier: TelegramNotifier, instrument: str, side: str) -> None:
+    await sync_okx_order_history(user_id)
+    await notifier.send(
+        user_id,
+        f"🔔 OKX Demo position closed\n{instrument} · {side}\n"
+        "The exchange pushed this update immediately. It may have been a TP, SL, or a manual close; the ticket is reconciling the final P&L now.",
+    )
+    await publish_futures_event(user_id, "portfolio_changed")
+
+
+async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> None:
+    """Keep one credentialed, reconnecting Demo private feed per connected user."""
+    known_positions: set[tuple[str, str]] = set()
+    delay = 1
+    while True:
+        client: OKXDemoClient | None = None
+        try:
+            client = okx_demo_client_for(user_id)
+            async for event in client.private_events():
+                delay = 1
+                channel = event.get("arg", {}).get("channel")
+                rows = event.get("data") or []
+                if channel == "positions":
+                    changed = active_position_keys(rows)
+                    if event.get("action") == "snapshot":
+                        closed = known_positions - changed
+                        known_positions = changed
+                    else:
+                        closed = set()
+                        for row in rows:
+                            key = (str(row.get("instId", "")), str(row.get("posSide", "")))
+                            if Decimal(str(row.get("pos") or "0")) == 0:
+                                if key in known_positions:
+                                    known_positions.discard(key)
+                                    closed.add(key)
+                            else:
+                                known_positions.add(key)
+                    for instrument, side in closed:
+                        await notify_position_closed(user_id, notifier, instrument, side)
+                    await publish_futures_event(user_id, "portfolio_changed")
+                elif channel == "orders":
+                    if any(row.get("state") in {"filled", "canceled"} for row in rows):
+                        await sync_okx_order_history(user_id)
+                        await publish_futures_event(user_id, "portfolio_changed")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("OKX Demo private feed unavailable for user %s: %s", user_id, exc)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+        finally:
+            if client:
+                await client.close()
+
+
+async def monitor_okx_private_events(notifier: TelegramNotifier) -> None:
+    """Start and stop user feeds as encrypted OKX Demo connections change."""
+    tasks: dict[int, asyncio.Task] = {}
+    try:
+        while True:
+            users = set(database.okx_demo_users())
+            for user_id in users - tasks.keys():
+                tasks[user_id] = asyncio.create_task(
+                    monitor_okx_private_user(user_id, notifier), name=f"okx-demo-private-{user_id}"
+                )
+            for user_id in set(tasks) - users:
+                tasks.pop(user_id).cancel()
+            await asyncio.sleep(15)
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+
+def reject_unsafe_permissions(info: dict) -> None:
+    if info.get("readOnly") != 0:
+        raise HTTPException(400, "This Bybit API key is read-only")
+    permissions = info.get("permissions", {})
+    wallet_permissions = permissions.get("Wallet", [])
+    forbidden = {"Withdraw", "AccountTransfer", "SubMemberTransfer", "SubMemberTransferList"}
+    if forbidden.intersection(wallet_permissions):
+        raise HTTPException(400, "Use a trade-only Bybit key: withdrawal and transfer permissions are forbidden")
+    trade_permissions = set(permissions.get("Spot", [])) | set(permissions.get("Derivatives", [])) | set(permissions.get("ContractTrade", []))
+    if not trade_permissions:
+        raise HTTPException(400, "This key has no trading permission")
+
+
+@api.get("/")
+async def mini_app() -> FileResponse:
+    return FileResponse(static_dir / "index.html", headers=NO_CACHE_HEADERS)
+
+
+@api.get("/futures")
+async def futures_ticket() -> RedirectResponse:
+    return RedirectResponse(url="/", status_code=302)
+
+
+@api.get("/backtest")
+async def backtest_screen() -> RedirectResponse:
+    return RedirectResponse(url="/", status_code=302)
+
+
+@api.websocket("/ws/futures")
+async def futures_updates(websocket: WebSocket) -> None:
+    """Authenticated push-only signal channel for the Telegram Mini App."""
+    await websocket.accept()
+    try:
+        auth_message = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+        auth_payload = json.loads(auth_message)
+        if auth_payload.get("type") != "authenticate":
+            raise ValueError("Missing WebSocket authentication")
+        user = validate_init_data(auth_payload.get("init_data") or "", settings.telegram_token)
+        user_id = int(user["id"])
+    except (asyncio.TimeoutError, TelegramAuthError, KeyError, ValueError, json.JSONDecodeError):
+        await websocket.close(code=1008, reason="Invalid Telegram authorization")
+        return
+    database.upsert_user(user_id, user.get("username"), user.get("first_name"))
+    subscribers = api.state.futures_subscribers.setdefault(user_id, set())
+    subscribers.add(websocket)
+    api.state.futures_price_preferences[websocket] = "BTC-USDT-SWAP"
+    try:
+        await websocket.send_json({"type": "connected", "environment": "demo", "price_instrument": "BTC-USDT-SWAP"})
+        while True:
+            message = await websocket.receive_text()
+            try:
+                payload = json.loads(message)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "subscribe_ticker":
+                instrument = payload.get("instrument")
+                # Accept any well-formed SWAP instrument the client sends.
+                # The REST poller will pick it up automatically and it will
+                # be dropped again when the session closes.
+                if (
+                    isinstance(instrument, str)
+                    and 3 <= len(instrument) <= 32
+                    and instrument.endswith("-SWAP")
+                ):
+                    api.state.futures_price_preferences[websocket] = instrument
+    except WebSocketDisconnect:
+        pass
+    finally:
+        subscribers.discard(websocket)
+        api.state.futures_price_preferences.pop(websocket, None)
+
+
+@api.get("/health")
+async def health() -> dict:
+    return {"ok": True, "mode": settings.trading_mode, "automation_environment": "demo-only"}
+
+
+@api.get("/health/okx")
+async def okx_connectivity() -> dict:
+    """Credential-free Render-to-OKX reachability check for the next adapter."""
+    url = "https://www.okx.com/api/v5/public/instruments"
+    try:
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, params={"instType": "SWAP", "instId": "BTC-USDT-SWAP"}) as response:
+                if response.status != 200:
+                    raise HTTPException(502, f"OKX returned HTTP {response.status}")
                 data = await response.json(content_type=None)
-            except (ValueError, UnicodeDecodeError):
-                raise ExchangeError(f"OKX returned a non-API response (HTTP {response.status})") from None
         if not isinstance(data, dict) or data.get("code") != "0" or not data.get("data"):
-            message = data.get("msg", "OKX Demo API validation failed") if isinstance(data, dict) else "OKX Demo API validation failed"
-            raise ExchangeError(message)
-        return data["data"][0]
+            raise HTTPException(502, "OKX returned an unexpected public API response")
+        instrument = data["data"][0]
+        return {"ok": True, "exchange": "okx", "instrument": instrument["instId"], "state": instrument.get("state"), "max_leverage": instrument.get("lever")}
+    except HTTPException:
+        raise
+    except (aiohttp.ClientError, TimeoutError, ValueError):
+        raise HTTPException(502, "OKX public API is unreachable from this host") from None
 
-    async def set_position_mode(self, position_mode: str) -> dict:
-        if position_mode not in {"net_mode", "long_short_mode"}:
-            raise ValueError("Unsupported position mode")
-        request_path = "/api/v5/account/set-position-mode"
-        body = json.dumps({"posMode": position_mode}, separators=(",", ":"))
-        session = await self._session()
-        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
-            data = await self._response_json(response)
-        if data.get("code") != "0":
-            raise ExchangeError(data.get("msg", "OKX rejected the position mode change"))
-        return data["data"][0] if data.get("data") else {"posMode": position_mode}
 
-    async def set_leverage(self, inst_id: str, leverage: Decimal, position_side: str) -> None:
-        request_path = "/api/v5/account/set-leverage"
-        body = json.dumps({"instId": inst_id, "lever": str(leverage), "mgnMode": "isolated", "posSide": position_side}, separators=(",", ":"))
-        session = await self._session()
-        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
-            data = await self._response_json(response)
-        if data.get("code") != "0":
-            raise ExchangeError(data.get("msg", "OKX rejected the leverage setting"))
+@api.get("/api/dashboard")
+async def dashboard(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    result = database.dashboard(int(user["id"]))
+    result["automation"] = database.automation_profile(int(user["id"]))
+    return result
 
-    async def place_market_swap(self, *, inst_id: str, side: str, position_side: str, contracts: Decimal, client_order_id: str, take_profit: Decimal, stop_loss: Decimal) -> dict:
-        request_path = "/api/v5/trade/order"
-        payload = {"instId": inst_id, "tdMode": "isolated", "side": side, "posSide": position_side, "ordType": "market", "sz": str(contracts), "clOrdId": client_order_id, "attachAlgoOrds": [{"attachAlgoClOrdId": f"tp{client_order_id}"[:32], "tpTriggerPx": str(take_profit), "tpTriggerPxType": "mark", "tpOrdPx": "-1", "slTriggerPx": str(stop_loss), "slTriggerPxType": "mark", "slOrdPx": "-1"}]}
-        body = json.dumps(payload, separators=(",", ":"))
-        session = await self._session()
-        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
-            data = await self._response_json(response)
-        item = data.get("data", [{}])[0]
-        if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
-            raise ExchangeError(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo order")
-        return item
 
-    async def close_market_swap(self, *, inst_id: str, side: str, position_side: str, contracts: Decimal, client_order_id: str) -> dict:
-        """Submit a reduce-only market order for an existing OKX Demo swap position."""
-        if side not in {"buy", "sell"}:
-            raise ValueError("A close order must use buy or sell")
-        if position_side not in {"net", "long", "short"}:
-            raise ValueError("Unsupported OKX position side")
+@api.get("/api/exchange/instruments")
+async def exchange_instruments(x_telegram_init_data: str | None = Header(default=None)) -> list[dict]:
+    """Available SWAP instruments on the connected exchange.
+
+    Only live-trading markets are returned; suspended or pre-open
+    instruments are filtered out. Sorted with BTC and ETH first so the
+    dropdown has sensible defaults, then alphabetically.
+
+    Cached server-side for 5 minutes to avoid hammering the exchange on
+    every Mini App open.
+    """
+    user = telegram_user(x_telegram_init_data)
+    provider = database.connection_provider(int(user["id"]))
+    if provider != "okx":
+        raise HTTPException(400, "Connect an OKX Demo account first.")
+
+    now = time.monotonic()
+    if _instruments_cache["data"] is not None and (now - _instruments_cache["ts"]) < INSTRUMENTS_CACHE_TTL:
+        return _instruments_cache["data"]
+
+    client = OKXDemoClient("", "", "")
+    try:
+        rows = await client.list_swap_instruments()
+        result = []
+        for row in rows:
+            inst_id = row.get("instId")
+            if not inst_id or not inst_id.endswith("-SWAP"):
+                continue
+            parts = inst_id.split("-")
+            if len(parts) != 3:
+                continue
+            base, quote, _ = parts
+            result.append({
+                "instId": inst_id,
+                "base": base,
+                "quote": quote,
+                "displayName": f"{base} / {quote}",
+                "maxLeverage": row.get("lever", "1"),
+                "minContracts": row.get("minSz", "1"),
+            })
+
+        def sort_key(row):
+            priority = {"BTC": 0, "ETH": 1}.get(row["base"], 2)
+            return (priority, row["base"])
+
+        result.sort(key=sort_key)
+        _instruments_cache["data"] = result
+        _instruments_cache["ts"] = now
+        return result
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"Could not load OKX instruments: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/okx/connect")
+async def connect_okx_demo(request: OKXDemoConnectionRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    if not settings.encryption_key:
+        raise HTTPException(503, "Credential vault is not configured")
+    client = OKXDemoClient(request.api_key, request.api_secret, request.passphrase)
+    try:
+        account = await client.account_config()
+        vault = CredentialVault(settings.encryption_key)
+        database.save_okx_connection(int(user["id"]), vault.encrypt(request.api_key), vault.encrypt(request.api_secret), vault.encrypt(request.passphrase), account)
+        return {"connected": True, "provider": "okx", "environment": "demo"}
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(400, f"OKX Demo connection rejected: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/paper-settings")
+async def paper_settings(request: PaperSettingsRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    try:
+        database.update_paper_settings(int(user["id"]), request.enabled, Decimal(request.max_order_notional), Decimal(request.max_daily_loss))
+    except (InvalidOperation, ValueError):
+        raise HTTPException(400, "Limits must be valid positive numbers") from None
+    return database.dashboard(int(user["id"]))
+
+
+@api.post("/api/automation")
+async def automation_settings(request: AutomationProfileRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    dashboard = database.dashboard(int(user["id"]))
+    if request.enabled and (dashboard.get("environment") != "demo" or dashboard.get("provider") != "bybit"):
+        raise HTTPException(400, "OKX execution is not enabled yet. Automation remains paused until the OKX futures execution adapter is tested.")
+    try:
+        database.save_automation_profile(int(user["id"]), request.enabled, request.strategy, request.symbol, Decimal(request.max_order_notional), request.max_trades_per_day, Decimal(request.stop_loss_pct), Decimal(request.take_profit_pct))
+    except (InvalidOperation, ValueError):
+        raise HTTPException(400, "Check your strategy limits") from None
+    state = "started" if request.enabled else "paused"
+    await api.state.notifier.send(int(user["id"]), f"🧪 Demo automation {state}\nStrategy: {request.strategy}\nSymbol: {request.symbol}\nMax order: {request.max_order_notional} USDT\nMax trades/day: {request.max_trades_per_day}\nUse STOP ALL AUTOMATION in the dashboard to disable future scans.")
+    return database.automation_profile(int(user["id"]))
+
+
+@api.post("/api/automation/kill-switch")
+async def kill_switch(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    database.set_kill_switch(int(user["id"]))
+    await api.state.notifier.send(int(user["id"]), "🛑 Demo automation stopped. No future scans will submit orders. Review open orders in Bybit Demo Trading separately.")
+    return {"enabled": False, "message": "Automation stopped"}
+
+
+@api.delete("/api/exchange/connection")
+async def disconnect_exchange(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    database.disconnect_bybit(int(user["id"]))
+    await api.state.notifier.send(int(user["id"]), "🔒 Exchange Demo connection removed and automation stopped.")
+    return {"connected": False}
+
+
+@api.get("/api/history")
+async def history(x_telegram_init_data: str | None = Header(default=None)) -> list[dict]:
+    user = telegram_user(x_telegram_init_data)
+    await sync_okx_order_history(int(user["id"]))
+    return database.history(int(user["id"]))
+
+
+async def sync_okx_order_history(user_id: int) -> None:
+    """Refresh records created by this bot; exchange data remains authoritative."""
+    if database.connection_provider(user_id) != "okx":
+        return
+    client = okx_demo_client_for(user_id)
+    try:
+        for row in database.orders_for_sync(user_id):
+            detail = await client.order_detail(row["symbol"], row["order_id"])
+            if not detail:
+                continue
+            price = Decimal(detail.get("avgPx") or detail.get("fillPx") or "0")
+            quantity = Decimal(detail.get("accFillSz") or "0")
+            pnl = Decimal(detail.get("pnl") or "0")
+            database.reconcile_exchange_order(row["idempotency_key"], detail.get("state", "unknown").upper(), price, quantity, pnl)
+    finally:
+        await client.close()
+
+
+@api.get("/api/portfolio")
+async def portfolio(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Active OKX Demo positions plus the full history of bot-originated orders."""
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    await sync_okx_order_history(user_id)
+    client = okx_demo_client_for(user_id)
+    try:
+        positions = await client.swap_positions()
+        active = [{"instrument": row.get("instId"), "side": row.get("posSide"), "contracts": row.get("pos"), "entry_price": row.get("avgPx"), "mark_price": row.get("markPx"), "unrealized_pnl": row.get("upl"), "realized_pnl": row.get("realizedPnl"), "leverage": row.get("lever"), "margin_mode": row.get("mgnMode"), "liquidation_price": row.get("liqPx") or None} for row in positions]
+        return {"exchange": "okx", "environment": "demo", "active_positions": active, "bot_trade_history": database.history(user_id)}
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation) as exc:
+        raise HTTPException(502, f"OKX portfolio sync unavailable: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/backtest")
+async def backtest(request: BacktestRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    telegram_user(x_telegram_init_data)
+    try:
+        candles = await PublicBybitMarket().candles(request.symbol, request.interval)
+        return run_rsi_reversion(candles, rsi_threshold=request.rsi_threshold, stop_loss_pct=request.stop_loss_pct, take_profit_pct=request.take_profit_pct, order_notional=request.order_notional)
+    except (MarketDataError, ValueError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"Backtest market data unavailable: {exc}") from None
+
+
+@api.post("/api/futures/leverage-options")
+async def leverage_options(request: LeverageRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    environment = database.connection_environment(int(user["id"]))
+    provider = database.connection_provider(int(user["id"]))
+    if environment != "demo" or provider != "okx":
+        raise HTTPException(400, "Connect an OKX Demo account before checking futures rules.")
+    inst_id = resolve_okx_swap_inst_id(request.symbol)
+    client = OKXDemoClient("", "", "")
+    try:
+        instrument = await client.swap_instrument(inst_id)
+        return {"symbol": request.symbol, "instrument": inst_id, "min_leverage": "1", "max_leverage": instrument.get("lever", "1"), "leverage_step": "1", "tick_size": instrument["tickSz"], "min_contracts": instrument["minSz"], "contract_value": instrument["ctVal"], "contract_currency": instrument["ctValCcy"], "state": instrument["state"]}
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"Futures rules unavailable: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/futures/preview")
+async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Calculate an OKX Demo perpetual order safely; this endpoint never submits it."""
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    client = okx_demo_client_for(user_id)
+    inst_id = resolve_okx_swap_inst_id(request.symbol)
+    try:
+        instrument, price, available_balance = await asyncio.gather(client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
+        maximum_leverage = Decimal(instrument.get("lever") or "1")
+        leverage = Decimal(request.leverage)
+        if leverage > maximum_leverage:
+            raise HTTPException(400, f"{inst_id} supports up to {maximum_leverage}× leverage on OKX.")
+        requested_notional = request.margin_usdt * leverage
+        multiplier = Decimal(instrument.get("ctMult") or "1")
+        contract_value = Decimal(instrument["ctVal"]) * multiplier
+        contract_notional = contract_value * price
+        contracts = (requested_notional / contract_notional).to_integral_value(rounding=ROUND_DOWN)
+        if contracts < Decimal(instrument["minSz"]):
+            raise HTTPException(400, f"Margin is too small for OKX's {instrument['minSz']} contract minimum at the current price.")
+        actual_notional = contracts * contract_notional
+        initial_margin = actual_notional / leverage
+        permitted_margin = available_balance * settings.max_demo_margin_pct / Decimal("100")
+        if initial_margin > permitted_margin:
+            raise HTTPException(400, f"Balance safety check: about {initial_margin:.2f} USDT margin is needed. This ticket permits up to {permitted_margin:.2f} USDT ({settings.max_demo_margin_pct}% of your {available_balance:.2f} USDT Demo balance), leaving a buffer for fees and adverse moves.")
+        return {"preview_only": True, "exchange": "okx", "environment": "demo", "instrument": inst_id, "side": request.side, "mark_price": str(price), "leverage": str(leverage), "contracts": str(contracts), "contract_notional_usdt": str(contract_notional), "estimated_notional_usdt": str(actual_notional), "estimated_initial_margin_usdt": str(initial_margin), "available_usdt": str(available_balance), "maximum_recommended_margin_usdt": str(permitted_margin), "remaining_usdt_before_fees": str(available_balance - initial_margin), "position_mode": "Not changed by this preview", "liquidation_price": "Not estimated: it depends on OKX risk tiers, maintenance margin, account mode, and other positions.", "next_step": "No order was placed. Execution requires a separate confirmation-and-reconciliation build step."}
+    except HTTPException:
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
+        raise HTTPException(502, f"OKX futures preview unavailable: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.get("/api/futures/account")
+async def futures_account(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    client = okx_demo_client_for(int(user["id"]))
+    try:
+        account = await client.account_config()
+        levels = {"1": "Spot", "2": "Futures", "3": "Multi-currency margin", "4": "Portfolio margin"}
+        return {"exchange": "okx", "environment": "demo", "account_mode": levels.get(account.get("acctLv"), "Unknown"), "account_mode_code": account.get("acctLv"), "position_mode": account.get("posMode"), "can_change_position_mode": account.get("acctLv") != "4", "note": "Account mode is controlled in OKX Demo's website/app. Position mode changes require no open positions or pending orders."}
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"OKX account configuration unavailable: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/futures/position-mode")
+async def set_futures_position_mode(request: PositionModeRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    client = okx_demo_client_for(int(user["id"]))
+    try:
+        account = await client.account_config()
+        if account.get("acctLv") == "4" and request.position_mode != "net_mode":
+            raise HTTPException(400, "OKX Portfolio Margin only supports net position mode.")
+        changed = await client.set_position_mode(request.position_mode)
+        return {"position_mode": changed.get("posMode", request.position_mode), "message": "OKX Demo position mode updated. No order was placed."}
+    except HTTPException:
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        raise HTTPException(400, f"OKX position mode was not changed: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/futures/demo-order")
+async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Submit one explicitly confirmed OKX Demo SWAP market order with attached TP/SL."""
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    client = okx_demo_client_for(user_id)
+    inst_id = resolve_okx_swap_inst_id(request.symbol)
+    try:
+        account, instrument, price, available_balance = await asyncio.gather(client.account_config(), client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
+        if account.get("acctLv") not in {"2", "3", "4"}:
+            raise HTTPException(400, "OKX Demo account is in Spot mode. In OKX Demo Trading, switch Account mode to Futures mode or Multi-currency margin mode before submitting a perpetual order.")
+        leverage = Decimal(request.leverage)
+        if leverage > Decimal(instrument.get("lever") or "1"):
+            raise HTTPException(400, f"{inst_id} supports up to {instrument.get('lever')}× leverage.")
+        if request.side == "long" and not (request.stop_loss < price < request.take_profit):
+            raise HTTPException(400, "For a long order, stop loss must be below and take profit above the current price.")
+        if request.side == "short" and not (request.take_profit < price < request.stop_loss):
+            raise HTTPException(400, "For a short order, take profit must be below and stop loss above the current price.")
+        contract_notional = Decimal(instrument["ctVal"]) * Decimal(instrument.get("ctMult") or "1") * price
+        contracts = ((request.margin_usdt * leverage) / contract_notional).to_integral_value(rounding=ROUND_DOWN)
+        if contracts < Decimal(instrument["minSz"]):
+            raise HTTPException(400, "Margin is too small for the exchange minimum contract size.")
+        actual_notional = contracts * contract_notional
+        initial_margin = actual_notional / leverage
+        permitted_margin = available_balance * settings.max_demo_margin_pct / Decimal("100")
+        if initial_margin > permitted_margin:
+            raise HTTPException(400, f"Balance safety check refused {initial_margin:.2f} USDT margin; maximum is {permitted_margin:.2f} USDT.")
+        if account.get("posMode") == "long_short_mode":
+            position_side = request.side
+        else:
+            position_side = "net"
+        exchange_side = "buy" if request.side == "long" else "sell"
+        intent = OrderIntent(user_id, inst_id, Side.BUY if exchange_side == "buy" else Side.SELL, actual_notional, request.client_order_id)
+        if not database.reserve(intent):
+            existing = database.existing_order(request.client_order_id)
+            if existing:
+                return {"accepted": True, "replayed": True, "order_id": existing.order_id, "status": existing.status}
+            raise HTTPException(409, "This Demo order is already being processed. Do not submit it again.")
+        submission_started = False
+        try:
+            await client.set_leverage(inst_id, leverage, position_side)
+            submission_started = True
+            accepted = await client.place_market_swap(inst_id=inst_id, side=exchange_side, position_side=position_side, contracts=contracts, client_order_id=request.client_order_id, take_profit=request.take_profit, stop_loss=request.stop_loss)
+            order_id = accepted.get("ordId")
+            if not order_id:
+                raise ExchangeError("OKX accepted the request without an order ID; check Demo order history before retrying.")
+            detail = await client.order_detail(inst_id, order_id)
+            status = (detail or {}).get("state", "live").upper()
+            filled_price = Decimal((detail or {}).get("avgPx") or str(price))
+            filled_contracts = Decimal((detail or {}).get("accFillSz") or str(contracts))
+            database.finalize(request.client_order_id, OrderResult(order_id, status, filled_price, filled_contracts))
+        except Exception:
+            if not submission_started:
+                database.cancel_reservation(request.client_order_id)
+            raise
+        await api.state.notifier.send(user_id, f"🧪 OKX Demo order accepted\n{request.side.upper()} {inst_id}\nLeverage: {leverage}× · Contracts: {contracts}\nOrder: {order_id}\nStatus: {status}\nTP: {request.take_profit} · SL: {request.stop_loss}")
+        return {"accepted": True, "replayed": False, "exchange": "okx", "environment": "demo", "order_id": order_id, "status": status, "contracts": str(contracts), "estimated_initial_margin_usdt": str(initial_margin), "take_profit": str(request.take_profit), "stop_loss": str(request.stop_loss), "message": "Demo order accepted and reconciled. Check the OKX Demo Trading order/position screen as the source of truth."}
+    except HTTPException as exc:
+        log.info("OKX Demo order rejected: instrument=%s status=%s reason=%s", inst_id, exc.status_code, exc.detail)
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
+        log.warning("OKX Demo order exchange rejection: instrument=%s reason=%s", inst_id, exc)
+        raise HTTPException(400, f"OKX Demo order was not placed: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.post("/api/futures/close-position")
+async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Explicitly close one entire active OKX Demo position, never a real-money one."""
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    client = okx_demo_client_for(user_id)
+    close_key = f"close{uuid.uuid4().hex[:23]}"
+    try:
+        positions = await client.swap_positions()
+        position = next((row for row in positions if row.get("instId") == request.instrument and row.get("posSide") == request.position_side), None)
+        if not position:
+            raise HTTPException(404, "That position is no longer active. Refresh the portfolio.")
+        contracts = abs(Decimal(position["pos"]))
         if contracts <= 0:
-            raise ValueError("Close size must be greater than zero")
-        request_path = "/api/v5/trade/order"
-        body = json.dumps({"instId": inst_id, "tdMode": "isolated", "side": side, "posSide": position_side, "ordType": "market", "sz": str(contracts), "reduceOnly": True, "clOrdId": client_order_id}, separators=(",", ":"))
-        session = await self._session()
-        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
-            data = await self._response_json(response)
-        item = data.get("data", [{}])[0]
-        if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
-            raise ExchangeError(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo close order")
-        return item
-
-    async def order_detail(self, inst_id: str, order_id: str) -> dict | None:
-        request_path = f"/api/v5/trade/order?instId={inst_id}&ordId={order_id}"
-        session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
-            data = await self._response_json(response)
-        if data.get("code") != "0":
-            raise ExchangeError(data.get("msg", "Could not reconcile OKX order"))
-        return data.get("data", [None])[0]
-
-    async def swap_positions(self) -> list[dict]:
-        request_path = "/api/v5/account/positions?instType=SWAP"
-        session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
-            data = await self._response_json(response)
-        if data.get("code") != "0":
-            raise ExchangeError(data.get("msg", "Could not retrieve OKX Demo positions"))
-        return [row for row in data.get("data", []) if Decimal(row.get("pos") or "0") != 0]
-
-    async def account_balance(self) -> Decimal:
-        request_path = "/api/v5/account/balance?ccy=USDT"
-        session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
-            data = await self._response_json(response)
-        if data.get("code") != "0" or not data.get("data"):
-            raise ExchangeError(data.get("msg", "Could not retrieve OKX Demo balance"))
-        details = data["data"][0].get("details", [])
-        usdt = next((item for item in details if item.get("ccy") == "USDT"), None)
-        if not usdt:
-            return Decimal("0")
-        # availEq is the safest value for a new cross/isolated position.
-        return Decimal(usdt.get("availEq") or usdt.get("availBal") or "0")
-
-    async def swap_instrument(self, inst_id: str) -> dict:
-        session = await self._session()
-        async with session.get(f"{self.base_url}/api/v5/public/instruments", params={"instType": "SWAP", "instId": inst_id}) as response:
-            data = await self._response_json(response)
-        if data.get("code") != "0" or not data.get("data"):
-            raise ExchangeError(data.get("msg", f"No live OKX perpetual instrument found for {inst_id}"))
-        return data["data"][0]
-
-    async def last_price(self, inst_id: str) -> Decimal:
-        session = await self._session()
-        async with session.get(f"{self.base_url}/api/v5/market/ticker", params={"instId": inst_id}) as response:
-            data = await self._response_json(response)
-        if data.get("code") != "0" or not data.get("data"):
-            raise ExchangeError(data.get("msg", f"No OKX market price available for {inst_id}"))
-        return Decimal(data["data"][0]["last"])
-
-    async def _response_json(self, response: aiohttp.ClientResponse) -> dict:
+            raise HTTPException(404, "That position has no contracts to close.")
+        if request.position_side == "long":
+            close_side = "sell"
+        elif request.position_side == "short":
+            close_side = "buy"
+        else:
+            close_side = "sell" if Decimal(position["pos"]) > 0 else "buy"
+        intent = OrderIntent(user_id, request.instrument, Side.SELL if close_side == "sell" else Side.BUY, Decimal("0"), close_key)
+        if not database.reserve(intent):
+            raise HTTPException(409, "Could not reserve the close request. Refresh and retry once.")
+        submission_started = False
         try:
-            data = await response.json(content_type=None)
-        except (ValueError, UnicodeDecodeError):
-            raise ExchangeError(f"OKX returned a non-API response (HTTP {response.status})") from None
-        if not isinstance(data, dict):
-            raise ExchangeError(f"OKX returned an unexpected response (HTTP {response.status})")
-        return data
-
-
-class BybitClient:
-    """Minimal V5 client: credentials stay in process memory and auth uses headers."""
-    def __init__(self, api_key: str, api_secret: str, testnet: bool = True, environment: str | None = None):
-        self.api_key, self.api_secret = api_key, api_secret
-        environment = environment or ("testnet" if testnet else "mainnet")
-        urls = {"testnet": "https://api-testnet.bybit.com", "demo": "https://api-demo.bybit.com", "mainnet": "https://api.bybit.com"}
-        if environment not in urls:
-            raise ValueError("Unsupported Bybit environment")
-        self.environment = environment
-        self.base_url = urls[environment]
-        self.session: aiohttp.ClientSession | None = None
-
-    async def _session(self) -> aiohttp.ClientSession:
-        if self.session is None:
-            # On some Windows installs aiodns cannot contact the configured DNS
-            # server. ThreadedResolver uses the OS resolver instead.
-            connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=15))
-        return self.session
-
-    async def close(self) -> None:
-        if self.session:
-            await self.session.close()
-            self.session = None
-
-    def _headers(self, body: str) -> dict[str, str]:
-        timestamp, window = str(int(time.time() * 1000)), "5000"
-        payload = f"{timestamp}{self.api_key}{window}{body}"
-        signature = hmac.new(self.api_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        return {"X-BAPI-API-KEY": self.api_key, "X-BAPI-TIMESTAMP": timestamp, "X-BAPI-RECV-WINDOW": window, "X-BAPI-SIGN": signature, "Content-Type": "application/json"}
-
-    async def _json(self, response: aiohttp.ClientResponse) -> dict:
-        """Convert exchange responses without leaking HTML/error pages to users.
-
-        A non-JSON response usually means an upstream WAF, regional restriction,
-        or temporary proxy failure—not an invalid user API key.
-        """
-        try:
-            data = await response.json(content_type=None)
-        except (ValueError, UnicodeDecodeError):
-            raise ExchangeError(
-                f"Bybit returned a non-API response (HTTP {response.status}). "
-                "Check that the hosting region is permitted by Bybit and retry."
-            ) from None
-        if not isinstance(data, dict):
-            raise ExchangeError(f"Bybit returned an unexpected response (HTTP {response.status})")
-        return data
-
-    async def ticker(self, symbol: str) -> Decimal:
-        session = await self._session()
-        async with session.get(f"{self.base_url}/v5/market/tickers", params={"category": "spot", "symbol": symbol}) as response:
-            data = await self._json(response)
-        items = data.get("result", {}).get("list", [])
-        if data.get("retCode") != 0 or not items:
-            raise ExchangeError(f"Ticker unavailable for {symbol}")
-        return Decimal(items[0]["lastPrice"])
-
-    async def instrument(self, symbol: str) -> dict:
-        session = await self._session()
-        async with session.get(f"{self.base_url}/v5/market/instruments-info", params={"category": "spot", "symbol": symbol}) as response:
-            data = await self._json(response)
-        items = data.get("result", {}).get("list", [])
-        if data.get("retCode") != 0 or not items:
-            raise ExchangeError(f"Instrument unavailable for {symbol}")
-        return items[0]
-
-    async def linear_instrument(self, symbol: str) -> dict:
-        """Public linear-perpetual rules; no account secret is sent."""
-        session = await self._session()
-        async with session.get(f"{self.base_url}/v5/market/instruments-info", params={"category": "linear", "symbol": symbol}) as response:
-            data = await self._json(response)
-        items = data.get("result", {}).get("list", [])
-        if data.get("retCode") != 0 or not items:
-            raise ExchangeError(f"No linear futures instrument found for {symbol}")
-        return items[0]
-
-    async def place_market_order(self, intent: OrderIntent, stop_loss: Decimal | None = None, take_profit: Decimal | None = None) -> OrderResult:
-        info = await self.instrument(intent.symbol)
-        price = await self.ticker(intent.symbol)
-        lot = info["lotSizeFilter"]
-        qty = (intent.notional_usdt / price).quantize(Decimal(lot["basePrecision"]), rounding=ROUND_DOWN)
-        if qty <= 0 or qty < Decimal(lot["minOrderQty"]):
-            raise ExchangeError("Order is below Bybit minimum quantity")
-        payload = {"category": "spot", "symbol": intent.symbol, "side": intent.side.value, "orderType": "Market", "qty": str(qty), "marketUnit": "baseCoin", "orderLinkId": intent.idempotency_key}
-        if stop_loss is not None and take_profit is not None:
-            payload.update({"stopLoss": str(stop_loss), "takeProfit": str(take_profit), "tpOrderType": "Market", "slOrderType": "Market"})
-        body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-        session = await self._session()
-        async with session.post(f"{self.base_url}/v5/order/create", data=body, headers=self._headers(body)) as response:
-            data = await self._json(response)
-        if data.get("retCode") != 0:
-            raise ExchangeError(data.get("retMsg", "Bybit rejected order"))
-        # Creation acknowledgement is not a fill. Reconciliation must confirm it.
-        return OrderResult(data["result"]["orderId"], "NEW", price, qty)
-
-    async def order_status(self, order_id: str) -> OrderResult:
-        query = urlencode(sorted({"category": "spot", "orderId": order_id}.items()))
-        session = await self._session()
-        async with session.get(f"{self.base_url}/v5/order/realtime?{query}", headers=self._headers(query)) as response:
-            data = await self._json(response)
-        orders = data.get("result", {}).get("list", [])
-        if data.get("retCode") != 0 or not orders:
-            raise ExchangeError(f"Could not reconcile order {order_id}")
-        order = orders[0]
-        return OrderResult(order_id, order["orderStatus"].upper(), Decimal(order.get("avgPrice") or "0"), Decimal(order.get("cumExecQty") or "0"))
-
-    async def api_key_info(self) -> dict:
-        """Validate a newly supplied key without logging it or persisting failed attempts."""
-        session = await self._session()
-        query = ""
-        async with session.get(f"{self.base_url}/v5/user/query-api", headers=self._headers(query)) as response:
-            data = await self._json(response)
-        if data.get("retCode") != 0:
-            raise ExchangeError(data.get("retMsg", "Bybit API key validation failed"))
-        return data["result"]
-
-    async def rsi_14(self, symbol: str, interval: str = "15") -> Decimal:
-        session = await self._session()
-        async with session.get(f"{self.base_url}/v5/market/kline", params={"category": "spot", "symbol": symbol, "interval": interval, "limit": "30"}) as response:
-            data = await self._json(response)
-        rows = data.get("result", {}).get("list", [])
-        if data.get("retCode") != 0 or len(rows) < 15:
-            raise ExchangeError(f"Insufficient market data for {symbol}")
-        closes = [Decimal(row[4]) for row in sorted(rows, key=lambda item: int(item[0]))]
-        changes = [closes[i] - closes[i - 1] for i in range(1, 15)]
-        gain = sum((max(change, Decimal("0")) for change in changes), Decimal("0")) / Decimal("14")
-        loss = sum((max(-change, Decimal("0")) for change in changes), Decimal("0")) / Decimal("14")
-        if loss == 0:
-            return Decimal("100")
-        return Decimal("100") - Decimal("100") / (Decimal("1") + gain / loss)
-
-
-class PaperBroker:
-    """Deterministic simulated execution using the same public ticker feed."""
-    def __init__(self, market: BybitClient):
-        self.market = market
-
-    async def place_market_order(self, intent: OrderIntent) -> OrderResult:
-        price = await self.market.ticker(intent.symbol)
-        qty = (intent.notional_usdt / price).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
-        if qty <= 0:
-            raise ExchangeError("Notional too small")
-        return OrderResult(f"paper-{uuid.uuid4()}", "FILLED", price, qty)
+            submission_started = True
+            accepted = await client.close_market_swap(inst_id=request.instrument, side=close_side, position_side=request.position_side, contracts=contracts, client_order_id=close_key)
+            order_id = accepted.get("ordId")
+            if not order_id:
+                raise ExchangeError("OKX accepted the close request without an order ID. Check OKX Demo before retrying.")
+            detail = await client.order_detail(request.instrument, order_id)
+            status = (detail or {}).get("state", "live").upper()
+            price = Decimal((detail or {}).get("avgPx") or (detail or {}).get("fillPx") or position.get("markPx") or "0")
+            filled = Decimal((detail or {}).get("accFillSz") or "0")
+            pnl = Decimal((detail or {}).get("pnl") or "0")
+            database.finalize(close_key, OrderResult(order_id, status, price, filled))
+            database.reconcile_exchange_order(close_key, status, price, filled, pnl)
+        except Exception:
+            if not submission_started:
+                database.cancel_reservation(close_key)
+            raise
+        await api.state.notifier.send(user_id, f"🧪 OKX Demo close accepted\n{request.instrument} · {request.position_side}\nOrder: {order_id}\nStatus: {status}\nRealized P&L reported by order: {pnl} USDT\nCheck OKX Demo as the source of truth.")
+        return {"closed": True, "order_id": order_id, "status": status, "realized_pnl_usdt": str(pnl), "fill_price": str(price), "contracts": str(filled or contracts), "message": "Close order accepted. The realized P&L is from OKX's order response and may update after final exchange settlement."}
+    except HTTPException:
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
+        raise HTTPException(400, f"OKX Demo position was not closed: {exc}") from None
+    finally:
+        await client.close()
