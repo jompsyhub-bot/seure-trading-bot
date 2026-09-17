@@ -77,32 +77,15 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 .empty{color:var(--muted);text-align:center;padding:20px 0;font-size:14px}
 .feed{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .feed-left{min-width:0}
-.feed-meta{
-  font-size:11px;
-  color:var(--muted);
-  margin-top:3px;
-  transition:color .2s;
-}
-.feed-meta.stale{ color:var(--warn); }
-.feed-meta.dead{ color:#ff8997; }
+.feed-meta{font-size:11px;color:var(--muted);margin-top:3px;transition:color .2s}
+.feed-meta.stale{color:var(--warn)}
+.feed-meta.dead{color:#ff8997}
 
-.price{
-  font-size:24px;
-  font-weight:800;
-  line-height:1.2;
-  display:inline-block;
-  transition:color .3s;
-}
-.price.flash-up{ animation:flashUp .55s ease-out; }
-.price.flash-down{ animation:flashDown .55s ease-out; }
-@keyframes flashUp{
-  0%{ color:var(--good); transform:scale(1.04); }
-  100%{ color:var(--text); transform:scale(1); }
-}
-@keyframes flashDown{
-  0%{ color:#ff8997; transform:scale(1.04); }
-  100%{ color:var(--text); transform:scale(1); }
-}
+.price{font-size:24px;font-weight:800;line-height:1.2;display:inline-block;transition:color .3s}
+.price.flash-up{animation:flashUp .55s ease-out}
+.price.flash-down{animation:flashDown .55s ease-out}
+@keyframes flashUp{0%{color:var(--good);transform:scale(1.04)}100%{color:var(--text);transform:scale(1)}}
+@keyframes flashDown{0%{color:#ff8997;transform:scale(1.04)}100%{color:var(--text);transform:scale(1)}}
 
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
   background:#a8b4cd;margin-right:6px;vertical-align:middle}
@@ -120,546 +103,164 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 #toast.err{border-color:#8a3a52;color:#ffc7d4}
 @media(max-width:390px){.grid{grid-template-columns:1fr}}
 
-/* ── Futures ticket ───────────────────────── */
-.step-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--accent-soft);
-  margin: 22px 0 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.step-label:first-of-type { margin-top: 4px; }
-.step-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  background: rgba(98, 140, 255, 0.15);
-  color: var(--accent);
-  border-radius: 50%;
-  font-size: 12px;
-  font-weight: 700;
-}
+.step-label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;
+  color:var(--accent-soft);margin:22px 0 8px;text-transform:uppercase;letter-spacing:0.5px}
+.step-label:first-of-type{margin-top:4px}
+.step-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
+  background:rgba(98,140,255,0.15);color:var(--accent);border-radius:50%;font-size:12px;font-weight:700}
 
-.side-toggle {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 6px 0;
-}
-.side-btn {
-  background: var(--field);
-  color: var(--muted);
-  border: 2px solid transparent;
-  padding: 14px;
-  font-size: 15px;
-  font-weight: 700;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all .15s;
-  margin: 0;
-}
-.side-btn[data-side="long"].active {
-  background: rgba(77, 221, 172, 0.12);
-  color: var(--good);
-  border-color: var(--good);
-}
-.side-btn[data-side="short"].active {
-  background: rgba(255, 137, 151, 0.12);
-  color: #ff8997;
-  border-color: #ff8997;
-}
+.side-toggle{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:6px 0}
+.side-btn{background:var(--field);color:var(--muted);border:2px solid transparent;
+  padding:14px;font-size:15px;font-weight:700;border-radius:10px;cursor:pointer;transition:all .15s;margin:0}
+.side-btn[data-side="long"].active{background:rgba(77,221,172,0.12);color:var(--good);border-color:var(--good)}
+.side-btn[data-side="short"].active{background:rgba(255,137,151,0.12);color:#ff8997;border-color:#ff8997}
 
-.chip-row {
-  display: flex;
-  gap: 6px;
-  margin: 6px 0;
-  flex-wrap: wrap;
-}
-.chip {
-  flex: 1 1 0;
-  min-width: 55px;
-  padding: 10px 4px;
-  margin: 0;
-  background: var(--field);
-  color: var(--text);
-  border: 1px solid var(--border);
-  font-size: 14px;
-  font-weight: 600;
-  border-radius: 9px;
-  cursor: pointer;
-  transition: all .12s;
-}
-.chip.active {
-  background: rgba(98, 140, 255, 0.15);
-  border-color: var(--accent);
-  color: var(--accent-soft);
-}
-.chip:disabled { opacity: 0.35; cursor: not-allowed; }
-.chip.mini-chip {
-  flex: 0 0 auto;
-  min-width: 0;
-  padding: 6px 10px;
-  font-size: 12px;
-  margin: 0;
-  background: rgba(98, 140, 255, 0.08);
-  color: var(--accent-soft);
-  border-color: transparent;
-}
-.chip.mini-chip.good  { background: rgba(77, 221, 172, 0.10); color: var(--good); }
-.chip.mini-chip.loss  { background: rgba(255, 137, 151, 0.10); color: #ff8997; }
+.chip-row{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}
+.chip{flex:1 1 0;min-width:55px;padding:10px 4px;margin:0;background:var(--field);color:var(--text);
+  border:1px solid var(--border);font-size:14px;font-weight:600;border-radius:9px;cursor:pointer;transition:all .12s}
+.chip.active{background:rgba(98,140,255,0.15);border-color:var(--accent);color:var(--accent-soft)}
+.chip:disabled{opacity:0.35;cursor:not-allowed}
+.chip.mini-chip{flex:0 0 auto;min-width:0;padding:6px 10px;font-size:12px;margin:0;
+  background:rgba(98,140,255,0.08);color:var(--accent-soft);border-color:transparent}
+.chip.mini-chip.good{background:rgba(77,221,172,0.10);color:var(--good)}
+.chip.mini-chip.loss{background:rgba(255,137,151,0.10);color:#ff8997}
 
-.warning {
-  background: rgba(243, 196, 108, 0.08);
-  border: 1px solid rgba(243, 196, 108, 0.35);
-  color: var(--warn);
-  padding: 10px 12px;
-  border-radius: 9px;
-  font-size: 13px;
-  margin: 8px 0;
-  line-height: 1.45;
-}
+.warning{background:rgba(243,196,108,0.08);border:1px solid rgba(243,196,108,0.35);
+  color:var(--warn);padding:10px 12px;border-radius:9px;font-size:13px;margin:8px 0;line-height:1.45}
 
-.info-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 12px;
-  background: rgba(98, 140, 255, 0.06);
-  border-radius: 9px;
-  margin: 10px 0;
-  font-size: 14px;
-}
+.info-row{display:flex;justify-content:space-between;align-items:center;
+  padding:10px 12px;background:rgba(98,140,255,0.06);border-radius:9px;margin:10px 0;font-size:14px}
 
-.hint {
-  color: var(--muted);
-  font-size: 12px;
-  margin: 4px 0 8px;
-  line-height: 1.4;
-}
-.hint.good { color: var(--good); }
-.hint.loss { color: #ff8997; }
+.hint{color:var(--muted);font-size:12px;margin:4px 0 8px;line-height:1.4}
+.hint.good{color:var(--good)}
+.hint.loss{color:#ff8997}
 
-.summary-table { width: 100%; font-size: 14px; }
-.summary-table td { padding: 10px 0; border-bottom: 1px solid var(--border); }
-.summary-table tr:last-child td { border-bottom: none; }
-.summary-table td:last-child { text-align: right; }
+.summary-table{width:100%;font-size:14px}
+.summary-table td{padding:10px 0;border-bottom:1px solid var(--border)}
+.summary-table tr:last-child td{border-bottom:none}
+.summary-table td:last-child{text-align:right}
 
-.account-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  font-size: 14px;
-  margin: 14px 0;
-}
-.account-bar #accountIcon { font-size: 16px; }
-.account-bar #accountText { flex: 1; }
+.account-bar{display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:14px;margin:14px 0}
+.account-bar #accountIcon{font-size:16px}
+.account-bar #accountText{flex:1}
 
-button.mini-ghost {
-  width: auto;
-  padding: 6px 12px;
-  margin: 0;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-}
+button.mini-ghost{width:auto;padding:6px 12px;margin:0;background:transparent;
+  border:1px solid var(--border);color:var(--muted);font-size:12px;font-weight:500}
 
-details.advanced { padding: 14px 16px; }
-details.advanced summary {
-  cursor: pointer;
-  font-size: 13px;
-  list-style: none;
-  user-select: none;
-}
-details.advanced summary::-webkit-details-marker { display: none; }
-details.advanced summary::before {
-  content: '▸ ';
-  display: inline-block;
-  transition: transform .15s;
-}
-details.advanced[open] summary::before { transform: rotate(90deg); }
-details.advanced[open] summary { margin-bottom: 12px; }
+details.advanced{padding:14px 16px}
+details.advanced summary{cursor:pointer;font-size:13px;list-style:none;user-select:none}
+details.advanced summary::-webkit-details-marker{display:none}
+details.advanced summary::before{content:'▸ ';display:inline-block;transition:transform .15s}
+details.advanced[open] summary::before{transform:rotate(90deg)}
+details.advanced[open] summary{margin-bottom:12px}
 
-/* ── Leverage slider ─────────────────────── */
-.lev-slider-wrap {
-  margin: 14px 0 8px;
-  padding: 14px 12px 10px;
-  background: rgba(98, 140, 255, 0.05);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-.lev-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 10px;
-}
-.lev-header-label {
-  font-size: 12px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-.lev-display {
-  font-size: 28px;
-  font-weight: 800;
-  line-height: 1;
-  color: var(--accent-soft);
-  transition: color .15s;
-}
-.lev-display.risk-low  { color: var(--good); }
-.lev-display.risk-mid  { color: var(--warn); }
-.lev-display.risk-high { color: #ff8997; }
-.lev-risk-tag {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  margin-left: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  vertical-align: middle;
-  background: rgba(77, 221, 172, 0.15);
-  color: var(--good);
-}
-.lev-display.risk-mid  ~ .lev-risk-tag { background: rgba(243, 196, 108, 0.15); color: var(--warn); }
-.lev-display.risk-high ~ .lev-risk-tag { background: rgba(255, 137, 151, 0.15); color: #ff8997; }
+.lev-slider-wrap{margin:14px 0 8px;padding:14px 12px 10px;
+  background:rgba(98,140,255,0.05);border:1px solid var(--border);border-radius:12px}
+.lev-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+.lev-header-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px}
+.lev-display{font-size:28px;font-weight:800;line-height:1;color:var(--accent-soft);transition:color .15s}
+.lev-display.risk-low{color:var(--good)}
+.lev-display.risk-mid{color:var(--warn)}
+.lev-display.risk-high{color:#ff8997}
+.lev-risk-tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;margin-left:8px;
+  text-transform:uppercase;letter-spacing:0.4px;vertical-align:middle;
+  background:rgba(77,221,172,0.15);color:var(--good)}
+.lev-display.risk-mid  ~ .lev-risk-tag{background:rgba(243,196,108,0.15);color:var(--warn)}
+.lev-display.risk-high ~ .lev-risk-tag{background:rgba(255,137,151,0.15);color:#ff8997}
 
-input[type="range"].lev-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 8px;
-  border-radius: 4px;
-  outline: none;
-  padding: 0;
-  margin: 8px 0 4px;
-  border: none;
-  background:
-    linear-gradient(to right,
-      rgba(77, 221, 172, 0.25) 0%,
-      rgba(77, 221, 172, 0.25) 20%,
-      rgba(243, 196, 108, 0.30) 20%,
-      rgba(243, 196, 108, 0.30) 50%,
-      rgba(255, 137, 151, 0.35) 50%,
-      rgba(255, 137, 151, 0.35) 100%);
-  position: relative;
-  cursor: pointer;
-}
-input[type="range"].lev-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 26px;
-  height: 26px;
-  background: #fff;
-  border: 3px solid var(--accent);
-  border-radius: 50%;
-  cursor: grab;
-  box-shadow: 0 2px 10px rgba(0,0,0,.5);
-  transition: transform .1s;
-}
-input[type="range"].lev-slider::-webkit-slider-thumb:active {
-  cursor: grabbing;
-  transform: scale(1.15);
-}
-input[type="range"].lev-slider::-moz-range-thumb {
-  width: 22px;
-  height: 22px;
-  background: #fff;
-  border: 3px solid var(--accent);
-  border-radius: 50%;
-  cursor: grab;
-  box-shadow: 0 2px 10px rgba(0,0,0,.5);
-}
-.lev-ticks {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 2px;
-  padding: 0 4px;
-}
-.lev-ticks span:nth-child(2) { opacity: 0.6; }
-.lev-source {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 8px;
-  text-align: center;
-  font-style: italic;
-}
+input[type="range"].lev-slider{-webkit-appearance:none;appearance:none;width:100%;height:8px;
+  border-radius:4px;outline:none;padding:0;margin:8px 0 4px;border:none;
+  background:linear-gradient(to right,
+    rgba(77,221,172,0.25) 0%,rgba(77,221,172,0.25) 20%,
+    rgba(243,196,108,0.30) 20%,rgba(243,196,108,0.30) 50%,
+    rgba(255,137,151,0.35) 50%,rgba(255,137,151,0.35) 100%);
+  position:relative;cursor:pointer}
+input[type="range"].lev-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:26px;height:26px;background:#fff;border:3px solid var(--accent);border-radius:50%;
+  cursor:grab;box-shadow:0 2px 10px rgba(0,0,0,.5);transition:transform .1s}
+input[type="range"].lev-slider::-webkit-slider-thumb:active{cursor:grabbing;transform:scale(1.15)}
+input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;background:#fff;
+  border:3px solid var(--accent);border-radius:50%;cursor:grab;box-shadow:0 2px 10px rgba(0,0,0,.5)}
+.lev-ticks{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);
+  margin-top:2px;padding:0 4px}
+.lev-ticks span:nth-child(2){opacity:0.6}
+.lev-source{font-size:11px;color:var(--muted);margin-top:8px;text-align:center;font-style:italic}
 
-/* ── Automate: tabs + manual input ────────── */
-.tab-bar {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 16px 0 6px;
-  background: rgba(98, 140, 255, 0.06);
-  padding: 5px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-}
-.tab-bar .tab {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 11px 8px;
-  margin: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  transition: all .15s;
-  width: auto;
-}
-.tab-bar .tab.active {
-  background: rgba(98, 140, 255, 0.18);
-  color: var(--accent-soft);
-}
-.tab-bar .tab-ico { font-size: 15px; }
-.tab-pane { display: block; }
-.tab-pane.hidden { display: none; }
+.tab-bar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0 6px;
+  background:rgba(98,140,255,0.06);padding:5px;border-radius:12px;border:1px solid var(--border)}
+.tab-bar .tab{display:flex;align-items:center;justify-content:center;gap:6px;
+  padding:11px 8px;margin:0;background:transparent;color:var(--muted);border:none;
+  border-radius:8px;font-size:13px;font-weight:600;transition:all .15s;width:auto}
+.tab-bar .tab.active{background:rgba(98,140,255,0.18);color:var(--accent-soft)}
+.tab-bar .tab-ico{font-size:15px}
+.tab-pane{display:block}
+.tab-pane.hidden{display:none}
 
-.parsed-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-left: 6px;
-  vertical-align: middle;
-}
-.parsed-dot.ok    { background: var(--good); }
-.parsed-dot.warn  { background: var(--warn); }
-.parsed-dot.miss  { background: #ff8997; }
+.parsed-dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+  margin-left:6px;vertical-align:middle}
+.parsed-dot.ok{background:var(--good)}
+.parsed-dot.warn{background:var(--warn)}
+.parsed-dot.miss{background:#ff8997}
 
 .field-missing input,
-.field-missing select {
-  border-color: rgba(255, 137, 151, 0.55);
-  background: rgba(255, 137, 151, 0.06);
-}
+.field-missing select{border-color:rgba(255,137,151,0.55);background:rgba(255,137,151,0.06)}
 
-.risk-box {
-  padding: 14px;
-  border-radius: 12px;
-  margin: 12px 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  background: rgba(98, 140, 255, 0.06);
-  border: 1px solid var(--border);
-}
-.risk-box .risk-cell { text-align: center; }
-.risk-box .risk-label {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-.risk-box .risk-value {
-  font-size: 20px;
-  font-weight: 800;
-  margin-top: 4px;
-}
-.risk-box .risk-value.good { color: var(--good); }
-.risk-box .risk-value.loss { color: #ff8997; }
+.risk-box{padding:14px;border-radius:12px;margin:12px 0;display:grid;
+  grid-template-columns:1fr 1fr;gap:12px;background:rgba(98,140,255,0.06);border:1px solid var(--border)}
+.risk-box .risk-cell{text-align:center}
+.risk-box .risk-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px}
+.risk-box .risk-value{font-size:20px;font-weight:800;margin-top:4px}
+.risk-box .risk-value.good{color:var(--good)}
+.risk-box .risk-value.loss{color:#ff8997}
 
-.rr-bar {
-  margin: 12px 0;
-  padding: 12px;
-  background: rgba(98, 140, 255, 0.04);
-  border-radius: 10px;
-  border: 1px solid var(--border);
-}
-.rr-bar .rr-label {
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 8px;
-  text-align: center;
-}
-.rr-bar .rr-track {
-  display: flex;
-  height: 12px;
-  border-radius: 6px;
-  overflow: hidden;
-  background: rgba(255,255,255,.05);
-}
-.rr-bar .rr-risk {
-  background: linear-gradient(90deg, rgba(255,137,151,.5), rgba(255,137,151,.9));
-  transition: width .3s ease;
-}
-.rr-bar .rr-reward {
-  background: linear-gradient(90deg, rgba(77,221,172,.9), rgba(77,221,172,.5));
-  transition: width .3s ease;
-}
-.rr-bar .rr-legend {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 6px;
-}
-.rr-bar .rr-ratio {
-  text-align: center;
-  font-size: 15px;
-  font-weight: 700;
-  margin-top: 8px;
-  color: var(--text);
-}
+.rr-bar{margin:12px 0;padding:12px;background:rgba(98,140,255,0.04);
+  border-radius:10px;border:1px solid var(--border)}
+.rr-bar .rr-label{font-size:12px;color:var(--muted);margin-bottom:8px;text-align:center}
+.rr-bar .rr-track{display:flex;height:12px;border-radius:6px;overflow:hidden;background:rgba(255,255,255,.05)}
+.rr-bar .rr-risk{background:linear-gradient(90deg,rgba(255,137,151,.5),rgba(255,137,151,.9));transition:width .3s ease}
+.rr-bar .rr-reward{background:linear-gradient(90deg,rgba(77,221,172,.9),rgba(77,221,172,.5));transition:width .3s ease}
+.rr-bar .rr-legend{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px}
+.rr-bar .rr-ratio{text-align:center;font-size:15px;font-weight:700;margin-top:8px;color:var(--text)}
 
-/* ── Activity: position cards ────────────── */
-.pos-card {
-  background: rgba(98, 140, 255, 0.05);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px;
-  margin: 10px 0;
-  transition: border-color .15s;
-}
-.pos-card.long  { border-left: 4px solid var(--good); }
-.pos-card.short { border-left: 4px solid #ff8997; }
+.pos-card{background:rgba(98,140,255,0.05);border:1px solid var(--border);
+  border-radius:12px;padding:14px;margin:10px 0;transition:border-color .15s}
+.pos-card.long{border-left:4px solid var(--good)}
+.pos-card.short{border-left:4px solid #ff8997}
+.pos-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.pos-market{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:700}
+.pos-badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;
+  text-transform:uppercase;letter-spacing:0.4px}
+.pos-badge.long{background:rgba(77,221,172,0.15);color:var(--good)}
+.pos-badge.short{background:rgba(255,137,151,0.15);color:#ff8997}
+.pos-lev{font-size:11px;color:var(--muted);background:rgba(98,140,255,0.10);
+  padding:3px 8px;border-radius:999px;font-weight:600}
+.pos-pnl{text-align:center;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:12px}
+.pos-pnl-value{font-size:26px;font-weight:800;line-height:1.1}
+.pos-pnl-pct{font-size:13px;margin-top:2px}
+.pos-details{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:13px;margin-bottom:12px}
+.pos-detail{display:flex;justify-content:space-between;align-items:baseline}
+.pos-detail-label{color:var(--muted);font-size:12px}
+.pos-detail-value{font-weight:600;font-variant-numeric:tabular-nums}
+.pos-close-btn{width:100%;padding:11px;background:rgba(199,81,97,0.12);color:#ff8997;
+  border:1px solid rgba(199,81,97,0.4);border-radius:9px;font-weight:600;font-size:14px;margin:0;transition:all .15s}
+.pos-close-btn:active{background:rgba(199,81,97,0.25)}
 
-.pos-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
-.pos-market {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 700;
-}
-.pos-badge {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-.pos-badge.long  { background: rgba(77, 221, 172, 0.15); color: var(--good); }
-.pos-badge.short { background: rgba(255, 137, 151, 0.15); color: #ff8997; }
-.pos-lev {
-  font-size: 11px;
-  color: var(--muted);
-  background: rgba(98, 140, 255, 0.10);
-  padding: 3px 8px;
-  border-radius: 999px;
-  font-weight: 600;
-}
+.act-summary{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.act-summary .card{margin:0;padding:14px}
+.act-summary .metric{font-size:22px}
 
-.pos-pnl {
-  text-align: center;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 12px;
-}
-.pos-pnl-value {
-  font-size: 26px;
-  font-weight: 800;
-  line-height: 1.1;
-}
-.pos-pnl-pct {
-  font-size: 13px;
-  margin-top: 2px;
-}
-
-.pos-details {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 16px;
-  font-size: 13px;
-  margin-bottom: 12px;
-}
-.pos-detail {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-}
-.pos-detail-label {
-  color: var(--muted);
-  font-size: 12px;
-}
-.pos-detail-value {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.pos-close-btn {
-  width: 100%;
-  padding: 11px;
-  background: rgba(199, 81, 97, 0.12);
-  color: #ff8997;
-  border: 1px solid rgba(199, 81, 97, 0.4);
-  border-radius: 9px;
-  font-weight: 600;
-  font-size: 14px;
-  margin: 0;
-  transition: all .15s;
-}
-.pos-close-btn:active { background: rgba(199, 81, 97, 0.25); }
-
-.act-summary {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.act-summary .card {
-  margin: 0;
-  padding: 14px;
-}
-.act-summary .metric { font-size: 22px; }
-
-.history-card {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-}
-.history-card:last-child { border-bottom: none; }
-.history-left { flex: 1; }
-.history-market {
-  font-weight: 700;
-  font-size: 14px;
-}
-.history-meta {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 2px;
-}
-.history-status {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  background: rgba(98, 140, 255, 0.12);
-  color: var(--accent-soft);
-}
-.history-status.filled { background: rgba(77, 221, 172, 0.12); color: var(--good); }
-.history-status.canceled { background: rgba(199, 81, 97, 0.12); color: #ff8997; }
-.history-pnl {
-  text-align: right;
-  font-weight: 700;
-  margin-left: 10px;
-  font-variant-numeric: tabular-nums;
-}
+.history-card{display:flex;justify-content:space-between;align-items:center;
+  padding:12px 0;border-bottom:1px solid var(--border);font-size:13px}
+.history-card:last-child{border-bottom:none}
+.history-left{flex:1}
+.history-market{font-weight:700;font-size:14px}
+.history-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.history-status{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600;
+  text-transform:uppercase;letter-spacing:0.3px;
+  background:rgba(98,140,255,0.12);color:var(--accent-soft)}
+.history-status.filled{background:rgba(77,221,172,0.12);color:var(--good)}
+.history-status.canceled{background:rgba(199,81,97,0.12);color:#ff8997}
+.history-pnl{text-align:right;font-weight:700;margin-left:10px;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -669,7 +270,6 @@ input[type="range"].lev-slider::-moz-range-thumb {
   <span class="tag">DEMO ONLY</span>
 </header>
 
-<!-- ============ ACCOUNT ============ -->
 <section id="account" class="view active">
   <h1>Connect your account</h1>
   <p class="muted">Link an OKX Demo API key to get started.</p>
@@ -699,7 +299,6 @@ input[type="range"].lev-slider::-moz-range-thumb {
   </div>
 </section>
 
-<!-- ============ HOME ============ -->
 <section id="overview" class="view">
   <h1 id="welcome">Your trading space</h1>
   <p id="summary" class="muted">Loading…</p>
@@ -716,7 +315,6 @@ input[type="range"].lev-slider::-moz-range-thumb {
   </div>
 </section>
 
-<!-- ============ AUTOMATE ============ -->
 <section id="automate" class="view">
   <h1>Automate</h1>
   <p class="muted">Two ways to trade. Pick one.</p>
@@ -760,8 +358,6 @@ SL @ 77,000"></textarea>
           <label>Market<span id="dot-symbol" class="parsed-dot ok"></span></label>
           <select id="parseSymbol">
             <option value="">— pick —</option>
-            <option value="BTCUSDT">BTCUSDT</option>
-            <option value="ETHUSDT">ETHUSDT</option>
           </select>
         </div>
         <div id="wrap-side">
@@ -811,13 +407,16 @@ SL @ 77,000"></textarea>
 
     <div id="settings" class="card hidden">
       <p class="notice">Experimental RSI reversion. 15-minute RSI ≤ 30 entry; no profit promise.</p>
+      <p class="warning" style="margin-top:0">
+        The RSI strategy has been validated for BTC and ETH. Other markets may behave unexpectedly — test with small margins first.
+      </p>
       <label class="checkbox">
         <input id="enabled" type="checkbox"> Enable Demo automation
       </label>
       <label for="symbol">Market</label>
       <select id="symbol">
-        <option>BTCUSDT</option>
-        <option>ETHUSDT</option>
+        <option>BTC-USDT-SWAP</option>
+        <option>ETH-USDT-SWAP</option>
       </select>
       <div class="grid">
         <div><label for="order">Max order (USDT)</label><input id="order" placeholder="10"></div>
@@ -831,7 +430,6 @@ SL @ 77,000"></textarea>
   </div>
 </section>
 
-<!-- ============ FUTURES ============ -->
 <section id="futures" class="view">
   <h1>Futures</h1>
   <p class="muted">Trade OKX Demo perpetuals with leverage. Demo money only — no real funds.</p>
@@ -879,8 +477,8 @@ SL @ 77,000"></textarea>
 
     <div class="step-label"><span class="step-num">1</span> Direction</div>
     <select id="futSymbol" onchange="futOnSymbolChange()">
-      <option>BTCUSDT</option>
-      <option>ETHUSDT</option>
+      <option>BTC-USDT-SWAP</option>
+      <option>ETH-USDT-SWAP</option>
     </select>
     <div class="side-toggle">
       <button id="btnLong"  class="side-btn active" data-side="long"  onclick="futSetSide('long')">↑ Long</button>
@@ -978,7 +576,6 @@ SL @ 77,000"></textarea>
   </div>
 </section>
 
-<!-- ============ ACTIVITY ============ -->
 <section id="activity" class="view">
   <h1>Activity</h1>
   <p class="muted">Live positions and order history from OKX Demo.</p>
@@ -1068,6 +665,49 @@ function escapeHtml(s) {
 }
 
 /* =========================================================
+   Instruments cache + dynamic dropdowns
+========================================================= */
+let instrumentsCache = null;
+
+async function loadInstruments() {
+  if (instrumentsCache) return instrumentsCache;
+  try {
+    const rows = await api('/api/exchange/instruments');
+    instrumentsCache = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    console.warn('Could not load instruments list:', e.message);
+    instrumentsCache = [
+      { instId: 'BTC-USDT-SWAP', displayName: 'BTC / USDT' },
+      { instId: 'ETH-USDT-SWAP', displayName: 'ETH / USDT' },
+    ];
+  }
+  return instrumentsCache;
+}
+
+async function populateSymbolSelects() {
+  const rows = await loadInstruments();
+  const optionsHtml = rows
+    .map(r => `<option value="${r.instId}">${r.displayName || r.instId}</option>`)
+    .join('');
+  const ids = ['futSymbol', 'symbol', 'parseSymbol'];
+  for (const id of ids) {
+    const sel = document.getElementById(id);
+    if (!sel) continue;
+    const current = sel.value;
+    // Keep the leading "— pick —" option for parseSymbol
+    if (id === 'parseSymbol') {
+      sel.innerHTML = `<option value="">— pick —</option>${optionsHtml}`;
+    } else {
+      sel.innerHTML = optionsHtml;
+    }
+    // Try to preserve the current selection if it still exists
+    if (current && Array.from(sel.options).some(o => o.value === current)) {
+      sel.value = current;
+    }
+  }
+}
+
+/* =========================================================
    Navigation
 ========================================================= */
 function go(id, btn) {
@@ -1119,18 +759,32 @@ function render(d) {
 
   const a = d.automation || {};
   document.getElementById('enabled').checked = !!a.enabled;
-  document.getElementById('symbol').value   = a.symbol || 'BTCUSDT';
-  document.getElementById('order').value    = a.max_order_notional ?? 10;
-  document.getElementById('trades').value   = a.max_trades_per_day ?? 1;
-  document.getElementById('stop').value     = a.stop_loss_pct ?? 2;
-  document.getElementById('take').value     = a.take_profit_pct ?? 4;
+
+  // Normalize whatever symbol is stored (BTCUSDT, BTC-USDT, BTC-USDT-SWAP)
+  // and pick the matching option in the dynamically-populated dropdown.
+  const symSel = document.getElementById('symbol');
+  const desired = (a.symbol || 'BTC-USDT-SWAP').toUpperCase();
+  const normalized = desired.replace(/\//g, '-').replace(/^([A-Z0-9]+?)(USDT|USDC|USD)(-SWAP)?$/, '$1-$2-SWAP');
+  const match = Array.from(symSel.options).find(o =>
+    o.value === normalized || o.value.replace(/-/g, '') === desired.replace(/-/g, '')
+  );
+  if (match) symSel.value = match.value;
+
+  document.getElementById('order').value  = a.max_order_notional ?? 10;
+  document.getElementById('trades').value = a.max_trades_per_day ?? 1;
+  document.getElementById('stop').value   = a.stop_loss_pct ?? 2;
+  document.getElementById('take').value   = a.take_profit_pct ?? 4;
 }
 
 async function load() {
   try {
     const d = await api('/api/dashboard');
     render(d);
-    if (!state.connected) go('account');
+    if (!state.connected) {
+      go('account');
+    } else {
+      await populateSymbolSelects();
+    }
   } catch (e) {
     document.getElementById('summary').textContent = e.message;
     toast(e.message, true);
@@ -1168,6 +822,7 @@ async function disconnect() {
   if (!confirm('Disconnect this account?')) return;
   try {
     await api('/api/exchange/connection', { method: 'DELETE' });
+    instrumentsCache = null;   // force refresh on next connect
     await load();
     toast('Account disconnected');
     go('account', document.querySelector('.nav button[data-view="account"]'));
@@ -1216,6 +871,13 @@ function autoTab(name) {
 ========================================================= */
 let futParsedPreview = null;
 
+const PARSER_KEYWORDS = new Set([
+  'LONG','SHORT','BUY','SELL','BULLISH','BEARISH',
+  'TP','SL','TARGET','MARGIN','LEVERAGE','LEV','ENTRY',
+  'PROFIT','LOSS','STOP','TAKE','AT','IS','OF','THE',
+  'AND','OR','ON','IN','BY','TO','FOR','A','AN','WITH','USE','SET',
+]);
+
 function futClearSignal() {
   document.getElementById('signalInput').value = '';
   document.getElementById('parsedCard').classList.add('hidden');
@@ -1231,12 +893,27 @@ function parseTradeSignal(text) {
   };
   const t = ' ' + String(text || '') + ' ';
 
-  if (/\b(btc|bitcoin|xbt|btcusdt)\b/i.test(t)) out.symbol = 'BTCUSDT';
-  else if (/\b(eth|ethereum|ethusdt)\b/i.test(t)) out.symbol = 'ETHUSDT';
-
+  // ---- Direction ----
   if (/\b(short|sell|bearish)\b/i.test(t)) out.side = 'short';
   else if (/\b(long|buy|bullish)\b/i.test(t)) out.side = 'long';
 
+  // ---- Symbol ----
+  // First try the whole pair: "BTC-USDT", "BTC/USDT", "BTCUSDT", "SOL-USDT"
+  const pairMatch = t.match(/\b([A-Z][A-Z0-9]{1,11})\s*[\/\-]?\s*(USDT|USDC|USD)\b/i);
+  if (pairMatch) {
+    out.symbol = `${pairMatch[1].toUpperCase()}-${pairMatch[2].toUpperCase()}-SWAP`;
+  } else {
+    // No pair — look for a bare crypto-style base name and assume USDT
+    const words = t.match(/\b[A-Z]{2,10}\b/g) || [];
+    for (const w of words) {
+      if (!PARSER_KEYWORDS.has(w.toUpperCase())) {
+        out.symbol = `${w.toUpperCase()}-USDT-SWAP`;
+        break;
+      }
+    }
+  }
+
+  // ---- Number parser (handles $, commas, k, m) ----
   const parseNum = raw => {
     if (!raw) return null;
     let s = String(raw).replace(/[$,\s]/g, '');
@@ -1272,13 +949,22 @@ function parseTradeSignal(text) {
   return out;
 }
 
-function futAnalyzeSignal() {
+async function futAnalyzeSignal() {
   const text = document.getElementById('signalInput').value;
   if (!text.trim()) return toast('Paste a signal first', true);
 
-  const parsed = parseTradeSignal(text);
+  // Make sure the dropdown is populated before we try to select a value from it
+  await populateSymbolSelects();
 
-  document.getElementById('parseSymbol').value   = parsed.symbol || '';
+  const parsed = parseTradeSignal(text);
+  const sel = document.getElementById('parseSymbol');
+
+  // If the parsed symbol isn't already an option, add it so the user can see what we found
+  if (parsed.symbol && !Array.from(sel.options).some(o => o.value === parsed.symbol)) {
+    sel.add(new Option(parsed.symbol, parsed.symbol));
+  }
+
+  sel.value = parsed.symbol || '';
   document.getElementById('parseSide').value     = parsed.side || '';
   document.getElementById('parseLeverage').value = parsed.leverage != null ? parsed.leverage : '';
   document.getElementById('parseMargin').value   = parsed.margin != null ? parsed.margin : '';
@@ -1381,6 +1067,7 @@ function renderManualPreview(v, d) {
   const notional  = parseFloat(d.estimated_notional_usdt);
   const available = parseFloat(d.available_usdt);
   const marginPct = (v.margin / available * 100).toFixed(1);
+  const displaySymbol = String(v.symbol).replace('-USDT-SWAP', '').replace('-SWAP', '');
 
   const wrongSideTp = v.side === 'long' ? v.tp <= entry : v.tp >= entry;
   const wrongSideSl = v.side === 'long' ? v.sl >= entry : v.sl <= entry;
@@ -1393,10 +1080,8 @@ function renderManualPreview(v, d) {
     res.classList.remove('hidden');
     res.innerHTML = `
       <h2>⚠️ Cannot preview this trade</h2>
-      <p class="muted">Current ${v.symbol} price is <b>$${entry.toFixed(2)}</b>.</p>
-      <div class="warning">
-        ${problems.join('<br>')}
-      </div>
+      <p class="muted">Current ${displaySymbol} price is <b>$${entry.toFixed(2)}</b>.</p>
+      <div class="warning">${problems.join('<br>')}</div>
       <p class="muted" style="font-size:13px">
         Edit the values above and tap <b>Show trade preview</b> again.
       </p>
@@ -1408,7 +1093,6 @@ function renderManualPreview(v, d) {
 
   const tpMovePct = v.side === 'long' ? (v.tp / entry - 1) * 100 : (1 - v.tp / entry) * 100;
   const slMovePct = v.side === 'long' ? (1 - v.sl / entry) * 100 : (v.sl / entry - 1) * 100;
-
   const tpProfit = notional * (tpMovePct / 100);
   const slLoss   = notional * (slMovePct / 100);
 
@@ -1428,7 +1112,7 @@ function renderManualPreview(v, d) {
     </p>
 
     <table class="summary-table">
-      <tr><td class="muted">Market</td><td><b>${v.symbol}</b></td></tr>
+      <tr><td class="muted">Market</td><td><b>${escapeHtml(displaySymbol)}</b></td></tr>
       <tr><td class="muted">Direction</td><td><b class="${v.side === 'long' ? 'good' : 'loss'}">${v.side === 'long' ? '↑ Long' : '↓ Short'}</b></td></tr>
       <tr><td class="muted">Entry (live)</td><td>$${entry.toFixed(2)}</td></tr>
       <tr><td class="muted">Leverage</td><td>${v.leverage}×</td></tr>
@@ -1521,28 +1205,27 @@ let futInstrumentMeta = null;
 let futLevMax = 1, futLevMin = 1, futLevStep = 1;
 let futProtectionTouched = false;
 let futUiReady = false;
-let futFeedAgeTimer = null;
 
 const fut$ = id => document.getElementById(id);
-const futInstrument = () =>
-  fut$('futSymbol').value === 'BTCUSDT' ? 'BTC-USDT-SWAP' : 'ETH-USDT-SWAP';
+const futInstrument = () => fut$('futSymbol').value || 'BTC-USDT-SWAP';
 
-/* Ensures the WebSocket + portfolio poll are running. Safe to call repeatedly. */
 function ensureFeed() {
   if (feedReady) return;
   feedReady = true;
   futConnectFeed();
   refreshPortfolio();
-  setInterval(refreshPortfolio, 3000);   // was 5000 — 3s safety refresh
-  futFeedAgeTimer = setInterval(updateFeedAge, 400);
+  setInterval(refreshPortfolio, 3000);
+  setInterval(updateFeedAge, 400);
 }
 
-function futInit() {
+async function futInit() {
   ensureFeed();
   if (futUiReady) return;
   futUiReady = true;
+  await populateSymbolSelects();
   futAccount();
   futLoadLeverageOptions();
+  futSubscribeTicker();
 }
 
 function activityInit() {
@@ -1569,7 +1252,7 @@ function futConnectFeed() {
         if (futSocket?.readyState === WebSocket.OPEN) {
           futSocket.send(JSON.stringify({ type: 'keepalive' }));
         }
-      }, 15000);   // was 25000 — ping more often to keep the socket alive
+      }, 15000);
     };
     futSocket.onmessage = e => {
       try {
@@ -1577,6 +1260,8 @@ function futConnectFeed() {
         if (m.type === 'connected') futSubscribeTicker();
         if (m.type === 'portfolio_changed') refreshPortfolio();
         if (m.type === 'ticker') {
+          // Ignore ticks for instruments we're not currently viewing
+          if (m.instrument !== futInstrument()) return;
           futShowPrice(m.price);
           if (fut$('feedDot')) {
             fut$('feedDot').classList.remove('stale', 'dead');
@@ -1593,7 +1278,7 @@ function futConnectFeed() {
         fut$('feedDot').classList.add('dead');
       }
       if (fut$('feedState')) fut$('feedState').textContent = 'Reconnecting…';
-      futRetry = setTimeout(futConnectFeed, 2000);   // was 3000 — retry faster
+      futRetry = setTimeout(futConnectFeed, 2000);
     };
   } catch {
     futRetry = setTimeout(futConnectFeed, 2000);
@@ -1623,12 +1308,11 @@ function futShowPrice(value) {
   const el = fut$('livePrice');
   if (el) {
     el.textContent = `$${n.toLocaleString('en-US', {
-      minimumFractionDigits: 2, maximumFractionDigits: 2
+      minimumFractionDigits: 2, maximumFractionDigits: 6
     })}`;
-    // Flash direction — only when the price actually changed
     if (futPrevPrice != null && n !== futPrevPrice) {
       el.classList.remove('flash-up', 'flash-down');
-      void el.offsetWidth;   // force reflow so the animation replays
+      void el.offsetWidth;
       el.classList.add(n > futPrevPrice ? 'flash-up' : 'flash-down');
     }
   }
@@ -1646,10 +1330,9 @@ function updateFeedAge() {
     meta.className = 'feed-meta';
     return;
   }
-  const ageMs = Date.now() - futLastTick;
-  const ageS = ageMs / 1000;
+  const ageS = (Date.now() - futLastTick) / 1000;
 
-  if (ageS < 1) {
+  if (ageS < 2) {
     meta.textContent = 'Updated just now';
     meta.className = 'feed-meta';
     if (fut$('feedDot')) {
@@ -1671,18 +1354,17 @@ function updateFeedAge() {
       fut$('feedDot').classList.add('stale');
     }
   } else {
-    meta.textContent = `Stale — last tick ${ageS.toFixed(0)}s ago. Auto-reconnecting…`;
+    meta.textContent = `Stale — last tick ${ageS.toFixed(0)}s ago. Auto-recovering…`;
     meta.className = 'feed-meta dead';
     if (fut$('feedDot')) {
       fut$('feedDot').classList.remove('on', 'stale');
       fut$('feedDot').classList.add('dead');
     }
-    // Aggressive auto-recovery: force a fresh WebSocket
     if (futSocket) {
       try { futSocket.close(); } catch {}
       futSocket = null;
       futConnectFeed();
-      futLastTick = Date.now();   // reset the timer so we don't loop
+      futLastTick = Date.now();
     }
   }
 }
@@ -2029,6 +1711,7 @@ async function futPreview() {
     res.classList.remove('hidden');
 
     const symbol = fut$('futSymbol').value;
+    const displaySymbol = symbol.replace('-USDT-SWAP', '').replace('-SWAP', '');
     const lev = parseInt(fut$('levSlider').value);
     const marketPrice = parseFloat(d.mark_price);
     const notional = parseFloat(d.estimated_notional_usdt);
@@ -2047,7 +1730,7 @@ async function futPreview() {
         Nothing has been placed yet. Review, then scroll down to <b>Place Demo order</b>.
       </p>
       <table class="summary-table">
-        <tr><td class="muted">Market</td><td><b>${symbol}</b></td></tr>
+        <tr><td class="muted">Market</td><td><b>${escapeHtml(displaySymbol)}</b></td></tr>
         <tr><td class="muted">Direction</td><td><b class="${side === 'long' ? 'good' : 'loss'}">${side === 'long' ? '↑ Long' : '↓ Short'}</b></td></tr>
         <tr><td class="muted">Entry price</td><td>$${marketPrice.toFixed(2)}</td></tr>
         <tr><td class="muted">Margin</td><td>$${margin.toFixed(2)} <span class="muted">(${marginPct}% of balance)</span></td></tr>
@@ -2119,7 +1802,7 @@ async function futPlace() {
 }
 
 async function futClosePosition(inst, side) {
-  const pretty = String(inst).replace('-USDT-SWAP', '');
+  const pretty = String(inst).replace('-USDT-SWAP', '').replace('-SWAP', '');
   if (!confirm(
     `Close the entire ${side.toUpperCase()} position for ${pretty} at market?\n\n` +
     `OKX DEMO only. This cannot be undone.`
@@ -2142,9 +1825,14 @@ async function futClosePosition(inst, side) {
    Portfolio rendering
 ========================================================= */
 function fmtPrice(v) {
-  return `$${Number(v || 0).toLocaleString('en-US', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2
-  })}`;
+  const n = Number(v || 0);
+  if (n >= 1000) return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  return `$${n.toFixed(6)}`;
+}
+
+function prettySymbol(inst) {
+  return String(inst || '').replace('-USDT-SWAP', '').replace('-USDC-SWAP', '').replace('-USD-SWAP', '').replace('-SWAP', '');
 }
 
 function approxPnlPct(pos) {
@@ -2188,7 +1876,7 @@ function renderFuturesPositions(positions, historyRows) {
     ? `<table>
         <tr><th>Market</th><th>Live P&amp;L</th><th></th></tr>
         ${positions.map(x => `<tr>
-          <td><b>${String(x.instrument).replace('-USDT-SWAP', '')}</b>
+          <td><b>${escapeHtml(prettySymbol(x.instrument))}</b>
             <span class="${x.side === 'long' ? 'good' : 'loss'}">
               ${x.side === 'long' ? '↑' : '↓'} ${x.side}
             </span>
@@ -2207,7 +1895,7 @@ function renderFuturesPositions(positions, historyRows) {
     ? `<table>
         <tr><th>Trade</th><th>Status</th><th>Realized P&amp;L</th></tr>
         ${historyRows.slice(0, 10).map(x => `<tr>
-          <td>${escapeHtml(x.symbol)}<br><span class="muted">${escapeHtml(x.side)}</span></td>
+          <td>${escapeHtml(prettySymbol(x.symbol))}<br><span class="muted">${escapeHtml(x.side)}</span></td>
           <td>${escapeHtml(x.status)}<br>
             <span class="muted" style="font-size:12px">${fmtPrice(x.fill_price)}</span>
           </td>
@@ -2270,7 +1958,7 @@ function renderActivityPositions(positions) {
       <div class="pos-card ${sideClass}">
         <div class="pos-head">
           <div class="pos-market">
-            ${String(x.instrument).replace('-USDT-SWAP', '')}
+            ${escapeHtml(prettySymbol(x.instrument))}
             <span class="pos-badge ${sideClass}">${sideLabel}</span>
           </div>
           <span class="pos-lev">${x.leverage}×</span>
@@ -2334,7 +2022,7 @@ function renderActivityHistory(rows) {
       <div class="history-card">
         <div class="history-left">
           <div class="history-market">
-            ${escapeHtml(o.symbol || '—')}
+            ${escapeHtml(prettySymbol(o.symbol))}
             <span class="muted" style="font-size:11px">· ${escapeHtml(o.side || '')}</span>
           </div>
           <div class="history-meta">
@@ -2352,11 +2040,10 @@ function renderActivityHistory(rows) {
 }
 
 /* =========================================================
-   Visibility + page lifecycle
+   Visibility + lifecycle
 ========================================================= */
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
-  // When the user comes back to the Mini App, kick the feed and refresh positions
   if (futSocket?.readyState === WebSocket.OPEN) {
     futSocket.send(JSON.stringify({ type: 'keepalive' }));
   } else {
