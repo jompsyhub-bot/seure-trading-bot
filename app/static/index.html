@@ -261,6 +261,50 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .history-status.filled{background:rgba(77,221,172,0.12);color:var(--good)}
 .history-status.canceled{background:rgba(199,81,97,0.12);color:#ff8997}
 .history-pnl{text-align:right;font-weight:700;margin-left:10px;font-variant-numeric:tabular-nums}
+
+/* ── Token picker (searchable) ─────────────── */
+.token-picker{position:relative;margin:6px 0}
+.token-btn{
+  display:flex;align-items:center;gap:10px;width:100%;
+  padding:14px;background:var(--field);color:var(--text);
+  border:1px solid var(--border);border-radius:10px;
+  font-size:15px;font-weight:600;margin:0;text-align:left;
+  cursor:pointer;transition:border-color .15s;
+}
+.token-btn:active{filter:brightness(.95)}
+.token-btn-icon{font-size:14px;opacity:.65}
+.token-btn-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.token-btn-chevron{
+  opacity:.65;font-size:12px;transition:transform .15s;
+}
+.token-picker.open .token-btn-chevron{transform:rotate(180deg)}
+.token-panel{
+  position:absolute;top:calc(100% + 6px);left:0;right:0;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:12px;padding:10px;z-index:60;
+  box-shadow:0 12px 32px rgba(0,0,0,.5);
+  max-height:380px;display:flex;flex-direction:column;
+}
+.token-search-input{
+  margin:0 0 8px 0;padding:12px;background:var(--field);color:var(--text);
+  border:1px solid var(--border);border-radius:9px;font-size:15px;
+  width:100%;
+}
+.token-search-input:focus{border-color:var(--accent);outline:none}
+.token-results{overflow-y:auto;flex:1;max-height:280px;-webkit-overflow-scrolling:touch}
+.token-result{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:12px 10px;border-radius:8px;cursor:pointer;
+  font-size:14px;font-weight:500;
+  transition:background .1s;
+}
+.token-result:active{background:rgba(98,140,255,0.15)}
+.token-result.selected{
+  background:rgba(98,140,255,0.15);color:var(--accent-soft);
+}
+.token-result-meta{font-size:11px;color:var(--muted);margin-left:8px;white-space:nowrap}
+.token-no-results{padding:22px;text-align:center;color:var(--muted);font-size:13px}
+.token-hint{padding:4px 10px 8px;font-size:11px;color:var(--muted);text-align:center}
 </style>
 </head>
 <body>
@@ -476,10 +520,25 @@ SL @ 77,000"></textarea>
     </p>
 
     <div class="step-label"><span class="step-num">1</span> Direction</div>
-    <select id="futSymbol" onchange="futOnSymbolChange()">
-      <option>BTC-USDT-SWAP</option>
-      <option>ETH-USDT-SWAP</option>
-    </select>
+
+    <!-- Searchable token picker -->
+    <div class="token-picker" id="futTokenPicker">
+      <button type="button" class="token-btn" onclick="futToggleTokenSearch(event)">
+        <span class="token-btn-icon">🔍</span>
+        <span id="futTokenLabel" class="token-btn-label">BTC / USDT</span>
+        <span class="token-btn-chevron">▾</span>
+      </button>
+      <input type="hidden" id="futSymbol" value="BTC-USDT-SWAP">
+      <div id="futTokenPanel" class="token-panel hidden">
+        <input id="futTokenSearch" type="text" class="token-search-input"
+               placeholder="Search e.g. SOL, DOGE, PEPE, BTC…"
+               oninput="futFilterTokenResults()"
+               autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
+        <div id="futTokenResults" class="token-results"></div>
+        <div class="token-hint">Type to filter · tap a market to select</div>
+      </div>
+    </div>
+
     <div class="side-toggle">
       <button id="btnLong"  class="side-btn active" data-side="long"  onclick="futSetSide('long')">↑ Long</button>
       <button id="btnShort" class="side-btn"        data-side="short" onclick="futSetSide('short')">↓ Short</button>
@@ -677,8 +736,8 @@ async function loadInstruments() {
   } catch (e) {
     console.warn('Could not load instruments list:', e.message);
     instrumentsCache = [
-      { instId: 'BTC-USDT-SWAP', displayName: 'BTC / USDT' },
-      { instId: 'ETH-USDT-SWAP', displayName: 'ETH / USDT' },
+      { instId: 'BTC-USDT-SWAP', displayName: 'BTC / USDT', maxLeverage: '100' },
+      { instId: 'ETH-USDT-SWAP', displayName: 'ETH / USDT', maxLeverage: '100' },
     ];
   }
   return instrumentsCache;
@@ -689,22 +748,107 @@ async function populateSymbolSelects() {
   const optionsHtml = rows
     .map(r => `<option value="${r.instId}">${r.displayName || r.instId}</option>`)
     .join('');
-  const ids = ['futSymbol', 'symbol', 'parseSymbol'];
+  // NOTE: futSymbol is now a hidden input — skip it here. It's driven by
+  // the searchable token picker instead.
+  const ids = ['symbol', 'parseSymbol'];
   for (const id of ids) {
     const sel = document.getElementById(id);
     if (!sel) continue;
     const current = sel.value;
-    // Keep the leading "— pick —" option for parseSymbol
     if (id === 'parseSymbol') {
       sel.innerHTML = `<option value="">— pick —</option>${optionsHtml}`;
     } else {
       sel.innerHTML = optionsHtml;
     }
-    // Try to preserve the current selection if it still exists
     if (current && Array.from(sel.options).some(o => o.value === current)) {
       sel.value = current;
     }
   }
+  // Keep the futures picker label in sync with whatever's currently selected
+  futUpdateTokenLabel();
+}
+
+/* =========================================================
+   Searchable token picker
+========================================================= */
+function futUpdateTokenLabel() {
+  const label = document.getElementById('futTokenLabel');
+  const hidden = document.getElementById('futSymbol');
+  if (!label || !hidden) return;
+  const row = (instrumentsCache || []).find(r => r.instId === hidden.value);
+  label.textContent = row?.displayName || (hidden.value || 'Select a market');
+}
+
+function futToggleTokenSearch(event) {
+  if (event) event.stopPropagation();
+  const picker = document.getElementById('futTokenPicker');
+  const panel  = document.getElementById('futTokenPanel');
+  if (!picker || !panel) return;
+
+  const isOpen = !panel.classList.contains('hidden');
+  if (isOpen) {
+    futCloseTokenSearch();
+  } else {
+    picker.classList.add('open');
+    panel.classList.remove('hidden');
+    const input = document.getElementById('futTokenSearch');
+    input.value = '';
+    futFilterTokenResults();
+    // Focus after the panel renders
+    setTimeout(() => input.focus(), 60);
+  }
+}
+
+function futCloseTokenSearch() {
+  const picker = document.getElementById('futTokenPicker');
+  const panel  = document.getElementById('futTokenPanel');
+  if (picker) picker.classList.remove('open');
+  if (panel) panel.classList.add('hidden');
+}
+
+function futFilterTokenResults() {
+  const list = document.getElementById('futTokenResults');
+  if (!list) return;
+  const rows = instrumentsCache || [];
+  const query = (document.getElementById('futTokenSearch').value || '').trim().toUpperCase();
+  const currentValue = document.getElementById('futSymbol').value;
+
+  let filtered = rows;
+  if (query) {
+    filtered = rows.filter(r => {
+      const inst = (r.instId || '').toUpperCase();
+      const base = (r.base || '').toUpperCase();
+      const disp = (r.displayName || '').toUpperCase();
+      return inst.includes(query) || base.includes(query) || disp.includes(query);
+    });
+  }
+  filtered = filtered.slice(0, 120);
+
+  if (!filtered.length) {
+    list.innerHTML = `<div class="token-no-results">
+      No markets match <b>${escapeHtml(query)}</b>
+    </div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.map(r => {
+    const selected = r.instId === currentValue ? ' selected' : '';
+    const lev = r.maxLeverage ? `${r.maxLeverage}× max` : '';
+    return `<div class="token-result${selected}"
+                 onclick="futSelectToken('${r.instId}')">
+      <span>${escapeHtml(r.displayName || r.instId)}</span>
+      <span class="token-result-meta">${escapeHtml(lev)}</span>
+    </div>`;
+  }).join('');
+}
+
+function futSelectToken(instId) {
+  const hidden = document.getElementById('futSymbol');
+  if (!hidden) return;
+  hidden.value = instId;
+  futUpdateTokenLabel();
+  futCloseTokenSearch();
+  futOnSymbolChange();
 }
 
 /* =========================================================
@@ -760,8 +904,6 @@ function render(d) {
   const a = d.automation || {};
   document.getElementById('enabled').checked = !!a.enabled;
 
-  // Normalize whatever symbol is stored (BTCUSDT, BTC-USDT, BTC-USDT-SWAP)
-  // and pick the matching option in the dynamically-populated dropdown.
   const symSel = document.getElementById('symbol');
   const desired = (a.symbol || 'BTC-USDT-SWAP').toUpperCase();
   const normalized = desired.replace(/\//g, '-').replace(/^([A-Z0-9]+?)(USDT|USDC|USD)(-SWAP)?$/, '$1-$2-SWAP');
@@ -807,6 +949,7 @@ async function connect() {
     });
     document.getElementById('secret').value = '';
     document.getElementById('passphrase').value = '';
+    instrumentsCache = null;
     await load();
     toast('Account connected');
     go('overview', document.querySelector('.nav button[data-view="overview"]'));
@@ -822,7 +965,7 @@ async function disconnect() {
   if (!confirm('Disconnect this account?')) return;
   try {
     await api('/api/exchange/connection', { method: 'DELETE' });
-    instrumentsCache = null;   // force refresh on next connect
+    instrumentsCache = null;
     await load();
     toast('Account disconnected');
     go('account', document.querySelector('.nav button[data-view="account"]'));
@@ -893,17 +1036,13 @@ function parseTradeSignal(text) {
   };
   const t = ' ' + String(text || '') + ' ';
 
-  // ---- Direction ----
   if (/\b(short|sell|bearish)\b/i.test(t)) out.side = 'short';
   else if (/\b(long|buy|bullish)\b/i.test(t)) out.side = 'long';
 
-  // ---- Symbol ----
-  // First try the whole pair: "BTC-USDT", "BTC/USDT", "BTCUSDT", "SOL-USDT"
   const pairMatch = t.match(/\b([A-Z][A-Z0-9]{1,11})\s*[\/\-]?\s*(USDT|USDC|USD)\b/i);
   if (pairMatch) {
     out.symbol = `${pairMatch[1].toUpperCase()}-${pairMatch[2].toUpperCase()}-SWAP`;
   } else {
-    // No pair — look for a bare crypto-style base name and assume USDT
     const words = t.match(/\b[A-Z]{2,10}\b/g) || [];
     for (const w of words) {
       if (!PARSER_KEYWORDS.has(w.toUpperCase())) {
@@ -913,7 +1052,6 @@ function parseTradeSignal(text) {
     }
   }
 
-  // ---- Number parser (handles $, commas, k, m) ----
   const parseNum = raw => {
     if (!raw) return null;
     let s = String(raw).replace(/[$,\s]/g, '');
@@ -953,13 +1091,11 @@ async function futAnalyzeSignal() {
   const text = document.getElementById('signalInput').value;
   if (!text.trim()) return toast('Paste a signal first', true);
 
-  // Make sure the dropdown is populated before we try to select a value from it
   await populateSymbolSelects();
 
   const parsed = parseTradeSignal(text);
   const sel = document.getElementById('parseSymbol');
 
-  // If the parsed symbol isn't already an option, add it so the user can see what we found
   if (parsed.symbol && !Array.from(sel.options).some(o => o.value === parsed.symbol)) {
     sel.add(new Option(parsed.symbol, parsed.symbol));
   }
@@ -1260,7 +1396,6 @@ function futConnectFeed() {
         if (m.type === 'connected') futSubscribeTicker();
         if (m.type === 'portfolio_changed') refreshPortfolio();
         if (m.type === 'ticker') {
-          // Ignore ticks for instruments we're not currently viewing
           if (m.instrument !== futInstrument()) return;
           futShowPrice(m.price);
           if (fut$('feedDot')) {
@@ -2038,6 +2173,21 @@ function renderActivityHistory(rows) {
     `;
   }).join('');
 }
+
+/* =========================================================
+   Outside-click + Escape to close token picker
+========================================================= */
+document.addEventListener('click', (e) => {
+  const picker = document.getElementById('futTokenPicker');
+  const panel  = document.getElementById('futTokenPanel');
+  if (!picker || !panel) return;
+  if (panel.classList.contains('hidden')) return;
+  if (!picker.contains(e.target)) futCloseTokenSearch();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') futCloseTokenSearch();
+});
 
 /* =========================================================
    Visibility + lifecycle
