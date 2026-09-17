@@ -330,6 +330,39 @@ class OKXDemoClient:
         if data.get("code") != "0" or not data.get("data"):
             raise ExchangeError(data.get("msg", f"No OKX market price available for {inst_id}"))
         return Decimal(data["data"][0]["last"])
+        
+    async def candles(self, inst_id: str, bar: str = "1H", limit: int = 300) -> list[dict]:
+        """Fetch closed candles from OKX public REST. Oldest first.
+
+        `bar` accepts OKX codes: 1m, 5m, 15m, 1H, 4H, 1D, etc.
+        The most recent bar returned by OKX is usually still forming; this
+        method filters that one out so every returned candle is complete.
+        """
+        session = await self._session()
+        async with session.get(
+            f"{self.base_url}/api/v5/market/candles",
+            params={"instId": inst_id, "bar": bar, "limit": str(min(limit, 300))},
+        ) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0" or not isinstance(data.get("data"), list):
+            raise ExchangeError(data.get("msg", f"No candles for {inst_id}"))
+        # OKX returns newest-first; reverse so callers get oldest-first.
+        rows = list(reversed(data["data"]))
+        out = []
+        for r in rows:
+            # row = [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+            if len(r) < 9 or r[8] != "1":
+                continue  # skip the still-forming candle
+            out.append({
+                "timestamp": int(r[0]),
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+                "volume": float(r[5]),
+                "confirm": True,
+            })
+        return out
 
     async def _response_json(self, response: aiohttp.ClientResponse) -> dict:
         try:
