@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .database import Database
-from .exchange import BybitClient, ExchangeError, OKXDemoClient
+
 from .models import OrderIntent, OrderResult, Side
 from .security import CredentialVault
 from .web_auth import TelegramAuthError, validate_init_data
