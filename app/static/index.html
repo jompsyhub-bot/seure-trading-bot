@@ -76,10 +76,40 @@ td,th{padding:9px 0;text-align:left;border-bottom:1px solid var(--border)}
 th{color:var(--muted);font-weight:500;font-size:12px}
 .empty{color:var(--muted);text-align:center;padding:20px 0;font-size:14px}
 .feed{display:flex;justify-content:space-between;align-items:center;gap:12px}
-.price{font-size:24px;font-weight:800;line-height:1.2}
+.feed-left{min-width:0}
+.feed-meta{
+  font-size:11px;
+  color:var(--muted);
+  margin-top:3px;
+  transition:color .2s;
+}
+.feed-meta.stale{ color:var(--warn); }
+.feed-meta.dead{ color:#ff8997; }
+
+.price{
+  font-size:24px;
+  font-weight:800;
+  line-height:1.2;
+  display:inline-block;
+  transition:color .3s;
+}
+.price.flash-up{ animation:flashUp .55s ease-out; }
+.price.flash-down{ animation:flashDown .55s ease-out; }
+@keyframes flashUp{
+  0%{ color:var(--good); transform:scale(1.04); }
+  100%{ color:var(--text); transform:scale(1); }
+}
+@keyframes flashDown{
+  0%{ color:#ff8997; transform:scale(1.04); }
+  100%{ color:var(--text); transform:scale(1); }
+}
+
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
   background:#a8b4cd;margin-right:6px;vertical-align:middle}
 .dot.on{background:var(--good)}
+.dot.stale{background:var(--warn)}
+.dot.dead{background:#ff8997}
+
 #toast{
   position:fixed;bottom:84px;left:50%;transform:translateX(-50%) translateY(20px);
   background:#1d2a45;border:1px solid var(--border);color:var(--text);
@@ -215,18 +245,10 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 .hint.good { color: var(--good); }
 .hint.loss { color: #ff8997; }
 
-.summary-table {
-  width: 100%;
-  font-size: 14px;
-}
-.summary-table td {
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
+.summary-table { width: 100%; font-size: 14px; }
+.summary-table td { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .summary-table tr:last-child td { border-bottom: none; }
-.summary-table td:last-child {
-  text-align: right;
-}
+.summary-table td:last-child { text-align: right; }
 
 .account-bar {
   display: flex;
@@ -365,9 +387,7 @@ input[type="range"].lev-slider::-moz-range-thumb {
   margin-top: 2px;
   padding: 0 4px;
 }
-.lev-ticks span:nth-child(2) {
-  opacity: 0.6;
-}
+.lev-ticks span:nth-child(2) { opacity: 0.6; }
 .lev-source {
   font-size: 11px;
   color: var(--muted);
@@ -429,10 +449,6 @@ input[type="range"].lev-slider::-moz-range-thumb {
   background: rgba(255, 137, 151, 0.06);
 }
 
-.mono {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-}
-
 .risk-box {
   padding: 14px;
   border-radius: 12px;
@@ -443,9 +459,7 @@ input[type="range"].lev-slider::-moz-range-thumb {
   background: rgba(98, 140, 255, 0.06);
   border: 1px solid var(--border);
 }
-.risk-box .risk-cell {
-  text-align: center;
-}
+.risk-box .risk-cell { text-align: center; }
 .risk-box .risk-label {
   font-size: 11px;
   color: var(--muted);
@@ -536,14 +550,8 @@ input[type="range"].lev-slider::-moz-range-thumb {
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
-.pos-badge.long {
-  background: rgba(77, 221, 172, 0.15);
-  color: var(--good);
-}
-.pos-badge.short {
-  background: rgba(255, 137, 151, 0.15);
-  color: #ff8997;
-}
+.pos-badge.long  { background: rgba(77, 221, 172, 0.15); color: var(--good); }
+.pos-badge.short { background: rgba(255, 137, 151, 0.15); color: #ff8997; }
 .pos-lev {
   font-size: 11px;
   color: var(--muted);
@@ -602,9 +610,7 @@ input[type="range"].lev-slider::-moz-range-thumb {
   margin: 0;
   transition: all .15s;
 }
-.pos-close-btn:active {
-  background: rgba(199, 81, 97, 0.25);
-}
+.pos-close-btn:active { background: rgba(199, 81, 97, 0.25); }
 
 .act-summary {
   display: grid;
@@ -615,9 +621,7 @@ input[type="range"].lev-slider::-moz-range-thumb {
   margin: 0;
   padding: 14px;
 }
-.act-summary .metric {
-  font-size: 22px;
-}
+.act-summary .metric { font-size: 22px; }
 
 .history-card {
   display: flex;
@@ -648,14 +652,8 @@ input[type="range"].lev-slider::-moz-range-thumb {
   background: rgba(98, 140, 255, 0.12);
   color: var(--accent-soft);
 }
-.history-status.filled {
-  background: rgba(77, 221, 172, 0.12);
-  color: var(--good);
-}
-.history-status.canceled {
-  background: rgba(199, 81, 97, 0.12);
-  color: #ff8997;
-}
+.history-status.filled { background: rgba(77, 221, 172, 0.12); color: var(--good); }
+.history-status.canceled { background: rgba(199, 81, 97, 0.12); color: #ff8997; }
 .history-pnl {
   text-align: right;
   font-weight: 700;
@@ -839,13 +837,17 @@ SL @ 77,000"></textarea>
   <p class="muted">Trade OKX Demo perpetuals with leverage. Demo money only — no real funds.</p>
 
   <div class="card feed">
-    <div>
-      <span id="feedDot" class="dot"></span>
-      <span id="feedState" class="muted">Connecting…</span>
+    <div class="feed-left">
+      <div>
+        <span id="feedDot" class="dot"></span>
+        <span id="feedState" class="muted">Connecting…</span>
+      </div>
+      <div id="feedMeta" class="feed-meta"></div>
     </div>
     <div style="text-align:right">
       <div id="priceSymbol" class="muted" style="font-size:12px">BTC-USDT-SWAP</div>
       <div id="livePrice" class="price">—</div>
+      <button class="mini-ghost" style="margin-top:6px" onclick="futForceReconnect()">Reconnect</button>
     </div>
   </div>
 
@@ -971,7 +973,7 @@ SL @ 77,000"></textarea>
 
   <div class="card">
     <h2>Your Demo positions</h2>
-    <p class="muted" style="font-size:13px;margin-top:0">Live from OKX Demo · refreshes every 5 seconds.</p>
+    <p class="muted" style="font-size:13px;margin-top:0">Live from OKX Demo · refreshes every 3 seconds.</p>
     <div id="portfolioOutput" class="muted">Loading…</div>
   </div>
 </section>
@@ -981,7 +983,6 @@ SL @ 77,000"></textarea>
   <h1>Activity</h1>
   <p class="muted">Live positions and order history from OKX Demo.</p>
 
-  <!-- Summary -->
   <div class="act-summary">
     <div class="card">
       <div class="muted" style="font-size:12px">Open positions</div>
@@ -993,19 +994,17 @@ SL @ 77,000"></textarea>
     </div>
   </div>
 
-  <!-- Open positions -->
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
       <h2 style="margin:0">Open positions</h2>
       <button class="mini-ghost" onclick="refreshPortfolio()">Refresh</button>
     </div>
     <p class="muted" style="font-size:12px;margin:6px 0 12px">
-      Live updates when OKX pushes a change · safety refresh every 5 seconds.
+      Live updates when OKX pushes a change · safety refresh every 3 seconds.
     </p>
     <div id="activityPositions" class="muted">Loading…</div>
   </div>
 
-  <!-- Order history -->
   <div class="card">
     <h2>Order history</h2>
     <p class="muted" style="font-size:12px;margin:6px 0 12px">
@@ -1087,7 +1086,7 @@ function go(id, btn) {
 }
 
 /* =========================================================
-   Dashboard / automation / activity (top-level)
+   Dashboard / automation
 ========================================================= */
 function render(d) {
   state.connected = !!d.connected;
@@ -1132,7 +1131,6 @@ async function load() {
     const d = await api('/api/dashboard');
     render(d);
     if (!state.connected) go('account');
-    history();
   } catch (e) {
     document.getElementById('summary').textContent = e.message;
     toast(e.message, true);
@@ -1201,19 +1199,6 @@ async function kill() {
     await load();
     toast('Automation stopped');
   } catch (e) { toast(e.message, true); }
-}
-
-/* Old order-only history loader kept for the small /api/history view. */
-async function history() {
-  try {
-    const rows = await api('/api/history');
-    if (!rows || !rows.length) {
-      document.getElementById('activityHistory').innerHTML =
-        '<div class="empty">No orders yet.</div>';
-      return;
-    }
-    renderHistory(rows);
-  } catch (e) { /* ignore: activity feed will retry */ }
 }
 
 /* =========================================================
@@ -1421,12 +1406,8 @@ function renderManualPreview(v, d) {
     return;
   }
 
-  const tpMovePct = v.side === 'long'
-    ? (v.tp / entry - 1) * 100
-    : (1 - v.tp / entry) * 100;
-  const slMovePct = v.side === 'long'
-    ? (1 - v.sl / entry) * 100
-    : (v.sl / entry - 1) * 100;
+  const tpMovePct = v.side === 'long' ? (v.tp / entry - 1) * 100 : (1 - v.tp / entry) * 100;
+  const slMovePct = v.side === 'long' ? (1 - v.sl / entry) * 100 : (v.sl / entry - 1) * 100;
 
   const tpProfit = notional * (tpMovePct / 100);
   const slLoss   = notional * (slMovePct / 100);
@@ -1534,11 +1515,13 @@ async function futManualPlace() {
 let feedReady = false;
 let futSocket = null, futKeepalive = null, futRetry = null;
 let portfolioBusy = false;
-let futOrderKey = '', futLatestPrice = null;
+let futOrderKey = '', futLatestPrice = null, futPrevPrice = null;
+let futLastTick = 0;
 let futInstrumentMeta = null;
 let futLevMax = 1, futLevMin = 1, futLevStep = 1;
 let futProtectionTouched = false;
 let futUiReady = false;
+let futFeedAgeTimer = null;
 
 const fut$ = id => document.getElementById(id);
 const futInstrument = () =>
@@ -1550,10 +1533,10 @@ function ensureFeed() {
   feedReady = true;
   futConnectFeed();
   refreshPortfolio();
-  setInterval(refreshPortfolio, 5000);
+  setInterval(refreshPortfolio, 3000);   // was 5000 — 3s safety refresh
+  futFeedAgeTimer = setInterval(updateFeedAge, 400);
 }
 
-/* Futures-specific initialisation. Runs once per page load. */
 function futInit() {
   ensureFeed();
   if (futUiReady) return;
@@ -1562,7 +1545,6 @@ function futInit() {
   futLoadLeverageOptions();
 }
 
-/* Activity-specific initialisation. Lightweight — just reuses the shared feed. */
 function activityInit() {
   ensureFeed();
   refreshPortfolio();
@@ -1587,7 +1569,7 @@ function futConnectFeed() {
         if (futSocket?.readyState === WebSocket.OPEN) {
           futSocket.send(JSON.stringify({ type: 'keepalive' }));
         }
-      }, 25000);
+      }, 15000);   // was 25000 — ping more often to keep the socket alive
     };
     futSocket.onmessage = e => {
       try {
@@ -1596,19 +1578,25 @@ function futConnectFeed() {
         if (m.type === 'portfolio_changed') refreshPortfolio();
         if (m.type === 'ticker') {
           futShowPrice(m.price);
-          if (fut$('feedDot')) fut$('feedDot').classList.add('on');
+          if (fut$('feedDot')) {
+            fut$('feedDot').classList.remove('stale', 'dead');
+            fut$('feedDot').classList.add('on');
+          }
           if (fut$('feedState')) fut$('feedState').textContent = 'Live';
         }
       } catch {}
     };
     futSocket.onclose = () => {
       clearInterval(futKeepalive);
-      if (fut$('feedDot')) fut$('feedDot').classList.remove('on');
+      if (fut$('feedDot')) {
+        fut$('feedDot').classList.remove('on');
+        fut$('feedDot').classList.add('dead');
+      }
       if (fut$('feedState')) fut$('feedState').textContent = 'Reconnecting…';
-      futRetry = setTimeout(futConnectFeed, 3000);
+      futRetry = setTimeout(futConnectFeed, 2000);   // was 3000 — retry faster
     };
   } catch {
-    futRetry = setTimeout(futConnectFeed, 3000);
+    futRetry = setTimeout(futConnectFeed, 2000);
   }
 }
 
@@ -1617,7 +1605,7 @@ function futSubscribeTicker() {
   if (!fut$('livePrice')) return;
   fut$('livePrice').textContent = '—';
   fut$('priceSymbol').textContent = futInstrument();
-  fut$('feedDot').classList.remove('on');
+  fut$('feedDot').classList.remove('on', 'stale', 'dead');
   fut$('feedState').textContent = 'Switching live price…';
   if (futSocket?.readyState === WebSocket.OPEN) {
     futSocket.send(JSON.stringify({ type: 'subscribe_ticker', instrument: futInstrument() }));
@@ -1625,13 +1613,90 @@ function futSubscribeTicker() {
 }
 
 function futShowPrice(value) {
-  futLatestPrice = value;
-  if (!fut$('livePrice')) return;
-  fut$('livePrice').textContent = `$${Number(value || 0).toLocaleString('en-US', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2
-  })}`;
+  const n = parseFloat(value);
+  if (!isFinite(n)) return;
+
+  futPrevPrice = futLatestPrice;
+  futLatestPrice = n;
+  futLastTick = Date.now();
+
+  const el = fut$('livePrice');
+  if (el) {
+    el.textContent = `$${n.toLocaleString('en-US', {
+      minimumFractionDigits: 2, maximumFractionDigits: 2
+    })}`;
+    // Flash direction — only when the price actually changed
+    if (futPrevPrice != null && n !== futPrevPrice) {
+      el.classList.remove('flash-up', 'flash-down');
+      void el.offsetWidth;   // force reflow so the animation replays
+      el.classList.add(n > futPrevPrice ? 'flash-up' : 'flash-down');
+    }
+  }
+
   fut$('priceSymbol').textContent = futInstrument();
   futUpdateProtection();
+  updateFeedAge();
+}
+
+function updateFeedAge() {
+  const meta = fut$('feedMeta');
+  if (!meta) return;
+  if (!futLastTick) {
+    meta.textContent = '';
+    meta.className = 'feed-meta';
+    return;
+  }
+  const ageMs = Date.now() - futLastTick;
+  const ageS = ageMs / 1000;
+
+  if (ageS < 1) {
+    meta.textContent = 'Updated just now';
+    meta.className = 'feed-meta';
+    if (fut$('feedDot')) {
+      fut$('feedDot').classList.remove('stale', 'dead');
+      fut$('feedDot').classList.add('on');
+    }
+  } else if (ageS < 5) {
+    meta.textContent = `Updated ${ageS.toFixed(1)}s ago`;
+    meta.className = 'feed-meta';
+    if (fut$('feedDot')) {
+      fut$('feedDot').classList.remove('stale', 'dead');
+      fut$('feedDot').classList.add('on');
+    }
+  } else if (ageS < 12) {
+    meta.textContent = `Delayed — last tick ${ageS.toFixed(0)}s ago`;
+    meta.className = 'feed-meta stale';
+    if (fut$('feedDot')) {
+      fut$('feedDot').classList.remove('on', 'dead');
+      fut$('feedDot').classList.add('stale');
+    }
+  } else {
+    meta.textContent = `Stale — last tick ${ageS.toFixed(0)}s ago. Auto-reconnecting…`;
+    meta.className = 'feed-meta dead';
+    if (fut$('feedDot')) {
+      fut$('feedDot').classList.remove('on', 'stale');
+      fut$('feedDot').classList.add('dead');
+    }
+    // Aggressive auto-recovery: force a fresh WebSocket
+    if (futSocket) {
+      try { futSocket.close(); } catch {}
+      futSocket = null;
+      futConnectFeed();
+      futLastTick = Date.now();   // reset the timer so we don't loop
+    }
+  }
+}
+
+function futForceReconnect() {
+  if (futSocket) {
+    try { futSocket.close(); } catch {}
+    futSocket = null;
+  }
+  futLastTick = 0;
+  futPrevPrice = null;
+  futSubscribeTicker();
+  futConnectFeed();
+  toast('Reconnecting to price feed…');
 }
 
 /* =========================================================
@@ -2053,9 +2118,6 @@ async function futPlace() {
   } catch (e) { toast(e.message, true); }
 }
 
-/* =========================================================
-   Close position (shared by Futures + Activity)
-========================================================= */
 async function futClosePosition(inst, side) {
   const pretty = String(inst).replace('-USDT-SWAP', '');
   if (!confirm(
@@ -2077,23 +2139,14 @@ async function futClosePosition(inst, side) {
 }
 
 /* =========================================================
-   Portfolio — single source, renders to both tabs
+   Portfolio rendering
 ========================================================= */
-function fmtMoney(v, { sign = false } = {}) {
-  const n = Number(v || 0);
-  const s = sign && n > 0 ? '+' : '';
-  return `${s}$${Math.abs(n).toFixed(2)}`;
-}
-
 function fmtPrice(v) {
   return `$${Number(v || 0).toLocaleString('en-US', {
     minimumFractionDigits: 2, maximumFractionDigits: 2
   })}`;
 }
 
-/* Percentage of margin P&L — needs contract value & margin.
-   We approximate using entry/mark ratio * leverage, which is accurate
-   for the isolated OKX position structure used here. */
 function approxPnlPct(pos) {
   const entry = Number(pos.entry_price || 0);
   const mark  = Number(pos.mark_price || 0);
@@ -2127,7 +2180,6 @@ async function refreshPortfolio() {
   }
 }
 
-/* ---------- Futures tab: compact table ---------- */
 function renderFuturesPositions(positions, historyRows) {
   const el = document.getElementById('portfolioOutput');
   if (!el) return;
@@ -2175,7 +2227,6 @@ function futPnl(v) {
   return `<span class="${n < 0 ? 'loss' : 'good'}">${sign}$${Math.abs(n).toFixed(2)}</span>`;
 }
 
-/* ---------- Activity tab: summary + cards ---------- */
 function renderActivitySummary(positions) {
   const countEl = document.getElementById('actPosCount');
   const pnlEl   = document.getElementById('actPnlTotal');
@@ -2299,6 +2350,20 @@ function renderActivityHistory(rows) {
     `;
   }).join('');
 }
+
+/* =========================================================
+   Visibility + page lifecycle
+========================================================= */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  // When the user comes back to the Mini App, kick the feed and refresh positions
+  if (futSocket?.readyState === WebSocket.OPEN) {
+    futSocket.send(JSON.stringify({ type: 'keepalive' }));
+  } else {
+    futConnectFeed();
+  }
+  refreshPortfolio();
+});
 
 /* =========================================================
    Boot
