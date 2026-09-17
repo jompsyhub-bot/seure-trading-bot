@@ -187,34 +187,68 @@ async def publish_live_price(instrument: str, price: str) -> None:
             preferences.pop(socket, None)
 
 
-async def monitor_okx_public_prices() -> None:
-    """One server-side public feed for the two supported Demo swap markets."""
-    instruments = {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
-    delay = 1
+async def _rest_price_poller(instruments: set[str]) -> None:
+    """Guaranteed 1 Hz REST price top-up.
+
+    OKX Demo's WebSocket (`wspap.okx.com`) throttles both `tickers` and
+    `bbo-tbt` to a much slower cadence than the production feed. The public
+    REST ticker endpoint is not throttled the same way, so we poll it every
+    second and fan out to subscribers in parallel with the WebSocket.
+
+    Duplicate prices are harmless: the client only flashes on a real change.
+    """
+    ordered = sorted(instruments)
     while True:
-        client = OKXDemoClient("", "", "")
         try:
-            async for update in client.public_ticker_events(instruments):
-                delay = 1
-                await publish_live_price(str(update["instId"]), str(update["last"]))
+            client = OKXDemoClient("", "", "")
+            try:
+                results = await asyncio.gather(
+                    *(client.last_price(inst) for inst in ordered),
+                    return_exceptions=True,
+                )
+            finally:
+                await client.close()
+            for inst, result in zip(ordered, results, strict=True):
+                if isinstance(result, Exception):
+                    continue
+                await publish_live_price(inst, str(result))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("OKX Demo public ticker feed unavailable: %s", exc)
-            # Keep the ticket informative during a transient WebSocket outage.
-            # This uses public, credential-free REST and is intentionally only
-            # a fallback; the WebSocket remains the normal real-time path.
+            log.debug("REST price poll iteration failed: %s", exc)
+        await asyncio.sleep(1.0)
+
+
+async def monitor_okx_public_prices() -> None:
+    """Fan out OKX Demo public prices via WebSocket push + REST 1 Hz top-up.
+
+    The REST poll runs continuously in parallel and guarantees a fresh price
+    at least once per second regardless of what the Demo WebSocket does.
+    """
+    instruments = {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
+    rest_task = asyncio.create_task(_rest_price_poller(instruments), name="okx-rest-price-poller")
+    delay = 1
+    try:
+        while True:
+            client = OKXDemoClient("", "", "")
             try:
-                ordered_instruments = sorted(instruments)
-                prices = await asyncio.gather(*(client.last_price(instrument) for instrument in ordered_instruments))
-                for instrument, price in zip(ordered_instruments, prices, strict=True):
-                    await publish_live_price(instrument, str(price))
-            except Exception as fallback_exc:
-                log.warning("OKX Demo ticker fallback unavailable: %s", fallback_exc)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 30)
-        finally:
-            await client.close()
+                async for update in client.public_ticker_events(instruments):
+                    delay = 1
+                    await publish_live_price(str(update["instId"]), str(update["last"]))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("OKX Demo public ticker feed unavailable: %s", exc)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+            finally:
+                await client.close()
+    finally:
+        rest_task.cancel()
+        try:
+            await rest_task
+        except asyncio.CancelledError:
+            pass
 
 
 def active_position_keys(rows: list[dict]) -> set[tuple[str, str]]:
