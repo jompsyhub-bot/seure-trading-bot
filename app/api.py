@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 from contextlib import asynccontextmanager
 import asyncio
+import time
 import uuid
 import logging
 import json
@@ -31,14 +32,19 @@ database.initialize()
 static_dir = Path(__file__).parent / "static"
 log = logging.getLogger(__name__)
 
-# Browsers and Telegram's WebView cache HTML aggressively. These headers
-# force the Mini App shell to re-fetch on every open, so a fresh deploy is
-# picked up immediately instead of after the cache expires.
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
     "Expires": "0",
 }
+
+# Two markets we always keep tick-fresh. Anything else is added on demand
+# when a Mini App session selects it, so the bot is not limited to a pair.
+DEFAULT_PRICE_INSTRUMENTS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP")
+
+# Server-side cache so we don't hit OKX every time a Mini App opens.
+_instruments_cache: dict = {"data": None, "ts": 0.0}
+INSTRUMENTS_CACHE_TTL = 300  # seconds
 
 
 @asynccontextmanager
@@ -86,6 +92,10 @@ async def lifespan(app: FastAPI):
 api = FastAPI(title="Safe Trading Bot API", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
+# ---------------------------------------------------------------------------
+# Request models — symbol fields are now plain strings, validated server-side.
+# ---------------------------------------------------------------------------
+
 class OKXDemoConnectionRequest(BaseModel):
     api_key: str = Field(min_length=8, max_length=256)
     api_secret: str = Field(min_length=16, max_length=512)
@@ -101,7 +111,7 @@ class PaperSettingsRequest(BaseModel):
 class AutomationProfileRequest(BaseModel):
     enabled: bool
     strategy: Literal["rsi_reversion_demo"]
-    symbol: Literal["BTCUSDT", "ETHUSDT"]
+    symbol: str = Field(min_length=2, max_length=32)
     max_order_notional: str
     max_trades_per_day: int = Field(ge=1, le=3)
     stop_loss_pct: str
@@ -118,11 +128,11 @@ class BacktestRequest(BaseModel):
 
 
 class LeverageRequest(BaseModel):
-    symbol: Literal["BTCUSDT", "ETHUSDT"]
+    symbol: str = Field(min_length=2, max_length=32)
 
 
 class FuturesPreviewRequest(BaseModel):
-    symbol: Literal["BTCUSDT", "ETHUSDT"]
+    symbol: str = Field(min_length=2, max_length=32)
     side: Literal["long", "short"]
     leverage: int = Field(ge=1, le=100)
     margin_usdt: Decimal = Field(gt=0)
@@ -140,9 +150,51 @@ class FuturesDemoOrderRequest(FuturesPreviewRequest):
 
 
 class ClosePositionRequest(BaseModel):
-    instrument: Literal["BTC-USDT-SWAP", "ETH-USDT-SWAP"]
+    instrument: str = Field(min_length=3, max_length=32)
     position_side: Literal["net", "long", "short"]
     confirmation: Literal["CLOSE_DEMO_POSITION"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def resolve_okx_swap_inst_id(symbol: str) -> str:
+    """Normalize a user-facing symbol to an OKX SWAP instId.
+
+    Accepted input formats (all case-insensitive):
+        "BTC-USDT-SWAP"  -> "BTC-USDT-SWAP"   (already canonical)
+        "BTC-USDT"       -> "BTC-USDT-SWAP"
+        "BTC/USDT"       -> "BTC-USDT-SWAP"
+        "BTCUSDT"        -> "BTC-USDT-SWAP"
+        "BTC"            -> "BTC-USDT-SWAP"   (assumes USDT quote)
+    """
+    s = (symbol or "").upper().strip().replace("/", "-")
+    if not s:
+        raise HTTPException(400, "Symbol is required.")
+    if s.endswith("-SWAP"):
+        return s
+    if "-" in s:
+        return f"{s}-SWAP"
+    for quote in ("USDT", "USDC", "USD"):
+        if s.endswith(quote) and len(s) > len(quote):
+            return f"{s[:-len(quote)]}-{quote}-SWAP"
+    return f"{s}-USDT-SWAP"
+
+
+def watched_instruments() -> list[str]:
+    """Union of every instrument any live session is currently viewing.
+
+    Always includes the two defaults so the common BTC / ETH view is
+    instant. Grows and shrinks automatically as users open and close
+    the Mini App.
+    """
+    prefs = getattr(api.state, "futures_price_preferences", {}) or {}
+    watched = set(DEFAULT_PRICE_INSTRUMENTS)
+    for inst in prefs.values():
+        if isinstance(inst, str) and inst:
+            watched.add(inst)
+    return sorted(watched)
 
 
 def telegram_user(init_data: str | None) -> dict:
@@ -187,31 +239,31 @@ async def publish_live_price(instrument: str, price: str) -> None:
             preferences.pop(socket, None)
 
 
-async def _rest_price_poller(instruments: set[str]) -> None:
-    """Guaranteed 1 Hz REST price top-up.
+async def _rest_price_poller() -> None:
+    """Guaranteed 1 Hz REST top-up for every instrument any user is viewing.
 
-    OKX Demo's WebSocket (`wspap.okx.com`) throttles both `tickers` and
-    `bbo-tbt` to a much slower cadence than the production feed. The public
-    REST ticker endpoint is not throttled the same way, so we poll it every
-    second and fan out to subscribers in parallel with the WebSocket.
-
-    Duplicate prices are harmless: the client only flashes on a real change.
+    This is the reliable path. OKX Demo's WebSocket is throttled, so we
+    poll the public REST ticker endpoint once per second for the union of
+    instruments any live session has selected, plus BTC / ETH. Polls only
+    what's actually being watched — no unbounded growth as more symbols
+    become available.
     """
-    ordered = sorted(instruments)
     while True:
         try:
-            client = OKXDemoClient("", "", "")
-            try:
-                results = await asyncio.gather(
-                    *(client.last_price(inst) for inst in ordered),
-                    return_exceptions=True,
-                )
-            finally:
-                await client.close()
-            for inst, result in zip(ordered, results, strict=True):
-                if isinstance(result, Exception):
-                    continue
-                await publish_live_price(inst, str(result))
+            instruments = watched_instruments()
+            if instruments:
+                client = OKXDemoClient("", "", "")
+                try:
+                    results = await asyncio.gather(
+                        *(client.last_price(inst) for inst in instruments),
+                        return_exceptions=True,
+                    )
+                finally:
+                    await client.close()
+                for inst, result in zip(instruments, results, strict=True):
+                    if isinstance(result, Exception):
+                        continue
+                    await publish_live_price(inst, str(result))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -220,19 +272,20 @@ async def _rest_price_poller(instruments: set[str]) -> None:
 
 
 async def monitor_okx_public_prices() -> None:
-    """Fan out OKX Demo public prices via WebSocket push + REST 1 Hz top-up.
+    """Fan out prices via REST 1 Hz poll + bonus WebSocket push for BTC/ETH.
 
-    The REST poll runs continuously in parallel and guarantees a fresh price
-    at least once per second regardless of what the Demo WebSocket does.
+    The REST poll is the guaranteed path and covers any instrument any user
+    is viewing. The WebSocket to OKX Demo gives opportunistic faster ticks
+    for the two most popular markets but is best-effort only.
     """
-    instruments = {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}
-    rest_task = asyncio.create_task(_rest_price_poller(instruments), name="okx-rest-price-poller")
+    default_instruments = set(DEFAULT_PRICE_INSTRUMENTS)
+    rest_task = asyncio.create_task(_rest_price_poller(), name="okx-rest-price-poller")
     delay = 1
     try:
         while True:
             client = OKXDemoClient("", "", "")
             try:
-                async for update in client.public_ticker_events(instruments):
+                async for update in client.public_ticker_events(default_instruments):
                     delay = 1
                     await publish_live_price(str(update["instId"]), str(update["last"]))
             except asyncio.CancelledError:
@@ -300,8 +353,6 @@ async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> 
                         await notify_position_closed(user_id, notifier, instrument, side)
                     await publish_futures_event(user_id, "portfolio_changed")
                 elif channel == "orders":
-                    # Orders is event-driven (no opening snapshot). Reconcile
-                    # bot-originated order IDs after fills or cancellations.
                     if any(row.get("state") in {"filled", "canceled"} for row in rows):
                         await sync_okx_order_history(user_id)
                         await publish_futures_event(user_id, "portfolio_changed")
@@ -356,16 +407,11 @@ async def mini_app() -> FileResponse:
 
 @api.get("/futures")
 async def futures_ticket() -> RedirectResponse:
-    # Legacy two-page URL. Futures is now a tab inside the single-page Mini
-    # App, so a stale cached link lands the user back on the working SPA
-    # instead of a bare standalone page with no navigation.
     return RedirectResponse(url="/", status_code=302)
 
 
 @api.get("/backtest")
 async def backtest_screen() -> RedirectResponse:
-    # Backtest was removed from the Mini App UI. Keep the route as a redirect
-    # so any bookmarks or cached links still resolve safely.
     return RedirectResponse(url="/", status_code=302)
 
 
@@ -374,8 +420,6 @@ async def futures_updates(websocket: WebSocket) -> None:
     """Authenticated push-only signal channel for the Telegram Mini App."""
     await websocket.accept()
     try:
-        # Sending init data as the first WebSocket message keeps it out of the
-        # URL, which Uvicorn and hosting access logs otherwise record.
         auth_message = await asyncio.wait_for(websocket.receive_text(), timeout=10)
         auth_payload = json.loads(auth_message)
         if auth_payload.get("type") != "authenticate":
@@ -399,7 +443,14 @@ async def futures_updates(websocket: WebSocket) -> None:
                 continue
             if payload.get("type") == "subscribe_ticker":
                 instrument = payload.get("instrument")
-                if instrument in {"BTC-USDT-SWAP", "ETH-USDT-SWAP"}:
+                # Accept any well-formed SWAP instrument the client sends.
+                # The REST poller will pick it up automatically and it will
+                # be dropped again when the session closes.
+                if (
+                    isinstance(instrument, str)
+                    and 3 <= len(instrument) <= 32
+                    and instrument.endswith("-SWAP")
+                ):
                     api.state.futures_price_preferences[websocket] = instrument
     except WebSocketDisconnect:
         pass
@@ -440,6 +491,61 @@ async def dashboard(x_telegram_init_data: str | None = Header(default=None)) -> 
     result = database.dashboard(int(user["id"]))
     result["automation"] = database.automation_profile(int(user["id"]))
     return result
+
+
+@api.get("/api/exchange/instruments")
+async def exchange_instruments(x_telegram_init_data: str | None = Header(default=None)) -> list[dict]:
+    """Available SWAP instruments on the connected exchange.
+
+    Only live-trading markets are returned; suspended or pre-open
+    instruments are filtered out. Sorted with BTC and ETH first so the
+    dropdown has sensible defaults, then alphabetically.
+
+    Cached server-side for 5 minutes to avoid hammering the exchange on
+    every Mini App open.
+    """
+    user = telegram_user(x_telegram_init_data)
+    provider = database.connection_provider(int(user["id"]))
+    if provider != "okx":
+        raise HTTPException(400, "Connect an OKX Demo account first.")
+
+    now = time.monotonic()
+    if _instruments_cache["data"] is not None and (now - _instruments_cache["ts"]) < INSTRUMENTS_CACHE_TTL:
+        return _instruments_cache["data"]
+
+    client = OKXDemoClient("", "", "")
+    try:
+        rows = await client.list_swap_instruments()
+        result = []
+        for row in rows:
+            inst_id = row.get("instId")
+            if not inst_id or not inst_id.endswith("-SWAP"):
+                continue
+            parts = inst_id.split("-")
+            if len(parts) != 3:
+                continue
+            base, quote, _ = parts
+            result.append({
+                "instId": inst_id,
+                "base": base,
+                "quote": quote,
+                "displayName": f"{base} / {quote}",
+                "maxLeverage": row.get("lever", "1"),
+                "minContracts": row.get("minSz", "1"),
+            })
+
+        def sort_key(row):
+            priority = {"BTC": 0, "ETH": 1}.get(row["base"], 2)
+            return (priority, row["base"])
+
+        result.sort(key=sort_key)
+        _instruments_cache["data"] = result
+        _instruments_cache["ts"] = now
+        return result
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"Could not load OKX instruments: {exc}") from None
+    finally:
+        await client.close()
 
 
 @api.post("/api/okx/connect")
@@ -559,7 +665,7 @@ async def leverage_options(request: LeverageRequest, x_telegram_init_data: str |
     provider = database.connection_provider(int(user["id"]))
     if environment != "demo" or provider != "okx":
         raise HTTPException(400, "Connect an OKX Demo account before checking futures rules.")
-    inst_id = {"BTCUSDT": "BTC-USDT-SWAP", "ETHUSDT": "ETH-USDT-SWAP"}[request.symbol]
+    inst_id = resolve_okx_swap_inst_id(request.symbol)
     client = OKXDemoClient("", "", "")
     try:
         instrument = await client.swap_instrument(inst_id)
@@ -576,7 +682,7 @@ async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: 
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     client = okx_demo_client_for(user_id)
-    inst_id = {"BTCUSDT": "BTC-USDT-SWAP", "ETHUSDT": "ETH-USDT-SWAP"}[request.symbol]
+    inst_id = resolve_okx_swap_inst_id(request.symbol)
     try:
         instrument, price, available_balance = await asyncio.gather(client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
         maximum_leverage = Decimal(instrument.get("lever") or "1")
@@ -642,7 +748,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     client = okx_demo_client_for(user_id)
-    inst_id = {"BTCUSDT": "BTC-USDT-SWAP", "ETHUSDT": "ETH-USDT-SWAP"}[request.symbol]
+    inst_id = resolve_okx_swap_inst_id(request.symbol)
     try:
         account, instrument, price, available_balance = await asyncio.gather(client.account_config(), client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
         if account.get("acctLv") not in {"2", "3", "4"}:
@@ -677,8 +783,6 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
         submission_started = False
         try:
             await client.set_leverage(inst_id, leverage, position_side)
-            # Once this request is attempted, a timeout can be ambiguous. Keep
-            # the reservation so a retry cannot accidentally double-submit.
             submission_started = True
             accepted = await client.place_market_swap(inst_id=inst_id, side=exchange_side, position_side=position_side, contracts=contracts, client_order_id=request.client_order_id, take_profit=request.take_profit, stop_loss=request.stop_loss)
             order_id = accepted.get("ordId")
@@ -696,8 +800,6 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
         await api.state.notifier.send(user_id, f"🧪 OKX Demo order accepted\n{request.side.upper()} {inst_id}\nLeverage: {leverage}× · Contracts: {contracts}\nOrder: {order_id}\nStatus: {status}\nTP: {request.take_profit} · SL: {request.stop_loss}")
         return {"accepted": True, "replayed": False, "exchange": "okx", "environment": "demo", "order_id": order_id, "status": status, "contracts": str(contracts), "estimated_initial_margin_usdt": str(initial_margin), "take_profit": str(request.take_profit), "stop_loss": str(request.stop_loss), "message": "Demo order accepted and reconciled. Check the OKX Demo Trading order/position screen as the source of truth."}
     except HTTPException as exc:
-        # Safe diagnostic: never include credentials, init data, or request IDs.
-        # It makes user-facing 4xx safety rejections visible in Render logs.
         log.info("OKX Demo order rejected: instrument=%s status=%s reason=%s", inst_id, exc.status_code, exc.detail)
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
@@ -729,8 +831,6 @@ async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_
         else:
             close_side = "sell" if Decimal(position["pos"]) > 0 else "buy"
         intent = OrderIntent(user_id, request.instrument, Side.SELL if close_side == "sell" else Side.BUY, Decimal("0"), close_key)
-        # The database reservation is used only as a write-ahead audit record;
-        # exchange size is contracts rather than a quote notional.
         if not database.reserve(intent):
             raise HTTPException(409, "Could not reserve the close request. Refresh and retry once.")
         submission_started = False
