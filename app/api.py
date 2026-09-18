@@ -22,7 +22,7 @@ from .exchange import BybitClient, ExchangeError, OKXDemoClient, OrderRejected
 from .models import OrderIntent, OrderResult, Side
 from .security import CredentialVault
 from .web_auth import TelegramAuthError, validate_init_data
-from .automation import DemoAutomationWorker
+from .automation import AutoTradingWorker
 from .notifications import TelegramNotifier
 from .backtest import MarketDataError, PublicBybitMarket, run_rsi_reversion
 
