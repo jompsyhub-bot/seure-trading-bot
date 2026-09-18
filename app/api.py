@@ -25,10 +25,21 @@ from .web_auth import TelegramAuthError, validate_init_data
 from .automation import AutoTradingWorker
 from .notifications import TelegramNotifier
 from .backtest import MarketDataError, PublicBybitMarket, run_rsi_reversion
+from .sessions import (
+    EndReason,
+    SessionConfig,
+    SessionManager,
+    SessionState,
+    check_can_open,
+    compute_risk_amount,
+    should_end_session,
+)
 
 settings = Settings.from_env()
 database = Database(settings.database_path, settings.database_url)
 database.initialize()
+session_manager = SessionManager(settings.database_url, str(settings.database_path))
+session_manager.ensure_schema()
 static_dir = Path(__file__).parent / "static"
 log = logging.getLogger(__name__)
 
@@ -57,8 +68,13 @@ async def lifespan(app: FastAPI):
     app.state.futures_price_preferences = {}
     ticker_task = asyncio.create_task(monitor_okx_public_prices(), name="okx-demo-public-tickers")
     if settings.encryption_key:
-        worker = DemoAutomationWorker(database, CredentialVault(settings.encryption_key), notifier)
-        task = asyncio.create_task(worker.run(), name="demo-automation-worker")
+        worker = AutoTradingWorker(
+            session_manager=session_manager,
+            database=database,
+            vault=CredentialVault(settings.encryption_key),
+            notifier=notifier,
+        )
+        task = asyncio.create_task(worker.run(), name="auto-trading-worker")
         position_task = asyncio.create_task(monitor_okx_private_events(notifier), name="okx-private-event-supervisor")
     try:
         yield
@@ -146,6 +162,17 @@ class ClosePositionRequest(BaseModel):
     instrument: str = Field(min_length=3, max_length=32)
     position_side: Literal["net", "long", "short"]
     confirmation: Literal["CLOSE_DEMO_POSITION"]
+
+class StartSessionRequest(BaseModel):
+    mode: Literal["scalping", "day_trading"] = "day_trading"
+    strategy: str = Field(default="daily_pullback", min_length=3, max_length=32)
+    duration_hours: float = Field(gt=0, le=24 * 30)
+    target_profit: Decimal = Field(gt=0)
+    max_loss: Decimal = Field(gt=0)
+    risk_per_trade_pct: Decimal = Field(gt=0, le=10)
+    safety_floor_pct: Decimal = Field(ge=50, le=95)
+    leverage: int = Field(ge=1, le=100)
+    markets: str = Field(default="auto", min_length=1, max_length=500)
 
 
 def resolve_okx_swap_inst_id(symbol: str) -> str:
@@ -827,3 +854,189 @@ async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_
         raise HTTPException(400, f"OKX Demo position was not closed: {exc}") from None
     finally:
         await client.close()
+
+# ---------------------------------------------------------------------------
+# Auto trading session endpoints
+# ---------------------------------------------------------------------------
+
+def _session_to_dict(s: "SessionState") -> dict:
+    floor = s.starting_balance * s.config.safety_floor_pct / Decimal("100")
+    return {
+        "id": s.id,
+        "mode": s.config.mode,
+        "strategy": s.config.strategy,
+        "markets": s.config.markets,
+        "started_at": s.started_at.isoformat(),
+        "ends_at": s.ends_at.isoformat(),
+        "seconds_remaining": s.seconds_remaining,
+        "starting_balance": str(s.starting_balance),
+        "current_balance": str(s.current_balance),
+        "ending_balance": str(s.ending_balance) if s.ending_balance is not None else None,
+        "pnl": str(s.pnl),
+        "target_profit": str(s.target_profit),
+        "max_loss": str(s.max_loss),
+        "risk_per_trade_pct": str(s.config.risk_per_trade_pct),
+        "safety_floor_pct": str(s.config.safety_floor_pct),
+        "safety_floor_value": str(floor),
+        "leverage": s.config.leverage,
+        "trades_count": s.trades_count,
+        "wins_count": s.wins_count,
+        "losses_count": s.losses_count,
+        "status": s.status.value,
+        "end_reason": s.end_reason,
+    }
+
+
+@api.post("/api/auto/start")
+async def auto_start(request: StartSessionRequest,
+                     x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+
+    existing = session_manager.get_active(user_id)
+    if existing:
+        raise HTTPException(409, "A session is already running. Stop it first.")
+
+    # Snapshot the starting balance from OKX
+    client = okx_demo_client_for(user_id)
+    try:
+        balance = await client.account_balance()
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"Could not read Demo balance: {exc}") from None
+    finally:
+        await client.close()
+
+    if balance <= 0:
+        raise HTTPException(400, "Demo balance is zero. Fund the account first.")
+
+    config = SessionConfig(
+        mode=request.mode,
+        strategy=request.strategy,
+        duration_hours=request.duration_hours,
+        target_profit=request.target_profit,
+        max_loss=request.max_loss,
+        risk_per_trade_pct=request.risk_per_trade_pct,
+        safety_floor_pct=request.safety_floor_pct,
+        leverage=request.leverage,
+        markets=request.markets,
+    )
+    session_id = session_manager.create_session(user_id, config, balance)
+    session = session_manager.get_by_id(session_id)
+
+    try:
+        await api.state.notifier.send(
+            user_id,
+            f"🚀 Auto trading started — session #{session_id}\n"
+            f"Mode: {request.mode}\n"
+            f"Duration: {request.duration_hours}h\n"
+            f"Target: +{request.target_profit} USDT · Max loss: -{request.max_loss} USDT\n"
+            f"Risk/trade: {request.risk_per_trade_pct}% of balance\n"
+            f"Starting balance: {balance:.2f} USDT",
+        )
+    except Exception:
+        pass
+
+    return {"started": True, "session": _session_to_dict(session)}
+
+
+@api.post("/api/auto/stop")
+async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+
+    session = session_manager.get_active(user_id)
+    if not session:
+        raise HTTPException(404, "No active session.")
+
+    client = okx_demo_client_for(user_id)
+    try:
+        # Close any open positions
+        try:
+            positions = await client.swap_positions()
+        except ExchangeError:
+            positions = []
+
+        for pos in positions:
+            inst_id = pos.get("instId")
+            pos_side = pos.get("posSide") or "net"
+            contracts = abs(Decimal(pos.get("pos") or "0"))
+            if contracts <= 0:
+                continue
+            if pos_side == "long":
+                close_side = "sell"
+            elif pos_side == "short":
+                close_side = "buy"
+            else:
+                close_side = "sell" if Decimal(pos.get("pos")) > 0 else "buy"
+
+            close_key = f"stop{session.id}{uuid.uuid4().hex[:18]}"[:28]
+            try:
+                accepted = await client.close_market_swap(
+                    inst_id=inst_id, side=close_side, position_side=pos_side,
+                    contracts=contracts, client_order_id=close_key,
+                )
+                detail = await client.order_detail(inst_id, accepted.get("ordId", ""))
+                status = (detail or {}).get("state", "live").upper()
+                fill = Decimal((detail or {}).get("avgPx") or pos.get("markPx") or "0")
+                filled = Decimal((detail or {}).get("accFillSz") or "0")
+                pnl = Decimal((detail or {}).get("pnl") or "0")
+                database.reconcile_exchange_order(close_key, status, fill, filled, pnl)
+            except Exception as exc:
+                log.warning("Manual stop close failed for %s: %s", inst_id, exc)
+
+        # Snapshot final balance
+        await asyncio.sleep(1.5)
+        try:
+            balance = await client.account_balance()
+        except Exception:
+            balance = session.current_balance
+    finally:
+        await client.close()
+
+    session_manager.end_session(session.id, EndReason.USER_STOP, balance)
+    updated = session_manager.get_by_id(session.id)
+
+    try:
+        await api.state.notifier.send(
+            user_id,
+            f"⏹️ Auto trading stopped — session #{session.id}\n"
+            f"Ending balance: {balance:.2f} USDT\n"
+            f"P&L: {balance - session.starting_balance:+.2f} USDT\n"
+            f"Trades: {session.trades_count} "
+            f"(W {session.wins_count} / L {session.losses_count})",
+        )
+    except Exception:
+        pass
+
+    return {"stopped": True, "session": _session_to_dict(updated)}
+
+
+@api.get("/api/auto/status")
+async def auto_status(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+
+    session = session_manager.get_active(user_id)
+    if not session:
+        return {"active": False, "session": None}
+
+    # Refresh balance from OKX for the live view
+    try:
+        client = okx_demo_client_for(user_id)
+        try:
+            balance = await client.account_balance()
+            session_manager.update_balance(session.id, balance)
+            session = session_manager.get_by_id(session.id)
+        finally:
+            await client.close()
+    except Exception:
+        pass
+
+    return {"active": True, "session": _session_to_dict(session)}
+
+
+@api.get("/api/auto/history")
+async def auto_history(x_telegram_init_data: str | None = Header(default=None)) -> list[dict]:
+    user = telegram_user(x_telegram_init_data)
+    rows = session_manager.list_history(int(user["id"]), limit=20)
+    return [_session_to_dict(s) for s in rows]
