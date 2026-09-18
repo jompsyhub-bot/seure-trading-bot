@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -305,6 +306,52 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .token-result-meta{font-size:11px;color:var(--muted);margin-left:8px;white-space:nowrap}
 .token-no-results{padding:22px;text-align:center;color:var(--muted);font-size:13px}
 .token-hint{padding:4px 10px 8px;font-size:11px;color:var(--muted);text-align:center}
+
+/* ── Auto trading sessions ─────────────────── */
+.session-mode{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:6px 0}
+.session-mode button{padding:14px;background:var(--field);color:var(--muted);
+  border:2px solid transparent;font-weight:700;border-radius:10px;margin:0;cursor:pointer;
+  font-size:14px;width:auto;transition:all .15s}
+.session-mode button.active{background:rgba(98,140,255,0.15);color:var(--accent-soft);
+  border-color:var(--accent)}
+.session-mode button:disabled{opacity:0.4;cursor:not-allowed}
+.dual{display:grid;grid-template-columns:1fr 130px;gap:8px;margin:6px 0;align-items:center}
+.dual input,.dual select{margin:0}
+
+.session-live{padding:18px;border-radius:14px;
+  background:linear-gradient(135deg,rgba(98,140,255,0.14),rgba(98,140,255,0.04));
+  border:1px solid rgba(98,140,255,0.35);margin:14px 0}
+.session-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.session-status{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
+.session-pulse{width:10px;height:10px;border-radius:50%;background:var(--good);
+  animation:pulse 1.8s ease-in-out infinite;flex-shrink:0}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.35}}
+.session-pnl{font-size:34px;font-weight:800;text-align:center;line-height:1.05;margin:14px 0 4px}
+.session-target{font-size:12px;text-align:center;color:var(--muted);margin-bottom:14px}
+.session-bar{height:12px;background:rgba(0,0,0,0.25);border-radius:6px;overflow:hidden;margin:12px 0}
+.session-bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-soft));
+  border-radius:6px;transition:width .6s ease}
+.session-bar-fill.loss{background:linear-gradient(90deg,#c75161,#ff8997)}
+.session-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0 4px}
+.session-stat{text-align:center;padding:10px 6px;background:rgba(0,0,0,0.18);border-radius:9px}
+.session-stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.3px}
+.session-stat-value{font-size:16px;font-weight:700;margin-top:3px}
+
+.session-history{padding:12px 0;border-bottom:1px solid var(--border);font-size:13px}
+.session-history:last-child{border-bottom:none}
+.session-history-row{display:flex;justify-content:space-between;align-items:center}
+.session-history-reason{font-size:11px;color:var(--muted);margin-top:3px}
+.session-history-pnl{font-weight:700;font-variant-numeric:tabular-nums;margin-left:8px}
+.session-history-date{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+.market-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;
+  background:rgba(98,140,255,0.12);color:var(--accent-soft);border-radius:999px;
+  font-size:12px;font-weight:600;margin:3px 4px 3px 0}
+.market-chip .x{cursor:pointer;opacity:0.7;font-weight:700;padding:0 2px}
+.market-chip .x:active{opacity:1}
+
+.token-result.picked{background:rgba(77,221,172,0.15);color:var(--good)}
+.token-result.picked .token-result-meta{color:var(--good)}
 </style>
 </head>
 <body>
@@ -365,13 +412,14 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 
   <div class="tab-bar">
     <button class="tab active" data-tab="manual" onclick="autoTab('manual')">
-      <span class="tab-ico">📝</span> Manual input
+      <span class="tab-ico">📝</span> Manual input trade
     </button>
-    <button class="tab" data-tab="strategy" onclick="autoTab('strategy')">
-      <span class="tab-ico">🤖</span> Auto strategy
+    <button class="tab" data-tab="auto" onclick="autoTab('auto')">
+      <span class="tab-ico">🤖</span> Auto trading
     </button>
   </div>
 
+  <!-- ============ MANUAL INPUT TRADE ============ -->
   <div id="tab-manual" class="tab-pane">
     <div class="card">
       <h2>Paste a trade signal</h2>
@@ -396,13 +444,10 @@ SL @ 77,000"></textarea>
       <p class="muted" style="font-size:13px;margin-top:0">
         Check the values below. Fix anything the bot got wrong, then preview.
       </p>
-
       <div class="grid">
         <div id="wrap-symbol">
           <label>Market<span id="dot-symbol" class="parsed-dot ok"></span></label>
-          <select id="parseSymbol">
-            <option value="">— pick —</option>
-          </select>
+          <select id="parseSymbol"><option value="">— pick —</option></select>
         </div>
         <div id="wrap-side">
           <label>Direction<span id="dot-side" class="parsed-dot ok"></span></label>
@@ -429,47 +474,123 @@ SL @ 77,000"></textarea>
           <input id="parseSl" inputmode="decimal" placeholder="e.g. 77000">
         </div>
       </div>
-
       <div id="parseWarnings" class="warning hidden"></div>
-
-      <button onclick="futParsePreview()" style="margin-top:12px">
-        Show trade preview
-      </button>
+      <button onclick="futParsePreview()" style="margin-top:12px">Show trade preview</button>
     </div>
 
     <div id="manualResult" class="card hidden"></div>
-
     <div id="manualPlaceWrap" class="hidden" style="margin:14px 0">
       <button class="stop" onclick="futManualPlace()">Confirm &amp; place Demo order</button>
     </div>
   </div>
 
-  <div id="tab-strategy" class="tab-pane hidden">
-    <div id="locked" class="card">
-      OKX Demo is connected. Futures automation is intentionally paused while its execution adapter is tested.
+  <!-- ============ AUTO TRADING ============ -->
+  <div id="tab-auto" class="tab-pane hidden">
+
+    <!-- Start form (shown when no session is running) -->
+    <div id="autoNoSession">
+      <div class="card">
+        <h2>Start a new session</h2>
+        <p class="muted" style="font-size:13px;margin-top:0">
+          The bot trades on your behalf while you're away. It stops automatically
+          when your target, max loss, safety floor, or time limit is reached.
+        </p>
+
+        <div class="step-label"><span class="step-num">1</span> Mode</div>
+        <div class="session-mode">
+          <button id="modeDay" class="active" onclick="autoSetMode('day_trading')">📊 Day trading</button>
+          <button id="modeScalp" disabled title="Coming soon">⚡ Scalping</button>
+        </div>
+
+        <div class="step-label"><span class="step-num">2</span> Duration</div>
+        <div class="chip-row" id="durationChips">
+          <button class="chip" data-hours="4"   onclick="autoSetDuration(4)">4h</button>
+          <button class="chip" data-hours="12"  onclick="autoSetDuration(12)">12h</button>
+          <button class="chip active" data-hours="24" onclick="autoSetDuration(24)">24h</button>
+          <button class="chip" data-hours="72"  onclick="autoSetDuration(72)">3d</button>
+          <button class="chip" data-hours="168" onclick="autoSetDuration(168)">7d</button>
+        </div>
+        <input id="sessDuration" inputmode="decimal" value="24" placeholder="24"
+               oninput="autoSyncDurationChips()">
+        <p class="hint">Hours the session will run.</p>
+
+        <div class="step-label"><span class="step-num">3</span> Target &amp; protection</div>
+        <label class="good">Target profit (USDT)</label>
+        <input id="sessTarget" inputmode="decimal" value="50" placeholder="50">
+        <p class="hint">Session ends when the account gains this much.</p>
+
+        <label class="loss">Max loss (USDT)</label>
+        <input id="sessMaxLoss" inputmode="decimal" value="20" placeholder="20">
+        <p class="hint">Session ends if the account loses this much.</p>
+
+        <div class="step-label"><span class="step-num">4</span> Risk per trade</div>
+        <div class="dual">
+          <input id="sessRisk" inputmode="decimal" value="1.00" placeholder="1.00">
+          <select id="sessRiskUnit" onchange="autoRiskUnitChanged()">
+            <option value="pct">% of balance</option>
+            <option value="usdt">USDT fixed</option>
+          </select>
+        </div>
+        <p class="hint" id="riskHint">
+          1% of current balance. Auto-scales as the account grows or shrinks.
+        </p>
+
+        <div class="step-label"><span class="step-num">5</span> Safety floor</div>
+        <div class="chip-row" id="floorChips">
+          <button class="chip" data-floor="70" onclick="autoSetFloor(70)">70%</button>
+          <button class="chip active" data-floor="80" onclick="autoSetFloor(80)">80%</button>
+          <button class="chip" data-floor="90" onclick="autoSetFloor(90)">90%</button>
+        </div>
+        <p class="hint">Session closes everything if balance drops to this % of starting balance.</p>
+
+        <div class="step-label"><span class="step-num">6</span> Leverage</div>
+        <input id="sessLeverage" inputmode="numeric" value="10" placeholder="10">
+        <p class="hint">Per-trade leverage. 5×–20× recommended for this strategy.</p>
+
+        <div class="step-label"><span class="step-num">7</span> Markets</div>
+        <div class="session-mode" style="grid-template-columns:1fr 1fr">
+          <button id="marketsAuto" class="active" onclick="autoSetMarketsMode('auto')">🎯 Auto-scan</button>
+          <button id="marketsCustom" onclick="autoSetMarketsMode('custom')">✏️ My picks</button>
+        </div>
+        <div id="marketsDefaultHint" class="hint">
+          Default: ETH, DOGE, SOL. Validated for this strategy on real OKX data.
+        </div>
+        <div id="marketsCustomWrap" class="hidden">
+          <p class="hint" style="margin-top:8px">Selected: <b id="selectedMarketCount">0</b> / 10</p>
+          <div class="token-picker" id="sessMarketPicker">
+            <button type="button" class="token-btn" onclick="autoToggleMarketSearch(event)">
+              <span class="token-btn-icon">🔍</span>
+              <span class="token-btn-label">Tap to add markets…</span>
+              <span class="token-btn-chevron">▾</span>
+            </button>
+            <div id="sessMarketPanel" class="token-panel hidden">
+              <input id="sessMarketSearch" type="text" class="token-search-input"
+                     placeholder="Search e.g. BTC, ETH, SOL…"
+                     oninput="autoFilterMarketResults()"
+                     autocomplete="off" spellcheck="false">
+              <div id="sessMarketResults" class="token-results"></div>
+              <div class="token-hint">Tap to toggle</div>
+            </div>
+          </div>
+          <div id="selectedMarketsList" style="margin-top:8px"></div>
+        </div>
+
+        <button onclick="autoStartSession()" style="margin-top:18px;padding:14px;font-size:16px">
+          🚀 Start session
+        </button>
+      </div>
     </div>
 
-    <div id="settings" class="card hidden">
-      <p class="notice">Experimental RSI reversion. 15-minute RSI ≤ 30 entry; no profit promise.</p>
-      <p class="warning" style="margin-top:0">
-        The RSI strategy has been validated for BTC and ETH. Other markets may behave unexpectedly — test with small margins first.
-      </p>
-      <label class="checkbox">
-        <input id="enabled" type="checkbox"> Enable Demo automation
-      </label>
-      <label for="symbol">Market</label>
-      <select id="symbol">
-        <option>BTC-USDT-SWAP</option>
-        <option>ETH-USDT-SWAP</option>
-      </select>
-      <div class="grid">
-        <div><label for="order">Max order (USDT)</label><input id="order" placeholder="10"></div>
-        <div><label for="trades">Max trades / day</label><input id="trades" placeholder="1"></div>
-        <div><label for="stop">Stop loss %</label><input id="stop" placeholder="2"></div>
-        <div><label for="take">Take profit %</label><input id="take" placeholder="4"></div>
+    <!-- Live session (shown when a session is running) -->
+    <div id="autoHasSession" class="hidden"></div>
+
+    <!-- History -->
+    <div class="card" style="margin-top:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Session history</h2>
+        <button class="mini-ghost" onclick="autoRefreshHistory()">Refresh</button>
       </div>
-      <button onclick="saveAuto()">Save automation settings</button>
-      <button class="stop" onclick="kill()">Stop automation</button>
+      <div id="sessionHistoryList" class="muted" style="margin-top:8px">Loading…</div>
     </div>
   </div>
 </section>
@@ -748,9 +869,7 @@ async function populateSymbolSelects() {
   const optionsHtml = rows
     .map(r => `<option value="${r.instId}">${r.displayName || r.instId}</option>`)
     .join('');
-  // NOTE: futSymbol is now a hidden input — skip it here. It's driven by
-  // the searchable token picker instead.
-  const ids = ['symbol', 'parseSymbol'];
+  const ids = ['parseSymbol'];
   for (const id of ids) {
     const sel = document.getElementById(id);
     if (!sel) continue;
@@ -764,7 +883,6 @@ async function populateSymbolSelects() {
       sel.value = current;
     }
   }
-  // Keep the futures picker label in sync with whatever's currently selected
   futUpdateTokenLabel();
 }
 
@@ -794,7 +912,6 @@ function futToggleTokenSearch(event) {
     const input = document.getElementById('futTokenSearch');
     input.value = '';
     futFilterTokenResults();
-    // Focus after the panel renders
     setTimeout(() => input.focus(), 60);
   }
 }
@@ -900,22 +1017,6 @@ function render(d) {
   const autoOn = !!d.automation?.enabled;
   autoEl.textContent = autoOn ? 'ACTIVE' : 'PAUSED';
   autoEl.className = `metric ${autoOn ? 'good' : 'warn'}`;
-
-  const a = d.automation || {};
-  document.getElementById('enabled').checked = !!a.enabled;
-
-  const symSel = document.getElementById('symbol');
-  const desired = (a.symbol || 'BTC-USDT-SWAP').toUpperCase();
-  const normalized = desired.replace(/\//g, '-').replace(/^([A-Z0-9]+?)(USDT|USDC|USD)(-SWAP)?$/, '$1-$2-SWAP');
-  const match = Array.from(symSel.options).find(o =>
-    o.value === normalized || o.value.replace(/-/g, '') === desired.replace(/-/g, '')
-  );
-  if (match) symSel.value = match.value;
-
-  document.getElementById('order').value  = a.max_order_notional ?? 10;
-  document.getElementById('trades').value = a.max_trades_per_day ?? 1;
-  document.getElementById('stop').value   = a.stop_loss_pct ?? 2;
-  document.getElementById('take').value   = a.take_profit_pct ?? 4;
 }
 
 async function load() {
@@ -972,41 +1073,12 @@ async function disconnect() {
   } catch (e) { toast(e.message, true); }
 }
 
-async function saveAuto() {
-  try {
-    await api('/api/automation', {
-      method: 'POST',
-      body: JSON.stringify({
-        enabled: document.getElementById('enabled').checked,
-        strategy: 'rsi_reversion_demo',
-        symbol: document.getElementById('symbol').value,
-        max_order_notional: document.getElementById('order').value,
-        max_trades_per_day: +document.getElementById('trades').value,
-        stop_loss_pct: document.getElementById('stop').value,
-        take_profit_pct: document.getElementById('take').value
-      })
-    });
-    await load();
-    toast('Automation settings saved');
-  } catch (e) { toast(e.message, true); }
-}
-
 async function kill() {
   try {
     await api('/api/automation/kill-switch', { method: 'POST' });
     await load();
     toast('Automation stopped');
   } catch (e) { toast(e.message, true); }
-}
-
-/* =========================================================
-   Automate — tab switching
-========================================================= */
-function autoTab(name) {
-  document.querySelectorAll('.tab-bar .tab').forEach(t =>
-    t.classList.toggle('active', t.dataset.tab === name));
-  document.querySelectorAll('#automate .tab-pane').forEach(p =>
-    p.classList.toggle('hidden', p.id !== `tab-${name}`));
 }
 
 /* =========================================================
@@ -2175,18 +2247,367 @@ function renderActivityHistory(rows) {
 }
 
 /* =========================================================
-   Outside-click + Escape to close token picker
+   Auto trading sessions
 ========================================================= */
+const autoState = {
+  session: null,
+  marketsMode: 'auto',
+  selectedMarkets: new Set(),
+  durationHours: 24,
+  floorPct: 80,
+  mode: 'day_trading',
+  statusTimer: null,
+  historyLoaded: false,
+};
+
+function autoTab(name) {
+  document.querySelectorAll('#automate .tab-bar .tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('#automate .tab-pane').forEach(p =>
+    p.classList.toggle('hidden', p.id !== `tab-${name}`));
+  if (name === 'auto') autoInit();
+}
+
+function autoInit() {
+  if (!autoState.statusTimer) {
+    autoRefreshStatus();
+    autoState.statusTimer = setInterval(autoRefreshStatus, 5000);
+  }
+  if (!autoState.historyLoaded) autoRefreshHistory();
+  autoRenderSelectedMarkets();
+}
+
+function autoSetMode(mode) {
+  autoState.mode = mode;
+  document.getElementById('modeDay').classList.toggle('active', mode === 'day_trading');
+  document.getElementById('modeScalp').classList.toggle('active', mode === 'scalping');
+}
+
+function autoSetDuration(hours) {
+  autoState.durationHours = hours;
+  document.getElementById('sessDuration').value = hours;
+  document.querySelectorAll('#durationChips .chip').forEach(b =>
+    b.classList.toggle('active', +b.dataset.hours === hours));
+}
+
+function autoSyncDurationChips() {
+  const v = parseFloat(document.getElementById('sessDuration').value);
+  if (!isFinite(v)) return;
+  document.querySelectorAll('#durationChips .chip').forEach(b =>
+    b.classList.toggle('active', +b.dataset.hours === v));
+}
+
+function autoSetFloor(pct) {
+  autoState.floorPct = pct;
+  document.querySelectorAll('#floorChips .chip').forEach(b =>
+    b.classList.toggle('active', +b.dataset.floor === pct));
+}
+
+function autoRiskUnitChanged() {
+  const unit = document.getElementById('sessRiskUnit').value;
+  const hint = document.getElementById('riskHint');
+  if (unit === 'usdt') {
+    hint.textContent = 'Fixed USDT amount risked per trade.';
+  } else {
+    hint.textContent = '1% of current balance. Auto-scales as the account grows or shrinks.';
+  }
+}
+
+function autoSetMarketsMode(mode) {
+  autoState.marketsMode = mode;
+  document.getElementById('marketsAuto').classList.toggle('active', mode === 'auto');
+  document.getElementById('marketsCustom').classList.toggle('active', mode === 'custom');
+  document.getElementById('marketsDefaultHint').classList.toggle('hidden', mode !== 'auto');
+  document.getElementById('marketsCustomWrap').classList.toggle('hidden', mode !== 'custom');
+  if (mode === 'custom') {
+    loadInstruments().then(autoRenderMarketResults);
+  }
+}
+
+function autoToggleMarketSearch(event) {
+  if (event) event.stopPropagation();
+  const picker = document.getElementById('sessMarketPicker');
+  const panel = document.getElementById('sessMarketPanel');
+  const isOpen = !panel.classList.contains('hidden');
+  if (isOpen) {
+    panel.classList.add('hidden');
+    picker.classList.remove('open');
+  } else {
+    panel.classList.remove('hidden');
+    picker.classList.add('open');
+    document.getElementById('sessMarketSearch').value = '';
+    autoRenderMarketResults();
+    setTimeout(() => document.getElementById('sessMarketSearch').focus(), 60);
+  }
+}
+
+function autoCloseMarketSearch() {
+  document.getElementById('sessMarketPanel').classList.add('hidden');
+  document.getElementById('sessMarketPicker').classList.remove('open');
+}
+
+async function autoRenderMarketResults() {
+  const list = document.getElementById('sessMarketResults');
+  if (!list) return;
+  const rows = await loadInstruments();
+  const q = (document.getElementById('sessMarketSearch').value || '').trim().toUpperCase();
+  let filtered = rows;
+  if (q) {
+    filtered = rows.filter(r =>
+      (r.instId || '').toUpperCase().includes(q) ||
+      (r.base || '').toUpperCase().includes(q) ||
+      (r.displayName || '').toUpperCase().includes(q));
+  }
+  filtered = filtered.slice(0, 80);
+  if (!filtered.length) {
+    list.innerHTML = `<div class="token-no-results">No matches</div>`;
+    return;
+  }
+  list.innerHTML = filtered.map(r => {
+    const picked = autoState.selectedMarkets.has(r.instId);
+    const cls = 'token-result' + (picked ? ' picked' : '');
+    return `<div class="${cls}" onclick="autoToggleMarket('${r.instId}')">
+      <span>${escapeHtml(r.displayName || r.instId)}</span>
+      <span class="token-result-meta">${picked ? '✓' : (r.maxLeverage ? r.maxLeverage + '× max' : '')}</span>
+    </div>`;
+  }).join('');
+}
+
+function autoFilterMarketResults() { autoRenderMarketResults(); }
+
+function autoToggleMarket(instId) {
+  if (autoState.selectedMarkets.has(instId)) {
+    autoState.selectedMarkets.delete(instId);
+  } else {
+    if (autoState.selectedMarkets.size >= 10) {
+      toast('Maximum 10 markets per session', true);
+      return;
+    }
+    autoState.selectedMarkets.add(instId);
+  }
+  autoRenderMarketResults();
+  autoRenderSelectedMarkets();
+}
+
+function autoRenderSelectedMarkets() {
+  const list = document.getElementById('selectedMarketsList');
+  const countEl = document.getElementById('selectedMarketCount');
+  if (!list) return;
+  const arr = Array.from(autoState.selectedMarkets);
+  countEl.textContent = arr.length;
+  list.innerHTML = arr.map(instId => {
+    const pretty = instId.replace('-USDT-SWAP', '').replace('-SWAP', '');
+    return `<span class="market-chip">${escapeHtml(pretty)}<span class="x" onclick="autoToggleMarket('${instId}')">×</span></span>`;
+  }).join('');
+}
+
+async function autoStartSession() {
+  const duration = parseFloat(document.getElementById('sessDuration').value);
+  const target = parseFloat(document.getElementById('sessTarget').value);
+  const maxLoss = parseFloat(document.getElementById('sessMaxLoss').value);
+  const risk = parseFloat(document.getElementById('sessRisk').value);
+  const riskUnit = document.getElementById('sessRiskUnit').value;
+  const leverage = parseInt(document.getElementById('sessLeverage').value);
+
+  if (!(duration > 0)) return toast('Enter a duration in hours', true);
+  if (!(target > 0))   return toast('Enter a target profit', true);
+  if (!(maxLoss > 0))  return toast('Enter a max loss', true);
+  if (!(risk > 0))     return toast('Enter a risk per trade', true);
+  if (!(leverage >= 1 && leverage <= 100)) return toast('Leverage 1–100', true);
+  if (autoState.marketsMode === 'custom' && autoState.selectedMarkets.size === 0) {
+    return toast('Pick at least one market', true);
+  }
+
+  const markets = autoState.marketsMode === 'custom'
+    ? Array.from(autoState.selectedMarkets).join(',')
+    : 'auto';
+
+  if (riskUnit === 'usdt') {
+    return toast('Fixed USDT risk is not supported yet — use % mode', true);
+  }
+
+  const btn = event?.target;
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+
+  try {
+    await api('/api/auto/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: autoState.mode,
+        strategy: 'daily_pullback',
+        duration_hours: duration,
+        target_profit: target,
+        max_loss: maxLoss,
+        risk_per_trade_pct: risk,
+        safety_floor_pct: autoState.floorPct,
+        leverage: leverage,
+        markets: markets,
+      })
+    });
+    toast('Session started');
+    await autoRefreshStatus();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🚀 Start session'; }
+  }
+}
+
+async function autoStopSession() {
+  if (!confirm('Stop this session and close all open positions at market?')) return;
+  try {
+    await api('/api/auto/stop', { method: 'POST' });
+    toast('Session stopped');
+    await autoRefreshStatus();
+    await autoRefreshHistory();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function autoRefreshStatus() {
+  try {
+    const d = await api('/api/auto/status');
+    autoState.session = d.active ? d.session : null;
+    if (d.active) autoRenderLiveSession(d.session);
+    else autoRenderNoSession();
+  } catch (e) {
+    // silent — polling
+  }
+}
+
+function autoRenderNoSession() {
+  document.getElementById('autoNoSession').classList.remove('hidden');
+  document.getElementById('autoHasSession').classList.add('hidden');
+}
+
+function autoRenderLiveSession(s) {
+  document.getElementById('autoNoSession').classList.add('hidden');
+  const wrap = document.getElementById('autoHasSession');
+  wrap.classList.remove('hidden');
+
+  const pnl = parseFloat(s.pnl);
+  const target = parseFloat(s.target_profit);
+  const pnlSign = pnl >= 0 ? '+' : '-';
+  const pnlClass = pnl > 0 ? 'good' : pnl < 0 ? 'loss' : 'muted';
+
+  const progress = target > 0 ? Math.max(0, Math.min(100, (pnl / target) * 100)) : 0;
+  const fillClass = pnl < 0 ? 'loss' : '';
+
+  const secsRemaining = s.seconds_remaining;
+  const h = Math.floor(secsRemaining / 3600);
+  const m = Math.floor((secsRemaining % 3600) / 60);
+
+  const modeLabel = s.mode === 'scalping' ? 'Scalping' : 'Day trading';
+  const marketsLabel = s.markets === 'auto' ? 'Auto-scan' : s.markets.split(',').length + ' markets';
+
+  wrap.innerHTML = `
+    <div class="session-live">
+      <div class="session-header">
+        <div class="session-status">
+          <span class="session-pulse"></span>
+          <span>${modeLabel} · ACTIVE</span>
+        </div>
+        <span class="session-history-date">${h}h ${m}m left</span>
+      </div>
+
+      <div class="session-pnl ${pnlClass}">
+        ${pnlSign}$${Math.abs(pnl).toFixed(2)}
+      </div>
+      <div class="session-target">
+        Target +$${target.toFixed(2)} · ${marketsLabel}
+      </div>
+
+      <div class="session-bar">
+        <div class="session-bar-fill ${fillClass}" style="width:${progress.toFixed(1)}%"></div>
+      </div>
+
+      <div class="session-stats">
+        <div class="session-stat">
+          <div class="session-stat-label">Balance</div>
+          <div class="session-stat-value">$${parseFloat(s.current_balance).toFixed(2)}</div>
+        </div>
+        <div class="session-stat">
+          <div class="session-stat-label">Trades</div>
+          <div class="session-stat-value">${s.trades_count}</div>
+        </div>
+        <div class="session-stat">
+          <div class="session-stat-label">W / L</div>
+          <div class="session-stat-value">${s.wins_count} / ${s.losses_count}</div>
+        </div>
+      </div>
+
+      <div class="info-row" style="margin:10px 0 4px;font-size:12px">
+        <span class="muted">Floor ${s.safety_floor_pct}% → $${parseFloat(s.safety_floor_value).toFixed(2)}</span>
+        <span class="muted">Risk ${parseFloat(s.risk_per_trade_pct).toFixed(2)}%</span>
+        <span class="muted">${s.leverage}×</span>
+      </div>
+
+      <button class="stop" onclick="autoStopSession()" style="margin-top:10px">
+        Stop session
+      </button>
+    </div>
+  `;
+}
+
+async function autoRefreshHistory() {
+  const el = document.getElementById('sessionHistoryList');
+  try {
+    const rows = await api('/api/auto/history');
+    autoState.historyLoaded = true;
+    if (!rows || !rows.length) {
+      el.innerHTML = '<div class="empty">No completed sessions yet.</div>';
+      return;
+    }
+    el.innerHTML = rows.map(s => {
+      const pnl = parseFloat(s.pnl || (s.ending_balance ? (parseFloat(s.ending_balance) - parseFloat(s.starting_balance)) : 0));
+      const sign = pnl >= 0 ? '+' : '-';
+      const cls = pnl > 0 ? 'good' : pnl < 0 ? 'loss' : 'muted';
+      const reason = {
+        target: '🎯 Target hit',
+        max_loss: '🛑 Max loss',
+        safety_stop: '🛡️ Safety floor',
+        expired: '⏱️ Expired',
+        user_stop: '⏹️ Stopped',
+        error: '⚠️ Error',
+      }[s.end_reason] || s.end_reason || 'Ended';
+      const mode = s.mode === 'scalping' ? 'Scalp' : 'Day';
+      const date = (s.started_at || '').slice(0, 16).replace('T', ' ');
+      return `
+        <div class="session-history">
+          <div class="session-history-row">
+            <span><b>${mode}</b> · ${s.trades_count} trades (W${s.wins_count}/L${s.losses_count})</span>
+            <span class="session-history-pnl ${cls}">${sign}$${Math.abs(pnl).toFixed(2)}</span>
+          </div>
+          <div class="session-history-row">
+            <span class="session-history-reason">${reason}</span>
+            <span class="session-history-date">${date}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+/* Outside-click handlers */
 document.addEventListener('click', (e) => {
-  const picker = document.getElementById('futTokenPicker');
-  const panel  = document.getElementById('futTokenPanel');
-  if (!picker || !panel) return;
-  if (panel.classList.contains('hidden')) return;
-  if (!picker.contains(e.target)) futCloseTokenSearch();
+  const p1 = document.getElementById('futTokenPicker');
+  const p1p = document.getElementById('futTokenPanel');
+  if (p1 && p1p && !p1p.classList.contains('hidden') && !p1.contains(e.target)) {
+    futCloseTokenSearch();
+  }
+  const p2 = document.getElementById('sessMarketPicker');
+  const p2p = document.getElementById('sessMarketPanel');
+  if (p2 && p2p && !p2p.classList.contains('hidden') && !p2.contains(e.target)) {
+    autoCloseMarketSearch();
+  }
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') futCloseTokenSearch();
+  if (e.key === 'Escape') {
+    futCloseTokenSearch();
+    autoCloseMarketSearch();
+  }
 });
 
 /* =========================================================
