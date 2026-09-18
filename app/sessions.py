@@ -1,13 +1,4 @@
-﻿"""Session lifecycle and risk guard for auto trading.
 
-Self-contained: manages its own `auto_sessions` table. Works with either:
-
-  * Postgres (via DATABASE_URL)  — production on Render / Supabase
-  * SQLite   (via DATABASE_PATH) — local development
-
-Does not modify or depend on app/database.py. Call ensure_schema() once
-at startup from lifespan, then use SessionManager for all reads/writes.
-"""
 from __future__ import annotations
 
 import logging
