@@ -324,6 +324,14 @@ class SessionManager:
                 ORDER BY id DESC LIMIT %s
             """, (user_id, limit))
         return [self._to_state(r) for r in rows]
+     
+    def list_all_active(self) -> list[SessionState]:
+        """Every active session across every user. Used by the worker."""
+        with self.backend.cursor() as cur:
+            rows = self.backend.fetchall(cur, """
+                SELECT * FROM auto_sessions WHERE status = 'active'
+            """, ())
+        return [self._to_state(r) for r in rows]
 
     # -- translation ----------------------------------------------------
 
