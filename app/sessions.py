@@ -13,10 +13,6 @@ from typing import Literal, Optional
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
-
 class EndReason(str, Enum):
     TARGET = "target"
     MAX_LOSS = "max_loss"
@@ -31,10 +27,6 @@ class SessionStatus(str, Enum):
     COMPLETE = "complete"
 
 
-# ---------------------------------------------------------------------------
-# Dataclasses
-# ---------------------------------------------------------------------------
-
 @dataclass
 class SessionConfig:
     mode: Literal["scalping", "day_trading"]
@@ -45,7 +37,7 @@ class SessionConfig:
     risk_per_trade_pct: Decimal
     safety_floor_pct: Decimal
     leverage: int
-    markets: str  # 'auto' or comma-separated instIds
+    markets: str
 
 
 @dataclass
@@ -88,14 +80,22 @@ class SessionState:
         return max(0, int(delta.total_seconds()))
 
 
-# ---------------------------------------------------------------------------
-# Backend adapter
-# ---------------------------------------------------------------------------
+@dataclass
+class TrackedPosition:
+    id: int
+    session_id: int
+    inst_id: str
+    pos_side: str
+    entry_price: Decimal
+    contracts: Decimal
+    opened_at: datetime
+    client_order_id: str
+    order_id: Optional[str] = None
+    closed_at: Optional[datetime] = None
+    realized_pnl: Optional[Decimal] = None
+
 
 class _Backend:
-    """Minimal dual-backend adapter. `%s` placeholders in callers; translated
-    to `?` automatically for SQLite."""
-
     def __init__(self, database_url: Optional[str], database_path: str):
         self.is_postgres = bool(database_url)
         self.database_url = database_url
@@ -141,10 +141,6 @@ class _Backend:
         return [dict(r) if not self.is_postgres else r for r in rows]
 
 
-# ---------------------------------------------------------------------------
-# Manager
-# ---------------------------------------------------------------------------
-
 _DDL_POSTGRES = """
 CREATE TABLE IF NOT EXISTS auto_sessions (
     id SERIAL PRIMARY KEY,
@@ -172,6 +168,21 @@ CREATE TABLE IF NOT EXISTS auto_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auto_sessions_active
     ON auto_sessions(user_id, status);
+CREATE TABLE IF NOT EXISTS session_positions (
+    id SERIAL PRIMARY KEY,
+    session_id INTEGER NOT NULL,
+    inst_id TEXT NOT NULL,
+    pos_side TEXT NOT NULL,
+    entry_price NUMERIC,
+    contracts NUMERIC,
+    opened_at TIMESTAMPTZ NOT NULL,
+    closed_at TIMESTAMPTZ,
+    realized_pnl NUMERIC,
+    client_order_id TEXT UNIQUE,
+    order_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_positions_open
+    ON session_positions(session_id, closed_at);
 """
 
 _DDL_SQLITE = """
@@ -201,6 +212,21 @@ CREATE TABLE IF NOT EXISTS auto_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_auto_sessions_active
     ON auto_sessions(user_id, status);
+CREATE TABLE IF NOT EXISTS session_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    inst_id TEXT NOT NULL,
+    pos_side TEXT NOT NULL,
+    entry_price TEXT,
+    contracts TEXT,
+    opened_at TEXT NOT NULL,
+    closed_at TEXT,
+    realized_pnl TEXT,
+    client_order_id TEXT UNIQUE,
+    order_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_positions_open
+    ON session_positions(session_id, closed_at);
 """
 
 
@@ -209,17 +235,26 @@ class SessionManager:
                  database_path: str = "trading_bot.db"):
         self.backend = _Backend(database_url, database_path)
 
-    # -- schema ---------------------------------------------------------
-
     def ensure_schema(self) -> None:
         ddl = _DDL_POSTGRES if self.backend.is_postgres else _DDL_SQLITE
         with self.backend.cursor() as cur:
             for statement in [s.strip() for s in ddl.split(";") if s.strip()]:
                 cur.execute(statement)
-        log.info("auto_sessions schema ensured (%s)",
+            # Migration: add order_id column if table predates this change.
+            try:
+                cur.execute(
+                    "ALTER TABLE session_positions ADD COLUMN order_id "
+                    + ("TEXT" if not self.backend.is_postgres else "TEXT")
+                )
+            except Exception:
+                # Column already exists or backend rejects duplicate — ignore.
+                pass
+        log.info("session schema ensured (%s)",
                  "postgres" if self.backend.is_postgres else "sqlite")
 
-    # -- writes ---------------------------------------------------------
+    # --------------------------------------------------------------
+    # Session lifecycle
+    # --------------------------------------------------------------
 
     def create_session(self, user_id: int, config: SessionConfig,
                        starting_balance: Decimal) -> int:
@@ -253,14 +288,25 @@ class SessionManager:
                 "UPDATE auto_sessions SET current_balance = %s WHERE id = %s",
                 (str(balance), session_id))
 
-    def record_trade_result(self, session_id: int, is_win: bool,
+    def record_trade_result(self, session_id: int, is_win: Optional[bool],
                             new_balance: Decimal) -> None:
-        col = "wins_count" if is_win else "losses_count"
+        """Increment trade counters when a session-owned position closes.
+
+        is_win=True  -> increment wins
+        is_win=False -> increment losses
+        is_win=None  -> only increment trades_count (unknown outcome)
+        """
+        if is_win is True:
+            col_update = ", wins_count = wins_count + 1"
+        elif is_win is False:
+            col_update = ", losses_count = losses_count + 1"
+        else:
+            col_update = ""
         with self.backend.cursor() as cur:
             self.backend.run(cur, f"""
                 UPDATE auto_sessions
-                SET trades_count = trades_count + 1,
-                    {col} = {col} + 1,
+                SET trades_count = trades_count + 1
+                    {col_update},
                     current_balance = %s,
                     last_scan_at = %s
                 WHERE id = %s
@@ -290,7 +336,63 @@ class SessionManager:
                 "UPDATE auto_sessions SET last_error = %s WHERE id = %s",
                 (error[:500], session_id))
 
-    # -- reads ----------------------------------------------------------
+    # --------------------------------------------------------------
+    # Session-owned positions
+    # --------------------------------------------------------------
+
+    def track_position(self, session_id: int, inst_id: str, pos_side: str,
+                       entry_price: Decimal, contracts: Decimal,
+                       client_order_id: str, order_id: Optional[str] = None) -> None:
+        with self.backend.cursor() as cur:
+            self.backend.run(cur, """
+                INSERT INTO session_positions
+                  (session_id, inst_id, pos_side, entry_price, contracts,
+                   opened_at, client_order_id, order_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                session_id, inst_id, pos_side,
+                str(entry_price), str(contracts),
+                datetime.now(UTC), client_order_id, order_id,
+            ))
+
+    def list_open_positions(self, session_id: int) -> list[TrackedPosition]:
+        with self.backend.cursor() as cur:
+            rows = self.backend.fetchall(cur, """
+                SELECT * FROM session_positions
+                WHERE session_id = %s AND closed_at IS NULL
+            """, (session_id,))
+        return [self._to_position(r) for r in rows]
+
+    def mark_position_closed(self, client_order_id: str,
+                             realized_pnl: Optional[Decimal] = None) -> bool:
+        """Mark a tracked position closed. Returns True if this call actually
+        transitioned the row (i.e. it was open before)."""
+        with self.backend.cursor() as cur:
+            self.backend.run(cur, """
+                UPDATE session_positions
+                SET closed_at = %s, realized_pnl = %s
+                WHERE client_order_id = %s AND closed_at IS NULL
+            """, (
+                datetime.now(UTC),
+                str(realized_pnl) if realized_pnl is not None else None,
+                client_order_id,
+            ))
+            return cur.rowcount > 0
+
+    def session_realized_pnl(self, session_id: int) -> Decimal:
+        with self.backend.cursor() as cur:
+            row = self.backend.fetchone(cur, """
+                SELECT COALESCE(SUM(CAST(realized_pnl AS NUMERIC)), 0) AS total
+                FROM session_positions
+                WHERE session_id = %s
+            """, (session_id,))
+        if not row:
+            return Decimal("0")
+        return Decimal(str(row["total"] or 0))
+
+    # --------------------------------------------------------------
+    # Reads
+    # --------------------------------------------------------------
 
     def get_active(self, user_id: int) -> Optional[SessionState]:
         with self.backend.cursor() as cur:
@@ -315,16 +417,16 @@ class SessionManager:
                 ORDER BY id DESC LIMIT %s
             """, (user_id, limit))
         return [self._to_state(r) for r in rows]
-     
+
     def list_all_active(self) -> list[SessionState]:
-        """Every active session across every user. Used by the worker."""
         with self.backend.cursor() as cur:
-            rows = self.backend.fetchall(cur, """
-                SELECT * FROM auto_sessions WHERE status = 'active'
-            """, ())
+            rows = self.backend.fetchall(cur,
+                "SELECT * FROM auto_sessions WHERE status = 'active'", ())
         return [self._to_state(r) for r in rows]
 
-    # -- translation ----------------------------------------------------
+    # --------------------------------------------------------------
+    # Translation
+    # --------------------------------------------------------------
 
     @staticmethod
     def _parse_dt(value) -> datetime:
@@ -368,9 +470,24 @@ class SessionManager:
             ending_balance=self._dec(row["ending_balance"]) if row["ending_balance"] is not None else None,
         )
 
+    def _to_position(self, row: dict) -> TrackedPosition:
+        return TrackedPosition(
+            id=int(row["id"]),
+            session_id=int(row["session_id"]),
+            inst_id=row["inst_id"],
+            pos_side=row["pos_side"],
+            entry_price=self._dec(row["entry_price"]),
+            contracts=self._dec(row["contracts"]),
+            opened_at=self._parse_dt(row["opened_at"]),
+            client_order_id=row["client_order_id"],
+            order_id=row.get("order_id") if isinstance(row, dict) else None,
+            closed_at=self._parse_dt(row["closed_at"]) if row["closed_at"] else None,
+            realized_pnl=self._dec(row["realized_pnl"]) if row["realized_pnl"] is not None else None,
+        )
+
 
 # ---------------------------------------------------------------------------
-# Risk guard — decides when to skip a trade and when to end the session
+# Risk guard
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -387,49 +504,29 @@ def compute_risk_amount(balance: Decimal, risk_pct: Decimal) -> Decimal:
 def check_can_open(session: SessionState, balance: Decimal,
                    open_positions_count: int, max_concurrent: int = 3,
                    concentration_cap_pct: Decimal = Decimal("20")) -> RiskCheck:
-    """Whether the bot may open a NEW position right now.
-
-    Returns allowed=False to skip an opportunity. Does NOT end the session.
-    """
     if balance <= 0:
         return RiskCheck(False, "balance is zero", Decimal("0"))
-
     risk = compute_risk_amount(balance, session.config.risk_per_trade_pct)
-
     cap = balance * concentration_cap_pct / Decimal("100")
     if risk > cap:
-        return RiskCheck(
-            False,
-            f"risk {risk} would exceed {concentration_cap_pct}% of balance {balance:.2f}",
-            Decimal("0"),
-        )
-
+        return RiskCheck(False,
+                         f"risk {risk} would exceed {concentration_cap_pct}% of balance {balance:.2f}",
+                         Decimal("0"))
     if open_positions_count >= max_concurrent:
-        return RiskCheck(
-            False,
-            f"already {open_positions_count} open positions (max {max_concurrent})",
-            Decimal("0"),
-        )
-
+        return RiskCheck(False,
+                         f"already {open_positions_count} open positions (max {max_concurrent})",
+                         Decimal("0"))
     return RiskCheck(True, "ok", risk)
 
 
 def should_end_session(session: SessionState, balance: Decimal) -> Optional[EndReason]:
-    """The 4 stop conditions that end the entire session.
-
-    Returns None to keep running, or an EndReason to close now.
-    """
     if balance - session.starting_balance >= session.target_profit:
         return EndReason.TARGET
-
     if session.starting_balance - balance >= abs(session.max_loss):
         return EndReason.MAX_LOSS
-
     floor = session.starting_balance * session.config.safety_floor_pct / Decimal("100")
     if balance <= floor:
         return EndReason.SAFETY_STOP
-
     if session.seconds_remaining <= 0:
         return EndReason.EXPIRED
-
     return None
