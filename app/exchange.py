@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import hashlib
@@ -238,9 +239,6 @@ class OKXDemoClient:
             data = await self._response_json(response)
         item = data.get("data", [{}])[0]
         if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
-            # Structured exchange rejection — the order was definitively not
-            # placed. OrderRejected lets the caller release the reservation
-            # so a corrected retry is not blocked by a stale lock.
             raise OrderRejected(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo order")
         return item
 
@@ -270,7 +268,7 @@ class OKXDemoClient:
             raise ExchangeError(data.get("msg", "Could not reconcile OKX order"))
         return data.get("data", [None])[0]
 
-        async def order_detail_by_clordid(self, inst_id: str, client_order_id: str) -> dict | None:
+    async def order_detail_by_clordid(self, inst_id: str, client_order_id: str) -> dict | None:
         """Fetch an order by our clOrdId (as a fallback when ordId is unknown)."""
         request_path = f"/api/v5/trade/order?instId={inst_id}&clOrdId={client_order_id}"
         session = await self._session()
@@ -315,13 +313,7 @@ class OKXDemoClient:
         return data["data"][0]
 
     async def list_swap_instruments(self) -> list[dict]:
-        """Return SWAP instruments available on OKX Demo Trading.
-
-        The `x-simulated-trading: 1` header makes OKX return the Demo
-        instrument list rather than the production one. Without it, we
-        would offer markets that exist on live OKX but are not tradeable
-        in Demo, and orders on them would be rejected.
-        """
+        """Return SWAP instruments available on OKX Demo Trading."""
         session = await self._session()
         async with session.get(
             f"{self.base_url}/api/v5/public/instruments",
@@ -340,14 +332,9 @@ class OKXDemoClient:
         if data.get("code") != "0" or not data.get("data"):
             raise ExchangeError(data.get("msg", f"No OKX market price available for {inst_id}"))
         return Decimal(data["data"][0]["last"])
-        
-    async def candles(self, inst_id: str, bar: str = "1H", limit: int = 300) -> list[dict]:
-        """Fetch closed candles from OKX public REST. Oldest first.
 
-        `bar` accepts OKX codes: 1m, 5m, 15m, 1H, 4H, 1D, etc.
-        The most recent bar returned by OKX is usually still forming; this
-        method filters that one out so every returned candle is complete.
-        """
+    async def candles(self, inst_id: str, bar: str = "1H", limit: int = 300) -> list[dict]:
+        """Fetch closed candles from OKX public REST. Oldest first."""
         session = await self._session()
         async with session.get(
             f"{self.base_url}/api/v5/market/candles",
@@ -356,13 +343,11 @@ class OKXDemoClient:
             data = await self._response_json(response)
         if data.get("code") != "0" or not isinstance(data.get("data"), list):
             raise ExchangeError(data.get("msg", f"No candles for {inst_id}"))
-        # OKX returns newest-first; reverse so callers get oldest-first.
         rows = list(reversed(data["data"]))
         out = []
         for r in rows:
-            # row = [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
             if len(r) < 9 or r[8] != "1":
-                continue  # skip the still-forming candle
+                continue
             out.append({
                 "timestamp": int(r[0]),
                 "open": float(r[1]),
