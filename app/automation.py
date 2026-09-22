@@ -1,4 +1,5 @@
-
+@'
+"""Session-aware auto trading worker."""
 from __future__ import annotations
 
 import asyncio
@@ -59,8 +60,13 @@ class AutoTradingWorker:
     async def run(self) -> None:
         log.info("AutoTradingWorker started")
         await asyncio.sleep(5)
-        # One-time startup repair for sessions whose counters never got
-        # updated (e.g. from a broken deploy). Idempotent.
+        # Safety net: make sure the session tables exist even if the
+        # module-level ensure_schema() in api.py did not run.
+        try:
+            self.session_manager.ensure_schema()
+        except Exception as exc:
+            log.warning("worker ensure_schema failed: %s", exc)
+        # One-time startup repair (idempotent).
         try:
             await self._startup_repair()
         except Exception as exc:
@@ -200,9 +206,8 @@ class AutoTradingWorker:
     # Reconciliation
     # --------------------------------------------------------------
 
-    async def _fetch_position_pnl(self, client, tp: TrackedPosition) -> tuple[Optional[Decimal], Optional[str]]:
+    async def _fetch_position_pnl(self, client, tp: TrackedPosition):
         """Return (pnl, okx_state). pnl is None if unknown."""
-        # Try ordId first
         if tp.order_id:
             try:
                 detail = await client.order_detail(tp.inst_id, tp.order_id)
@@ -213,7 +218,6 @@ class AutoTradingWorker:
             except Exception as exc:
                 log.debug("order_detail(%s, %s) failed: %s", tp.inst_id, tp.order_id, exc)
 
-        # Fallback to clOrdId
         try:
             detail = await client.order_detail_by_clordid(tp.inst_id, tp.client_order_id)
             if detail:
@@ -246,11 +250,10 @@ class AutoTradingWorker:
         for tp in tracked:
             key = (tp.inst_id, tp.pos_side)
             if key in live_keys:
-                continue  # still open
+                continue
 
             pnl, okx_state = await self._fetch_position_pnl(client, tp)
 
-            # If OKX says the order is still live, treat as open
             if okx_state and okx_state.lower() in {"live", "partially_filled", "new"}:
                 continue
 
@@ -527,3 +530,6 @@ class AutoTradingWorker:
             f"   Ended:   {balance:.2f}\n"
             f"   (includes any manual trades you made)"
         )
+'@ | Set-Content -Path app\automation.py -Encoding UTF8
+
+python -c "from app.automation import AutoTradingWorker; print('automation OK')"
