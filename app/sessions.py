@@ -1,7 +1,4 @@
-cd C:\Users\USER\Documents\Codex\2026-09-09\i\outputs\secure_trading_bot
 
-@'
-"""Session lifecycle and risk guard for auto trading."""
 from __future__ import annotations
 
 import logging
@@ -595,6 +592,3 @@ def should_end_session(session: SessionState, balance: Decimal) -> Optional[EndR
     if session.seconds_remaining <= 0:
         return EndReason.EXPIRED
     return None
-'@ | Set-Content -Path app\sessions.py -Encoding UTF8
-
-python -c "from app.sessions import SessionManager; m = SessionManager(None, 'trading_bot.db'); m.ensure_schema(); print('sessions OK')"
