@@ -270,6 +270,16 @@ class OKXDemoClient:
             raise ExchangeError(data.get("msg", "Could not reconcile OKX order"))
         return data.get("data", [None])[0]
 
+        async def order_detail_by_clordid(self, inst_id: str, client_order_id: str) -> dict | None:
+        """Fetch an order by our clOrdId (as a fallback when ordId is unknown)."""
+        request_path = f"/api/v5/trade/order?instId={inst_id}&clOrdId={client_order_id}"
+        session = await self._session()
+        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0":
+            raise ExchangeError(data.get("msg", "Could not reconcile OKX order by clOrdId"))
+        return data.get("data", [None])[0]
+
     async def swap_positions(self) -> list[dict]:
         request_path = "/api/v5/account/positions?instType=SWAP"
         session = await self._session()
