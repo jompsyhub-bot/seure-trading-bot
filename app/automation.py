@@ -1,5 +1,4 @@
-@'
-"""Session-aware auto trading worker."""
+
 from __future__ import annotations
 
 import asyncio
@@ -530,6 +529,4 @@ class AutoTradingWorker:
             f"   Ended:   {balance:.2f}\n"
             f"   (includes any manual trades you made)"
         )
-'@ | Set-Content -Path app\automation.py -Encoding UTF8
 
-python -c "from app.automation import AutoTradingWorker; print('automation OK')"
