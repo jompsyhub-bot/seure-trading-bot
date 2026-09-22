@@ -1,4 +1,7 @@
+cd C:\Users\USER\Documents\Codex\2026-09-09\i\outputs\secure_trading_bot
 
+@'
+"""Session lifecycle and risk guard for auto trading."""
 from __future__ import annotations
 
 import logging
@@ -141,93 +144,111 @@ class _Backend:
         return [dict(r) if not self.is_postgres else r for r in rows]
 
 
-_DDL_POSTGRES = """
-CREATE TABLE IF NOT EXISTS auto_sessions (
-    id SERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    mode TEXT NOT NULL,
-    strategy TEXT NOT NULL,
-    markets TEXT NOT NULL DEFAULT 'auto',
-    started_at TIMESTAMPTZ NOT NULL,
-    ends_at TIMESTAMPTZ NOT NULL,
-    starting_balance NUMERIC NOT NULL,
-    current_balance NUMERIC NOT NULL,
-    ending_balance NUMERIC,
-    target_profit NUMERIC NOT NULL,
-    max_loss NUMERIC NOT NULL,
-    risk_per_trade_pct NUMERIC NOT NULL,
-    safety_floor_pct NUMERIC NOT NULL,
-    leverage INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'active',
-    end_reason TEXT,
-    trades_count INTEGER NOT NULL DEFAULT 0,
-    wins_count INTEGER NOT NULL DEFAULT 0,
-    losses_count INTEGER NOT NULL DEFAULT 0,
-    last_scan_at TIMESTAMPTZ,
-    last_error TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_auto_sessions_active
-    ON auto_sessions(user_id, status);
-CREATE TABLE IF NOT EXISTS session_positions (
-    id SERIAL PRIMARY KEY,
-    session_id INTEGER NOT NULL,
-    inst_id TEXT NOT NULL,
-    pos_side TEXT NOT NULL,
-    entry_price NUMERIC,
-    contracts NUMERIC,
-    opened_at TIMESTAMPTZ NOT NULL,
-    closed_at TIMESTAMPTZ,
-    realized_pnl NUMERIC,
-    client_order_id TEXT UNIQUE,
-    order_id TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_session_positions_open
-    ON session_positions(session_id, closed_at);
-"""
+# --- DDL as a list of statements, each executed in its own transaction ---
 
-_DDL_SQLITE = """
-CREATE TABLE IF NOT EXISTS auto_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    mode TEXT NOT NULL,
-    strategy TEXT NOT NULL,
-    markets TEXT NOT NULL DEFAULT 'auto',
-    started_at TEXT NOT NULL,
-    ends_at TEXT NOT NULL,
-    starting_balance TEXT NOT NULL,
-    current_balance TEXT NOT NULL,
-    ending_balance TEXT,
-    target_profit TEXT NOT NULL,
-    max_loss TEXT NOT NULL,
-    risk_per_trade_pct TEXT NOT NULL,
-    safety_floor_pct TEXT NOT NULL,
-    leverage INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'active',
-    end_reason TEXT,
-    trades_count INTEGER NOT NULL DEFAULT 0,
-    wins_count INTEGER NOT NULL DEFAULT 0,
-    losses_count INTEGER NOT NULL DEFAULT 0,
-    last_scan_at TEXT,
-    last_error TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_auto_sessions_active
-    ON auto_sessions(user_id, status);
-CREATE TABLE IF NOT EXISTS session_positions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL,
-    inst_id TEXT NOT NULL,
-    pos_side TEXT NOT NULL,
-    entry_price TEXT,
-    contracts TEXT,
-    opened_at TEXT NOT NULL,
-    closed_at TEXT,
-    realized_pnl TEXT,
-    client_order_id TEXT UNIQUE,
-    order_id TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_session_positions_open
-    ON session_positions(session_id, closed_at);
-"""
+_DDL_POSTGRES = [
+    """
+    CREATE TABLE IF NOT EXISTS auto_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        mode TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        markets TEXT NOT NULL DEFAULT 'auto',
+        started_at TIMESTAMPTZ NOT NULL,
+        ends_at TIMESTAMPTZ NOT NULL,
+        starting_balance NUMERIC NOT NULL,
+        current_balance NUMERIC NOT NULL,
+        ending_balance NUMERIC,
+        target_profit NUMERIC NOT NULL,
+        max_loss NUMERIC NOT NULL,
+        risk_per_trade_pct NUMERIC NOT NULL,
+        safety_floor_pct NUMERIC NOT NULL,
+        leverage INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'active',
+        end_reason TEXT,
+        trades_count INTEGER NOT NULL DEFAULT 0,
+        wins_count INTEGER NOT NULL DEFAULT 0,
+        losses_count INTEGER NOT NULL DEFAULT 0,
+        last_scan_at TIMESTAMPTZ,
+        last_error TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_auto_sessions_active
+        ON auto_sessions(user_id, status)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS session_positions (
+        id SERIAL PRIMARY KEY,
+        session_id INTEGER NOT NULL,
+        inst_id TEXT NOT NULL,
+        pos_side TEXT NOT NULL,
+        entry_price NUMERIC,
+        contracts NUMERIC,
+        opened_at TIMESTAMPTZ NOT NULL,
+        closed_at TIMESTAMPTZ,
+        realized_pnl NUMERIC,
+        client_order_id TEXT UNIQUE,
+        order_id TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_session_positions_open
+        ON session_positions(session_id, closed_at)
+    """,
+]
+
+_DDL_SQLITE = [
+    """
+    CREATE TABLE IF NOT EXISTS auto_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        mode TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        markets TEXT NOT NULL DEFAULT 'auto',
+        started_at TEXT NOT NULL,
+        ends_at TEXT NOT NULL,
+        starting_balance TEXT NOT NULL,
+        current_balance TEXT NOT NULL,
+        ending_balance TEXT,
+        target_profit TEXT NOT NULL,
+        max_loss TEXT NOT NULL,
+        risk_per_trade_pct TEXT NOT NULL,
+        safety_floor_pct TEXT NOT NULL,
+        leverage INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'active',
+        end_reason TEXT,
+        trades_count INTEGER NOT NULL DEFAULT 0,
+        wins_count INTEGER NOT NULL DEFAULT 0,
+        losses_count INTEGER NOT NULL DEFAULT 0,
+        last_scan_at TEXT,
+        last_error TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_auto_sessions_active
+        ON auto_sessions(user_id, status)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS session_positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        inst_id TEXT NOT NULL,
+        pos_side TEXT NOT NULL,
+        entry_price TEXT,
+        contracts TEXT,
+        opened_at TEXT NOT NULL,
+        closed_at TEXT,
+        realized_pnl TEXT,
+        client_order_id TEXT UNIQUE,
+        order_id TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_session_positions_open
+        ON session_positions(session_id, closed_at)
+    """,
+]
 
 
 class SessionManager:
@@ -236,17 +257,34 @@ class SessionManager:
         self.backend = _Backend(database_url, database_path)
 
     def ensure_schema(self) -> None:
+        """Create session tables. Each statement runs in its own
+        transaction so a failure on one never blocks the others."""
         ddl = _DDL_POSTGRES if self.backend.is_postgres else _DDL_SQLITE
-        with self.backend.cursor() as cur:
-            for statement in [s.strip() for s in ddl.split(";") if s.strip()]:
-                cur.execute(statement)
-            # Migration: add order_id column if table predates this change.
+        failures = 0
+        for i, stmt in enumerate(ddl):
             try:
-                cur.execute("ALTER TABLE session_positions ADD COLUMN order_id TEXT")
-            except Exception:
-                pass
-        log.info("session schema ensured (%s)",
-                 "postgres" if self.backend.is_postgres else "sqlite")
+                with self.backend.cursor() as cur:
+                    cur.execute(stmt)
+            except Exception as exc:
+                failures += 1
+                log.warning(
+                    "ensure_schema statement %d failed: %s | SQL head: %s",
+                    i, exc, stmt.strip()[:100],
+                )
+        # Best-effort column addition for tables created before order_id
+        # existed. Silence errors since "column already exists" is expected.
+        try:
+            with self.backend.cursor() as cur:
+                cur.execute(
+                    "ALTER TABLE session_positions ADD COLUMN order_id TEXT"
+                )
+        except Exception:
+            pass
+        log.info(
+            "session schema ensured (%s) - %d statements, %d failures",
+            "postgres" if self.backend.is_postgres else "sqlite",
+            len(ddl), failures,
+        )
 
     # --------------------------------------------------------------
     # Session lifecycle
@@ -383,8 +421,6 @@ class SessionManager:
     # --------------------------------------------------------------
 
     def list_sessions_with_open_positions(self) -> list[tuple[int, int]]:
-        """Return (session_id, user_id) for sessions with tracked positions
-        still marked open. Used by the startup repair."""
         with self.backend.cursor() as cur:
             rows = self.backend.fetchall(cur, """
                 SELECT DISTINCT sp.session_id AS session_id, s.user_id AS user_id
@@ -395,8 +431,6 @@ class SessionManager:
         return [(int(r["session_id"]), int(r["user_id"])) for r in rows]
 
     def recount_session_from_positions(self, session_id: int) -> tuple[int, int, int]:
-        """Recompute trades/wins/losses from the session_positions table
-        and write them onto the session row. Returns (trades, wins, losses)."""
         with self.backend.cursor() as cur:
             rows = self.backend.fetchall(cur, """
                 SELECT realized_pnl FROM session_positions
@@ -561,3 +595,6 @@ def should_end_session(session: SessionState, balance: Decimal) -> Optional[EndR
     if session.seconds_remaining <= 0:
         return EndReason.EXPIRED
     return None
+'@ | Set-Content -Path app\sessions.py -Encoding UTF8
+
+python -c "from app.sessions import SessionManager; m = SessionManager(None, 'trading_bot.db'); m.ensure_schema(); print('sessions OK')"
