@@ -242,12 +242,8 @@ class SessionManager:
                 cur.execute(statement)
             # Migration: add order_id column if table predates this change.
             try:
-                cur.execute(
-                    "ALTER TABLE session_positions ADD COLUMN order_id "
-                    + ("TEXT" if not self.backend.is_postgres else "TEXT")
-                )
+                cur.execute("ALTER TABLE session_positions ADD COLUMN order_id TEXT")
             except Exception:
-                # Column already exists or backend rejects duplicate — ignore.
                 pass
         log.info("session schema ensured (%s)",
                  "postgres" if self.backend.is_postgres else "sqlite")
@@ -290,12 +286,6 @@ class SessionManager:
 
     def record_trade_result(self, session_id: int, is_win: Optional[bool],
                             new_balance: Decimal) -> None:
-        """Increment trade counters when a session-owned position closes.
-
-        is_win=True  -> increment wins
-        is_win=False -> increment losses
-        is_win=None  -> only increment trades_count (unknown outcome)
-        """
         if is_win is True:
             col_update = ", wins_count = wins_count + 1"
         elif is_win is False:
@@ -365,8 +355,6 @@ class SessionManager:
 
     def mark_position_closed(self, client_order_id: str,
                              realized_pnl: Optional[Decimal] = None) -> bool:
-        """Mark a tracked position closed. Returns True if this call actually
-        transitioned the row (i.e. it was open before)."""
         with self.backend.cursor() as cur:
             self.backend.run(cur, """
                 UPDATE session_positions
@@ -389,6 +377,49 @@ class SessionManager:
         if not row:
             return Decimal("0")
         return Decimal(str(row["total"] or 0))
+
+    # --------------------------------------------------------------
+    # Startup repair helpers
+    # --------------------------------------------------------------
+
+    def list_sessions_with_open_positions(self) -> list[tuple[int, int]]:
+        """Return (session_id, user_id) for sessions with tracked positions
+        still marked open. Used by the startup repair."""
+        with self.backend.cursor() as cur:
+            rows = self.backend.fetchall(cur, """
+                SELECT DISTINCT sp.session_id AS session_id, s.user_id AS user_id
+                FROM session_positions sp
+                JOIN auto_sessions s ON s.id = sp.session_id
+                WHERE sp.closed_at IS NULL
+            """, ())
+        return [(int(r["session_id"]), int(r["user_id"])) for r in rows]
+
+    def recount_session_from_positions(self, session_id: int) -> tuple[int, int, int]:
+        """Recompute trades/wins/losses from the session_positions table
+        and write them onto the session row. Returns (trades, wins, losses)."""
+        with self.backend.cursor() as cur:
+            rows = self.backend.fetchall(cur, """
+                SELECT realized_pnl FROM session_positions
+                WHERE session_id = %s AND closed_at IS NOT NULL
+            """, (session_id,))
+            total = len(rows)
+            wins = 0
+            losses = 0
+            for r in rows:
+                raw = r["realized_pnl"]
+                if raw is None:
+                    continue
+                v = Decimal(str(raw))
+                if v > 0:
+                    wins += 1
+                else:
+                    losses += 1
+            self.backend.run(cur, """
+                UPDATE auto_sessions
+                SET trades_count = %s, wins_count = %s, losses_count = %s
+                WHERE id = %s
+            """, (total, wins, losses, session_id))
+        return total, wins, losses
 
     # --------------------------------------------------------------
     # Reads
