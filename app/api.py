@@ -166,7 +166,7 @@ class ClosePositionRequest(BaseModel):
 
 
 class StartSessionRequest(BaseModel):
-    mode: Literal["scalping", "day_trading"] = "day_trading"
+    mode: Literal["day_trading"] = "day_trading"
     strategy: str = Field(default="daily_pullback", min_length=3, max_length=32)
     duration_hours: float = Field(gt=0, le=24 * 30)
     target_profit: Decimal = Field(gt=0)
