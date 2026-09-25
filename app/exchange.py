@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import hashlib
@@ -28,8 +27,7 @@ class OrderRejected(ExchangeError):
 
     This is *not* ambiguous — the order was definitively not placed, so the
     reservation it held can be safely released. Network timeouts and
-    connection drops do *not* raise this; they stay ambiguous on purpose so
-    a retry cannot accidentally double-submit.
+    connection drops do *not* raise this.
     """
     pass
 
