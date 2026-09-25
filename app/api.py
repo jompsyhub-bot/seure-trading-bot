@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
@@ -58,7 +57,6 @@ INSTRUMENTS_CACHE_TTL = 300
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start the experimental worker only when credential encryption is available."""
     task = None
     position_task = None
     ticker_task = None
@@ -178,7 +176,6 @@ class StartSessionRequest(BaseModel):
 
 
 def resolve_okx_swap_inst_id(symbol: str) -> str:
-    """Normalize a user-facing symbol to an OKX SWAP instId."""
     s = (symbol or "").upper().strip().replace("/", "-")
     if not s:
         raise HTTPException(400, "Symbol is required.")
@@ -223,7 +220,6 @@ def okx_demo_client_for(user_id: int) -> OKXDemoClient:
 
 
 async def publish_futures_event(user_id: int, event_type: str) -> None:
-    """Notify only the authenticated Mini App sessions belonging to one user."""
     subscribers = list(getattr(api.state, "futures_subscribers", {}).get(user_id, set()))
     for socket in subscribers:
         try:
@@ -244,7 +240,6 @@ async def publish_live_price(instrument: str, price: str) -> None:
 
 
 async def _rest_price_poller() -> None:
-    """Guaranteed 1 Hz REST top-up for every instrument any user is viewing."""
     while True:
         try:
             instruments = watched_instruments()
@@ -269,7 +264,6 @@ async def _rest_price_poller() -> None:
 
 
 async def monitor_okx_public_prices() -> None:
-    """Fan out prices via REST 1 Hz poll + bonus WebSocket push for BTC/ETH."""
     default_instruments = set(DEFAULT_PRICE_INSTRUMENTS)
     rest_task = asyncio.create_task(_rest_price_poller(), name="okx-rest-price-poller")
     delay = 1
@@ -315,7 +309,6 @@ async def notify_position_closed(user_id: int, notifier: TelegramNotifier, instr
 
 
 async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> None:
-    """Keep one credentialed, reconnecting Demo private feed per connected user."""
     known_positions: set[tuple[str, str]] = set()
     delay = 1
     while True:
@@ -360,7 +353,6 @@ async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> 
 
 
 async def monitor_okx_private_events(notifier: TelegramNotifier) -> None:
-    """Start and stop user feeds as encrypted OKX Demo connections change."""
     tasks: dict[int, asyncio.Task] = {}
     try:
         while True:
@@ -409,7 +401,6 @@ async def backtest_screen() -> RedirectResponse:
 
 @api.websocket("/ws/futures")
 async def futures_updates(websocket: WebSocket) -> None:
-    """Authenticated push-only signal channel for the Telegram Mini App."""
     await websocket.accept()
     try:
         auth_message = await asyncio.wait_for(websocket.receive_text(), timeout=10)
@@ -458,7 +449,6 @@ async def health() -> dict:
 
 @api.get("/health/okx")
 async def okx_connectivity() -> dict:
-    """Credential-free Render-to-OKX reachability check for the next adapter."""
     url = "https://www.okx.com/api/v5/public/instruments"
     try:
         timeout = aiohttp.ClientTimeout(total=12)
@@ -487,7 +477,6 @@ async def dashboard(x_telegram_init_data: str | None = Header(default=None)) -> 
 
 @api.get("/api/exchange/instruments")
 async def exchange_instruments(x_telegram_init_data: str | None = Header(default=None)) -> list[dict]:
-    """Available SWAP instruments on the connected exchange (Demo only)."""
     user = telegram_user(x_telegram_init_data)
     provider = database.connection_provider(int(user["id"]))
     if provider != "okx":
@@ -564,8 +553,8 @@ async def paper_settings(request: PaperSettingsRequest, x_telegram_init_data: st
 @api.post("/api/automation")
 async def automation_settings(request: AutomationProfileRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
-    dashboard = database.dashboard(int(user["id"]))
-    if request.enabled and (dashboard.get("environment") != "demo" or dashboard.get("provider") != "bybit"):
+    dashboard_data = database.dashboard(int(user["id"]))
+    if request.enabled and (dashboard_data.get("environment") != "demo" or dashboard_data.get("provider") != "bybit"):
         raise HTTPException(400, "OKX execution is not enabled yet. Automation remains paused until the OKX futures execution adapter is tested.")
     try:
         database.save_automation_profile(int(user["id"]), request.enabled, request.strategy, request.symbol, Decimal(request.max_order_notional), request.max_trades_per_day, Decimal(request.stop_loss_pct), Decimal(request.take_profit_pct))
@@ -602,7 +591,6 @@ async def history(x_telegram_init_data: str | None = Header(default=None)) -> li
 
 
 async def sync_okx_order_history(user_id: int) -> None:
-    """Refresh records created by this bot; exchange data remains authoritative."""
     if database.connection_provider(user_id) != "okx":
         return
     client = okx_demo_client_for(user_id)
@@ -621,7 +609,6 @@ async def sync_okx_order_history(user_id: int) -> None:
 
 @api.get("/api/portfolio")
 async def portfolio(x_telegram_init_data: str | None = Header(default=None)) -> dict:
-    """Active OKX Demo positions plus the full history of bot-originated orders."""
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     await sync_okx_order_history(user_id)
@@ -666,7 +653,6 @@ async def leverage_options(request: LeverageRequest, x_telegram_init_data: str |
 
 @api.post("/api/futures/preview")
 async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
-    """Calculate an OKX Demo perpetual order safely; this endpoint never submits it."""
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     client = okx_demo_client_for(user_id)
@@ -732,7 +718,6 @@ async def set_futures_position_mode(request: PositionModeRequest, x_telegram_ini
 
 @api.post("/api/futures/demo-order")
 async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
-    """Submit one explicitly confirmed OKX Demo SWAP market order with attached TP/SL."""
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     client = okx_demo_client_for(user_id)
@@ -802,7 +787,6 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
 
 @api.post("/api/futures/close-position")
 async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
-    """Explicitly close one entire active OKX Demo position, never a real-money one."""
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     client = okx_demo_client_for(user_id)
@@ -854,10 +838,6 @@ async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_
     finally:
         await client.close()
 
-
-# ---------------------------------------------------------------------------
-# Auto trading session endpoints
-# ---------------------------------------------------------------------------
 
 def _session_to_dict(s: "SessionState") -> dict:
     floor = s.starting_balance * s.config.safety_floor_pct / Decimal("100")
