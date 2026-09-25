@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from decimal import Decimal
 
@@ -51,19 +51,13 @@ def _atr(candles, period=14):
 
 
 class DailyPullbackStrategy(Strategy):
-    """4h pullback entries in the direction of the 1D trend.
-
-    Key insight: trade with the daily trend, enter on a 4h pullback, use
-    wide ATR-based stops that survive noise, and target big moves. Few
-    trades per week, low fee drag, real edge in trending markets.
-    """
     name = "daily_pullback"
     description = "Daily-biased 4h pullback continuation"
     required_timeframes = ("4h", "1d")
 
     EMA_FAST_1D = 20
     EMA_SLOW_1D = 50
-    EMA_21_4H = 20     # 4h pullback reference
+    EMA_21_4H = 20
     PULLBACK_TOL = 0.01
     PULLBACK_WINDOW = 4
     RSI_LONG_MIN = 35.0
@@ -79,6 +73,10 @@ class DailyPullbackStrategy(Strategy):
     def _skip(self, market, reason, **indicators):
         return Signal(action="skip", market=market, reason=reason, indicators=indicators)
 
+    @staticmethod
+    def _closes(candles):
+        return [c.close for c in candles]
+
     def evaluate(self, market, candles):
         c4h = candles.get("4h") or []
         c1d = candles.get("1d") or []
@@ -86,12 +84,11 @@ class DailyPullbackStrategy(Strategy):
         if len(c4h) < 60 or len(c1d) < 60:
             return self._skip(market, "insufficient history")
 
-        closes_4h = [c.close for c in c4h]
-        closes_1d = [c.close for c in c1d]
+        closes_4h = self._closes(c4h)
+        closes_1d = self._closes(c1d)
         last = c4h[-1]
         entry = last.close
 
-        # --- 1D trend ---------------------------------------------
         ema20_1d = _ema(closes_1d, self.EMA_FAST_1D)
         ema50_1d = _ema(closes_1d, self.EMA_SLOW_1D)
         if not ema20_1d or not ema50_1d:
@@ -101,7 +98,6 @@ class DailyPullbackStrategy(Strategy):
 
         is_long = daily_up
 
-        # --- 4h pullback to EMA20 ---------------------------------
         ema20_4h = _ema(closes_4h, self.EMA_21_4H)
         if not ema20_4h:
             return self._skip(market, "4h EMA unavailable")
@@ -116,38 +112,33 @@ class DailyPullbackStrategy(Strategy):
         if not pulled:
             return self._skip(market, "no pullback to 4h EMA20")
 
-        # --- RSI zone ---------------------------------------------
         rsi_series = _rsi(closes_4h, 14)
         if not rsi_series:
             return self._skip(market, "RSI unavailable")
         rsi = rsi_series[-1]
         if is_long and not (self.RSI_LONG_MIN <= rsi <= self.RSI_LONG_MAX):
-            return self._skip(market, f"RSI {rsi:.1f} outside long zone")
+            return self._skip(market, "RSI %.1f outside long zone" % rsi)
         if (not is_long) and not (self.RSI_SHORT_MIN <= rsi <= self.RSI_SHORT_MAX):
-            return self._skip(market, f"RSI {rsi:.1f} outside short zone")
+            return self._skip(market, "RSI %.1f outside short zone" % rsi)
 
-        # --- Not a full breakdown of daily trend ------------------
         if is_long and entry < daily_ema20_now * 0.98:
             return self._skip(market, "broke below daily EMA20 by >2%")
         if (not is_long) and entry > daily_ema20_now * 1.02:
             return self._skip(market, "broke above daily EMA20 by >2%")
 
-        # --- Candle confirmation ----------------------------------
         if is_long and last.close <= last.open:
             return self._skip(market, "last 4h candle not green")
         if (not is_long) and last.close >= last.open:
             return self._skip(market, "last 4h candle not red")
 
-        # --- ATR sanity -------------------------------------------
         atr_series = _atr(c4h, 14)
         if not atr_series:
             return self._skip(market, "ATR unavailable")
         atr = atr_series[-1]
         atr_pct = atr / entry if entry > 0 else 0
         if atr_pct < self.MIN_ATR_PCT or atr_pct > self.MAX_ATR_PCT:
-            return self._skip(market, f"ATR {atr_pct*100:.2f}% out of range")
+            return self._skip(market, "ATR %.2f%% out of range" % (atr_pct * 100))
 
-        # --- Build signal ----------------------------------------
         sl_dist = atr * self.ATR_SL_MULT
         tp_dist = atr * self.ATR_TP_MULT
 
@@ -163,7 +154,8 @@ class DailyPullbackStrategy(Strategy):
         return Signal(
             action=action,
             market=market,
-            reason=f"{'uptrend' if is_long else 'downtrend'} on 1D, 4h pullback to EMA20, RSI {rsi:.1f}",
+            reason="%s on 1D, 4h pullback to EMA20, RSI %.1f" % (
+                "uptrend" if is_long else "downtrend", rsi),
             entry_price=Decimal(str(round(entry, 8))),
             stop_loss=Decimal(str(round(sl, 8))),
             take_profit=Decimal(str(round(tp, 8))),
