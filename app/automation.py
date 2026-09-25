@@ -1,4 +1,4 @@
-
+"""Session-aware auto trading worker."""
 from __future__ import annotations
 
 import asyncio
@@ -59,13 +59,10 @@ class AutoTradingWorker:
     async def run(self) -> None:
         log.info("AutoTradingWorker started")
         await asyncio.sleep(5)
-        # Safety net: make sure the session tables exist even if the
-        # module-level ensure_schema() in api.py did not run.
         try:
             self.session_manager.ensure_schema()
         except Exception as exc:
             log.warning("worker ensure_schema failed: %s", exc)
-        # One-time startup repair (idempotent).
         try:
             await self._startup_repair()
         except Exception as exc:
@@ -83,10 +80,6 @@ class AutoTradingWorker:
             except Exception as exc:
                 log.warning("AutoTradingWorker tick failed: %s", exc)
             await asyncio.sleep(SCAN_INTERVAL_SECONDS)
-
-    # --------------------------------------------------------------
-    # Startup repair
-    # --------------------------------------------------------------
 
     async def _startup_repair(self) -> None:
         log.info("Running startup repair for unreconciled session positions...")
@@ -127,10 +120,6 @@ class AutoTradingWorker:
                      session_id, trades, wins, losses)
         finally:
             await client.close()
-
-    # --------------------------------------------------------------
-    # Per-session processing
-    # --------------------------------------------------------------
 
     async def _process_session(self, session: SessionState) -> None:
         user_id = session.user_id
@@ -201,12 +190,7 @@ class AutoTradingWorker:
         finally:
             await client.close()
 
-    # --------------------------------------------------------------
-    # Reconciliation
-    # --------------------------------------------------------------
-
     async def _fetch_position_pnl(self, client, tp: TrackedPosition):
-        """Return (pnl, okx_state). pnl is None if unknown."""
         if tp.order_id:
             try:
                 detail = await client.order_detail(tp.inst_id, tp.order_id)
@@ -276,10 +260,6 @@ class AutoTradingWorker:
                 pnl if pnl is not None else "unknown", is_win,
             )
 
-    # --------------------------------------------------------------
-    # Market selection + strategy
-    # --------------------------------------------------------------
-
     def _resolve_markets(self, session: SessionState) -> list[str]:
         raw = (session.config.markets or "auto").strip()
         if raw == "auto":
@@ -294,10 +274,6 @@ class AutoTradingWorker:
         c4h = [_candle_from_exchange(r) for r in c4h_raw]
         c1d = [_candle_from_exchange(r) for r in c1d_raw]
         return strategy.evaluate(market, {"4h": c4h, "1d": c1d})
-
-    # --------------------------------------------------------------
-    # Entry
-    # --------------------------------------------------------------
 
     async def _place_entry(self, client, session, signal, balance: Decimal,
                            risk_amount: Decimal) -> bool:
@@ -420,10 +396,6 @@ class AutoTradingWorker:
                  session.id, signal.action, market, filled_contracts, filled_price, order_id)
         return True
 
-    # --------------------------------------------------------------
-    # End session
-    # --------------------------------------------------------------
-
     async def _end_session(self, client, session: SessionState,
                            reason: EndReason, balance: Decimal) -> None:
         log.info("Session %s ending: %s (balance=%.2f)",
@@ -529,4 +501,3 @@ class AutoTradingWorker:
             f"   Ended:   {balance:.2f}\n"
             f"   (includes any manual trades you made)"
         )
-
