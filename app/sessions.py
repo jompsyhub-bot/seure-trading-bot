@@ -1,4 +1,4 @@
-
+"""Session lifecycle and risk guard for auto trading."""
 from __future__ import annotations
 
 import logging
@@ -141,8 +141,6 @@ class _Backend:
         return [dict(r) if not self.is_postgres else r for r in rows]
 
 
-# --- DDL as a list of statements, each executed in its own transaction ---
-
 _DDL_POSTGRES = [
     """
     CREATE TABLE IF NOT EXISTS auto_sessions (
@@ -254,8 +252,6 @@ class SessionManager:
         self.backend = _Backend(database_url, database_path)
 
     def ensure_schema(self) -> None:
-        """Create session tables. Each statement runs in its own
-        transaction so a failure on one never blocks the others."""
         ddl = _DDL_POSTGRES if self.backend.is_postgres else _DDL_SQLITE
         failures = 0
         for i, stmt in enumerate(ddl):
@@ -264,28 +260,16 @@ class SessionManager:
                     cur.execute(stmt)
             except Exception as exc:
                 failures += 1
-                log.warning(
-                    "ensure_schema statement %d failed: %s | SQL head: %s",
-                    i, exc, stmt.strip()[:100],
-                )
-        # Best-effort column addition for tables created before order_id
-        # existed. Silence errors since "column already exists" is expected.
+                log.warning("ensure_schema statement %d failed: %s | SQL: %s",
+                            i, exc, stmt.strip()[:100])
         try:
             with self.backend.cursor() as cur:
-                cur.execute(
-                    "ALTER TABLE session_positions ADD COLUMN order_id TEXT"
-                )
+                cur.execute("ALTER TABLE session_positions ADD COLUMN order_id TEXT")
         except Exception:
             pass
-        log.info(
-            "session schema ensured (%s) - %d statements, %d failures",
-            "postgres" if self.backend.is_postgres else "sqlite",
-            len(ddl), failures,
-        )
-
-    # --------------------------------------------------------------
-    # Session lifecycle
-    # --------------------------------------------------------------
+        log.info("session schema ensured (%s) - %d statements, %d failures",
+                 "postgres" if self.backend.is_postgres else "sqlite",
+                 len(ddl), failures)
 
     def create_session(self, user_id: int, config: SessionConfig,
                        starting_balance: Decimal) -> int:
@@ -361,10 +345,6 @@ class SessionManager:
                 "UPDATE auto_sessions SET last_error = %s WHERE id = %s",
                 (error[:500], session_id))
 
-    # --------------------------------------------------------------
-    # Session-owned positions
-    # --------------------------------------------------------------
-
     def track_position(self, session_id: int, inst_id: str, pos_side: str,
                        entry_price: Decimal, contracts: Decimal,
                        client_order_id: str, order_id: Optional[str] = None) -> None:
@@ -413,10 +393,6 @@ class SessionManager:
             return Decimal("0")
         return Decimal(str(row["total"] or 0))
 
-    # --------------------------------------------------------------
-    # Startup repair helpers
-    # --------------------------------------------------------------
-
     def list_sessions_with_open_positions(self) -> list[tuple[int, int]]:
         with self.backend.cursor() as cur:
             rows = self.backend.fetchall(cur, """
@@ -452,10 +428,6 @@ class SessionManager:
             """, (total, wins, losses, session_id))
         return total, wins, losses
 
-    # --------------------------------------------------------------
-    # Reads
-    # --------------------------------------------------------------
-
     def get_active(self, user_id: int) -> Optional[SessionState]:
         with self.backend.cursor() as cur:
             row = self.backend.fetchone(cur, """
@@ -485,10 +457,6 @@ class SessionManager:
             rows = self.backend.fetchall(cur,
                 "SELECT * FROM auto_sessions WHERE status = 'active'", ())
         return [self._to_state(r) for r in rows]
-
-    # --------------------------------------------------------------
-    # Translation
-    # --------------------------------------------------------------
 
     @staticmethod
     def _parse_dt(value) -> datetime:
@@ -547,10 +515,6 @@ class SessionManager:
             realized_pnl=self._dec(row["realized_pnl"]) if row["realized_pnl"] is not None else None,
         )
 
-
-# ---------------------------------------------------------------------------
-# Risk guard
-# ---------------------------------------------------------------------------
 
 @dataclass
 class RiskCheck:
