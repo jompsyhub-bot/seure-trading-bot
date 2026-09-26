@@ -1,3 +1,6 @@
+cd C:\Users\USER\Documents\Codex\2026-09-09\i\outputs\secure_trading_bot
+
+@'
 """Session lifecycle and risk guard for auto trading."""
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ class EndReason(str, Enum):
     EXPIRED = "expired"
     USER_STOP = "user_stop"
     ERROR = "error"
-    
+
 
 class SessionStatus(str, Enum):
     ACTIVE = "active"
@@ -29,7 +32,7 @@ class SessionStatus(str, Enum):
 
 @dataclass
 class SessionConfig:
-    mode: Literal["scalping", "day_trading"]
+    mode: Literal["day_trading"]
     strategy: str
     duration_hours: float
     target_profit: Decimal
@@ -55,6 +58,8 @@ class SessionState:
     trades_count: int
     wins_count: int
     losses_count: int
+    loss_streak: int = 0
+    last_loss_at: Optional[datetime] = None
     end_reason: Optional[str] = None
     ending_balance: Optional[Decimal] = None
 
@@ -76,8 +81,16 @@ class SessionState:
         ends = self.ends_at
         if ends.tzinfo is None:
             ends = ends.replace(tzinfo=UTC)
-        delta = ends - now
-        return max(0, int(delta.total_seconds()))
+        return max(0, int((ends - now).total_seconds()))
+
+    @property
+    def hours_since_last_loss(self) -> float:
+        if not self.last_loss_at:
+            return 999.0
+        ts = self.last_loss_at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - ts).total_seconds() / 3600.0
 
 
 @dataclass
@@ -91,6 +104,10 @@ class TrackedPosition:
     opened_at: datetime
     client_order_id: str
     order_id: Optional[str] = None
+    initial_sl: Optional[Decimal] = None
+    current_sl: Optional[Decimal] = None
+    algo_clordid: Optional[str] = None
+    last_action_candle_ts: Optional[int] = None
     closed_at: Optional[datetime] = None
     realized_pnl: Optional[Decimal] = None
 
@@ -164,13 +181,11 @@ _DDL_POSTGRES = [
         trades_count INTEGER NOT NULL DEFAULT 0,
         wins_count INTEGER NOT NULL DEFAULT 0,
         losses_count INTEGER NOT NULL DEFAULT 0,
+        loss_streak INTEGER NOT NULL DEFAULT 0,
+        last_loss_at TIMESTAMPTZ,
         last_scan_at TIMESTAMPTZ,
         last_error TEXT
     )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_auto_sessions_active
-        ON auto_sessions(user_id, status)
     """,
     """
     CREATE TABLE IF NOT EXISTS session_positions (
@@ -184,13 +199,15 @@ _DDL_POSTGRES = [
         closed_at TIMESTAMPTZ,
         realized_pnl NUMERIC,
         client_order_id TEXT UNIQUE,
-        order_id TEXT
+        order_id TEXT,
+        initial_sl NUMERIC,
+        current_sl NUMERIC,
+        algo_clordid TEXT,
+        last_action_candle_ts BIGINT
     )
     """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_session_positions_open
-        ON session_positions(session_id, closed_at)
-    """,
+    "CREATE INDEX IF NOT EXISTS idx_auto_sessions_active ON auto_sessions(user_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_session_positions_open ON session_positions(session_id, closed_at)",
 ]
 
 _DDL_SQLITE = [
@@ -216,13 +233,11 @@ _DDL_SQLITE = [
         trades_count INTEGER NOT NULL DEFAULT 0,
         wins_count INTEGER NOT NULL DEFAULT 0,
         losses_count INTEGER NOT NULL DEFAULT 0,
+        loss_streak INTEGER NOT NULL DEFAULT 0,
+        last_loss_at TEXT,
         last_scan_at TEXT,
         last_error TEXT
     )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_auto_sessions_active
-        ON auto_sessions(user_id, status)
     """,
     """
     CREATE TABLE IF NOT EXISTS session_positions (
@@ -236,13 +251,26 @@ _DDL_SQLITE = [
         closed_at TEXT,
         realized_pnl TEXT,
         client_order_id TEXT UNIQUE,
-        order_id TEXT
+        order_id TEXT,
+        initial_sl TEXT,
+        current_sl TEXT,
+        algo_clordid TEXT,
+        last_action_candle_ts INTEGER
     )
     """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_session_positions_open
-        ON session_positions(session_id, closed_at)
-    """,
+    "CREATE INDEX IF NOT EXISTS idx_auto_sessions_active ON auto_sessions(user_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_session_positions_open ON session_positions(session_id, closed_at)",
+]
+
+# Each migration is attempted independently so a failure never blocks the rest.
+_MIGRATIONS = [
+    "ALTER TABLE auto_sessions ADD COLUMN loss_streak INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE auto_sessions ADD COLUMN last_loss_at TEXT",
+    "ALTER TABLE session_positions ADD COLUMN order_id TEXT",
+    "ALTER TABLE session_positions ADD COLUMN initial_sl TEXT",
+    "ALTER TABLE session_positions ADD COLUMN current_sl TEXT",
+    "ALTER TABLE session_positions ADD COLUMN algo_clordid TEXT",
+    "ALTER TABLE session_positions ADD COLUMN last_action_candle_ts INTEGER",
 ]
 
 
@@ -260,16 +288,24 @@ class SessionManager:
                     cur.execute(stmt)
             except Exception as exc:
                 failures += 1
-                log.warning("ensure_schema statement %d failed: %s | SQL: %s",
-                            i, exc, stmt.strip()[:100])
-        try:
-            with self.backend.cursor() as cur:
-                cur.execute("ALTER TABLE session_positions ADD COLUMN order_id TEXT")
-        except Exception:
-            pass
-        log.info("session schema ensured (%s) - %d statements, %d failures",
+                log.warning("ensure_schema DDL %d failed: %s | %s",
+                            i, exc, stmt.strip()[:80])
+
+        for stmt in _MIGRATIONS:
+            try:
+                with self.backend.cursor() as cur:
+                    cur.execute(stmt)
+            except Exception:
+                # Column already exists — normal on repeat startups
+                pass
+
+        log.info("session schema ensured (%s) - %d DDL, %d failures",
                  "postgres" if self.backend.is_postgres else "sqlite",
                  len(ddl), failures)
+
+    # --------------------------------------------------------------
+    # Session lifecycle
+    # --------------------------------------------------------------
 
     def create_session(self, user_id: int, config: SessionConfig,
                        starting_balance: Decimal) -> int:
@@ -281,8 +317,8 @@ class SessionManager:
                    started_at, ends_at,
                    starting_balance, current_balance,
                    target_profit, max_loss, risk_per_trade_pct,
-                   safety_floor_pct, leverage, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+                   safety_floor_pct, leverage, status, loss_streak)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0)
             """, (
                 user_id, config.mode, config.strategy, config.markets,
                 datetime.now(UTC), ends_at,
@@ -305,21 +341,40 @@ class SessionManager:
 
     def record_trade_result(self, session_id: int, is_win: Optional[bool],
                             new_balance: Decimal) -> None:
+        """Update counters. On win: reset loss_streak. On loss: increment streak."""
         if is_win is True:
-            col_update = ", wins_count = wins_count + 1"
+            with self.backend.cursor() as cur:
+                self.backend.run(cur, """
+                    UPDATE auto_sessions
+                    SET trades_count = trades_count + 1,
+                        wins_count = wins_count + 1,
+                        loss_streak = 0,
+                        last_loss_at = NULL,
+                        current_balance = %s,
+                        last_scan_at = %s
+                    WHERE id = %s
+                """, (str(new_balance), datetime.now(UTC), session_id))
         elif is_win is False:
-            col_update = ", losses_count = losses_count + 1"
+            with self.backend.cursor() as cur:
+                self.backend.run(cur, """
+                    UPDATE auto_sessions
+                    SET trades_count = trades_count + 1,
+                        losses_count = losses_count + 1,
+                        loss_streak = loss_streak + 1,
+                        last_loss_at = %s,
+                        current_balance = %s,
+                        last_scan_at = %s
+                    WHERE id = %s
+                """, (datetime.now(UTC), str(new_balance), datetime.now(UTC), session_id))
         else:
-            col_update = ""
-        with self.backend.cursor() as cur:
-            self.backend.run(cur, f"""
-                UPDATE auto_sessions
-                SET trades_count = trades_count + 1
-                    {col_update},
-                    current_balance = %s,
-                    last_scan_at = %s
-                WHERE id = %s
-            """, (str(new_balance), datetime.now(UTC), session_id))
+            with self.backend.cursor() as cur:
+                self.backend.run(cur, """
+                    UPDATE auto_sessions
+                    SET trades_count = trades_count + 1,
+                        current_balance = %s,
+                        last_scan_at = %s
+                    WHERE id = %s
+                """, (str(new_balance), datetime.now(UTC), session_id))
 
     def touch_scan(self, session_id: int) -> None:
         with self.backend.cursor() as cur:
@@ -345,19 +400,29 @@ class SessionManager:
                 "UPDATE auto_sessions SET last_error = %s WHERE id = %s",
                 (error[:500], session_id))
 
+    # --------------------------------------------------------------
+    # Position tracking
+    # --------------------------------------------------------------
+
     def track_position(self, session_id: int, inst_id: str, pos_side: str,
                        entry_price: Decimal, contracts: Decimal,
-                       client_order_id: str, order_id: Optional[str] = None) -> None:
+                       client_order_id: str, order_id: Optional[str] = None,
+                       initial_sl: Optional[Decimal] = None,
+                       algo_clordid: Optional[str] = None) -> None:
         with self.backend.cursor() as cur:
             self.backend.run(cur, """
                 INSERT INTO session_positions
                   (session_id, inst_id, pos_side, entry_price, contracts,
-                   opened_at, client_order_id, order_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   opened_at, client_order_id, order_id,
+                   initial_sl, current_sl, algo_clordid)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 session_id, inst_id, pos_side,
                 str(entry_price), str(contracts),
                 datetime.now(UTC), client_order_id, order_id,
+                str(initial_sl) if initial_sl is not None else None,
+                str(initial_sl) if initial_sl is not None else None,
+                algo_clordid,
             ))
 
     def list_open_positions(self, session_id: int) -> list[TrackedPosition]:
@@ -367,6 +432,17 @@ class SessionManager:
                 WHERE session_id = %s AND closed_at IS NULL
             """, (session_id,))
         return [self._to_position(r) for r in rows]
+
+    def update_position_sl(self, client_order_id: str,
+                           new_sl: Decimal,
+                           candle_ts: int) -> None:
+        """Record the new SL and the candle we acted on."""
+        with self.backend.cursor() as cur:
+            self.backend.run(cur, """
+                UPDATE session_positions
+                SET current_sl = %s, last_action_candle_ts = %s
+                WHERE client_order_id = %s AND closed_at IS NULL
+            """, (str(new_sl), int(candle_ts), client_order_id))
 
     def mark_position_closed(self, client_order_id: str,
                              realized_pnl: Optional[Decimal] = None) -> bool:
@@ -392,6 +468,27 @@ class SessionManager:
         if not row:
             return Decimal("0")
         return Decimal(str(row["total"] or 0))
+
+    def session_open_exposure(self, session_id: int) -> Decimal:
+        """Sum of initial margin across all open positions for this session."""
+        try:
+            with self.backend.cursor() as cur:
+                rows = self.backend.fetchall(cur, """
+                    SELECT entry_price, contracts FROM session_positions
+                    WHERE session_id = %s AND closed_at IS NULL
+                """, (session_id,))
+            total = Decimal("0")
+            for r in rows:
+                entry = Decimal(str(r["entry_price"] or 0))
+                contracts = Decimal(str(r["contracts"] or 0))
+                total += entry * contracts
+            return total
+        except Exception:
+            return Decimal("0")
+
+    # --------------------------------------------------------------
+    # Startup repair helpers
+    # --------------------------------------------------------------
 
     def list_sessions_with_open_positions(self) -> list[tuple[int, int]]:
         with self.backend.cursor() as cur:
@@ -428,6 +525,10 @@ class SessionManager:
             """, (total, wins, losses, session_id))
         return total, wins, losses
 
+    # --------------------------------------------------------------
+    # Reads
+    # --------------------------------------------------------------
+
     def get_active(self, user_id: int) -> Optional[SessionState]:
         with self.backend.cursor() as cur:
             row = self.backend.fetchone(cur, """
@@ -458,8 +559,14 @@ class SessionManager:
                 "SELECT * FROM auto_sessions WHERE status = 'active'", ())
         return [self._to_state(r) for r in rows]
 
+    # --------------------------------------------------------------
+    # Translation
+    # --------------------------------------------------------------
+
     @staticmethod
-    def _parse_dt(value) -> datetime:
+    def _parse_dt(value) -> Optional[datetime]:
+        if value is None:
+            return None
         if isinstance(value, datetime):
             return value if value.tzinfo else value.replace(tzinfo=UTC)
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -468,6 +575,12 @@ class SessionManager:
     def _dec(value) -> Decimal:
         if value is None:
             return Decimal("0")
+        return Decimal(str(value))
+
+    @staticmethod
+    def _dec_opt(value) -> Optional[Decimal]:
+        if value is None:
+            return None
         return Decimal(str(value))
 
     def _to_state(self, row: dict) -> SessionState:
@@ -496,6 +609,8 @@ class SessionManager:
             trades_count=int(row["trades_count"] or 0),
             wins_count=int(row["wins_count"] or 0),
             losses_count=int(row["losses_count"] or 0),
+            loss_streak=int(row.get("loss_streak") or 0),
+            last_loss_at=self._parse_dt(row.get("last_loss_at")),
             end_reason=row["end_reason"],
             ending_balance=self._dec(row["ending_balance"]) if row["ending_balance"] is not None else None,
         )
@@ -511,10 +626,21 @@ class SessionManager:
             opened_at=self._parse_dt(row["opened_at"]),
             client_order_id=row["client_order_id"],
             order_id=row.get("order_id") if isinstance(row, dict) else None,
+            initial_sl=self._dec_opt(row.get("initial_sl")),
+            current_sl=self._dec_opt(row.get("current_sl")),
+            algo_clordid=row.get("algo_clordid"),
+            last_action_candle_ts=(int(row["last_action_candle_ts"])
+                                   if row.get("last_action_candle_ts") is not None
+                                   else None),
             closed_at=self._parse_dt(row["closed_at"]) if row["closed_at"] else None,
-            realized_pnl=self._dec(row["realized_pnl"]) if row["realized_pnl"] is not None else None,
+            realized_pnl=self._dec_opt(row["realized_pnl"]),
         )
 
+
+# ---------------------------------------------------------------------------
+# Legacy risk guard — kept for backward compatibility.
+# The worker uses app.risk.evaluate_entry instead.
+# ---------------------------------------------------------------------------
 
 @dataclass
 class RiskCheck:
@@ -556,3 +682,14 @@ def should_end_session(session: SessionState, balance: Decimal) -> Optional[EndR
     if session.seconds_remaining <= 0:
         return EndReason.EXPIRED
     return None
+'@ | Set-Content -Path app\sessions.py -Encoding UTF8
+
+# Strip BOM
+$path = Resolve-Path "app\sessions.py"
+$text = [System.IO.File]::ReadAllText($path)
+$text = $text.TrimStart([char]0xFEFF)
+[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+
+Write-Host ""
+Write-Host "=== Verify ===" -ForegroundColor Cyan
+python -c "from app.sessions import SessionManager, SessionConfig, SessionState, TrackedPosition; print('sessions OK')"
