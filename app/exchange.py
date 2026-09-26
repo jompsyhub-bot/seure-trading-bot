@@ -1,3 +1,4 @@
+@'
 from __future__ import annotations
 
 import hashlib
@@ -23,12 +24,7 @@ class ExchangeError(RuntimeError):
 
 
 class OrderRejected(ExchangeError):
-    """OKX explicitly rejected the order with a structured error response.
-
-    This is *not* ambiguous — the order was definitively not placed, so the
-    reservation it held can be safely released. Network timeouts and
-    connection drops do *not* raise this.
-    """
+    """OKX explicitly rejected the order with a structured error response."""
     pass
 
 
@@ -257,6 +253,35 @@ class OKXDemoClient:
             raise OrderRejected(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo close order")
         return item
 
+    async def amend_algo_sl(self, *, inst_id: str, algo_clordid: str,
+                            new_sl_trigger: Decimal) -> dict:
+        """Move the stop-loss leg of an attached algo order to a new trigger.
+
+        `algo_clordid` is the attachAlgoClOrdId we set at entry
+        (format: "tp{original_clordid}").
+        """
+        request_path = "/api/v5/trade/amend-algos"
+        body = json.dumps({
+            "instId": inst_id,
+            "algoClOrdId": algo_clordid,
+            "newSlTriggerPx": str(new_sl_trigger),
+            "newSlOrdPx": "-1",
+        }, separators=(",", ":"))
+        session = await self._session()
+        async with session.post(
+            f"{self.base_url}{request_path}",
+            data=body,
+            headers=self._headers("POST", request_path, body),
+        ) as response:
+            data = await self._response_json(response)
+        item = data.get("data", [{}])[0]
+        if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
+            raise OrderRejected(
+                item.get("sMsg") or data.get("msg") or
+                "OKX rejected the SL amend"
+            )
+        return item
+
     async def order_detail(self, inst_id: str, order_id: str) -> dict | None:
         request_path = f"/api/v5/trade/order?instId={inst_id}&ordId={order_id}"
         session = await self._session()
@@ -267,7 +292,7 @@ class OKXDemoClient:
         return data.get("data", [None])[0]
 
     async def order_detail_by_clordid(self, inst_id: str, client_order_id: str) -> dict | None:
-        """Fetch an order by our clOrdId (as a fallback when ordId is unknown)."""
+        """Fetch an order by our clOrdId (fallback when ordId is unknown)."""
         request_path = f"/api/v5/trade/order?instId={inst_id}&clOrdId={client_order_id}"
         session = await self._session()
         async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
@@ -500,3 +525,12 @@ class PaperBroker:
         if qty <= 0:
             raise ExchangeError("Notional too small")
         return OrderResult(f"paper-{uuid.uuid4()}", "FILLED", price, qty)
+'@ | Set-Content -Path app\exchange.py -Encoding UTF8
+
+# Strip BOM
+$path = Resolve-Path "app\exchange.py"
+$text = [System.IO.File]::ReadAllText($path)
+$text = $text.TrimStart([char]0xFEFF)
+[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+
+python -c "from app.exchange import OKXDemoClient, ExchangeError, OrderRejected; print('exchange OK')"
