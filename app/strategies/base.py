@@ -18,7 +18,7 @@ class Candle:
     low: float
     close: float
     volume: float
-
+    
 
 @dataclass
 class Signal:
