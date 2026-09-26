@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-  <head>
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Relay Trade</title>
@@ -452,11 +452,11 @@ SL @ 77,000"></textarea>
           when your target, max loss, safety floor, or time limit is reached.
         </p>
 
-      <div class="card" style="background:rgba(98,140,255,0.06);border-color:rgba(98,140,255,0.25);padding:12px;margin:10px 0">
+        <div class="card" style="background:rgba(98,140,255,0.06);border-color:rgba(98,140,255,0.25);padding:12px;margin:10px 0">
           <div style="font-size:12px;font-weight:600;color:var(--accent-soft);margin-bottom:6px">
             🤖 The bot manages these automatically
-              </div>
-         <div style="font-size:12px;color:var(--muted);line-height:1.5">
+          </div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.5">
             • Position size scales to your account balance<br>
             • Leverage auto-picked to protect your stop-loss<br>
             • Stop-loss never widens, only tightens<br>
@@ -515,7 +515,7 @@ SL @ 77,000"></textarea>
 
         <div class="step-label"><span class="step-num">6</span> Leverage</div>
         <input id="sessLeverage" inputmode="numeric" value="10" placeholder="10">
-        <p class="hint">Per-trade leverage. 5×–20× recommended.</p>
+        <p class="hint">Per-trade leverage ceiling. The bot auto-lowers it if needed to protect your stop-loss.</p>
 
         <div class="step-label"><span class="step-num">7</span> Markets</div>
         <div class="session-mode" style="grid-template-columns:1fr 1fr">
@@ -744,7 +744,7 @@ SL @ 77,000"></textarea>
       <button class="mini-ghost" onclick="refreshPortfolio()">Refresh</button>
     </div>
     <p class="muted" style="font-size:12px;margin:6px 0 12px">
-      Live updates when OKX pushes a change · safety refresh every 3 seconds.
+      Live updates when OKX pushes a change · safety refresh every 5 seconds.
     </p>
     <div id="activityPositions" class="muted">Loading…</div>
   </div>
@@ -1293,8 +1293,16 @@ function ensureFeed() {
   feedReady = true;
   futConnectFeed();
   refreshPortfolio();
-  setInterval(refreshPortfolio, 3000);
   setInterval(updateFeedAge, 400);
+
+  // Poll portfolio only when a tab that displays it is visible.
+  setInterval(() => {
+    const futuresVisible = document.getElementById('futures')?.classList.contains('active');
+    const activityVisible = document.getElementById('activity')?.classList.contains('active');
+    if (futuresVisible || activityVisible) {
+      refreshPortfolio();
+    }
+  }, 5000);
 }
 
 async function futInit() {
@@ -2165,10 +2173,10 @@ function autoRenderNoSession() {
 
 function autoTierFromBalance(balance) {
   const b = Number(balance || 0);
-  if (b < 50) return { label: 'Micro', color: 'warn', note: 'up to 2% risk · max 1 position' };
-  if (b < 500) return { label: 'Small', color: 'good', note: 'up to 2% risk · max 2 positions' };
-  if (b < 5000) return { label: 'Standard', color: 'good', note: 'up to 5% risk · max 3 positions' };
-  return { label: 'Large', color: 'good', note: 'up to 5% risk · max 3 positions' };
+  if (b < 50) return { label: 'Micro', note: 'up to 2% risk · max 1 position' };
+  if (b < 500) return { label: 'Small', note: 'up to 2% risk · max 2 positions' };
+  if (b < 5000) return { label: 'Standard', note: 'up to 5% risk · max 3 positions' };
+  return { label: 'Large', note: 'up to 5% risk · max 3 positions' };
 }
 
 function autoRenderLiveSession(s) {
@@ -2189,15 +2197,12 @@ function autoRenderLiveSession(s) {
   const marketsLabel = s.markets === 'auto' ? 'Auto-scan' : s.markets.split(',').length + ' markets';
   const spSign = sessionPnl >= 0 ? '+' : '-';
 
-  // Risk tier from starting balance
   const tier = autoTierFromBalance(s.starting_balance);
 
-  // Effective risk after cap
   const userRisk = parseFloat(s.risk_per_trade_pct);
   const effectiveRisk = Math.min(userRisk, 5).toFixed(2);
   const riskWasCapped = userRisk > 5;
 
-  // Loss streak display
   const streak = parseInt(s.loss_streak || 0);
   let streakHtml = '';
   if (streak === 0) {
@@ -2253,7 +2258,7 @@ function autoRenderLiveSession(s) {
 
       <div class="info-row" style="margin:10px 0 6px;font-size:12px">
         <span class="muted">Balance $${parseFloat(s.current_balance).toFixed(2)}</span>
-        <span class="muted">Leverage ${s.leverage}× auto-capped</span>
+        <span class="muted">Leverage ${s.leverage}× cap</span>
         <span class="muted">Floor $${parseFloat(s.safety_floor_value).toFixed(2)}</span>
       </div>
 
