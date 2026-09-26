@@ -290,6 +290,14 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .session-stat{text-align:center;padding:10px 6px;background:rgba(0,0,0,0.18);border-radius:9px}
 .session-stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.3px}
 .session-stat-value{font-size:16px;font-weight:700;margin-top:3px}
+.session-live .tag{
+  font-size:11px;
+  padding:4px 10px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  color:var(--muted);
+  white-space:nowrap;
+}
 .session-history{padding:12px 0;border-bottom:1px solid var(--border);font-size:13px}
 .session-history:last-child{border-bottom:none}
 .session-history-row{display:flex;justify-content:space-between;align-items:center}
@@ -2155,10 +2163,19 @@ function autoRenderNoSession() {
   document.getElementById('autoHasSession').classList.add('hidden');
 }
 
+function autoTierFromBalance(balance) {
+  const b = Number(balance || 0);
+  if (b < 50) return { label: 'Micro', color: 'warn', note: 'up to 2% risk · max 1 position' };
+  if (b < 500) return { label: 'Small', color: 'good', note: 'up to 2% risk · max 2 positions' };
+  if (b < 5000) return { label: 'Standard', color: 'good', note: 'up to 5% risk · max 3 positions' };
+  return { label: 'Large', color: 'good', note: 'up to 5% risk · max 3 positions' };
+}
+
 function autoRenderLiveSession(s) {
   document.getElementById('autoNoSession').classList.add('hidden');
   const wrap = document.getElementById('autoHasSession');
   wrap.classList.remove('hidden');
+
   const pnl = parseFloat(s.pnl);
   const sessionPnl = parseFloat(s.session_pnl || '0');
   const target = parseFloat(s.target_profit);
@@ -2171,6 +2188,28 @@ function autoRenderLiveSession(s) {
   const m = Math.floor((secsRemaining % 3600) / 60);
   const marketsLabel = s.markets === 'auto' ? 'Auto-scan' : s.markets.split(',').length + ' markets';
   const spSign = sessionPnl >= 0 ? '+' : '-';
+
+  // Risk tier from starting balance
+  const tier = autoTierFromBalance(s.starting_balance);
+
+  // Effective risk after cap
+  const userRisk = parseFloat(s.risk_per_trade_pct);
+  const effectiveRisk = Math.min(userRisk, 5).toFixed(2);
+  const riskWasCapped = userRisk > 5;
+
+  // Loss streak display
+  const streak = parseInt(s.loss_streak || 0);
+  let streakHtml = '';
+  if (streak === 0) {
+    streakHtml = `<span class="muted" style="font-size:12px">Full size · no loss streak</span>`;
+  } else if (streak === 1) {
+    streakHtml = `<span class="warn" style="font-size:12px">1 loss · next trade at 75% size</span>`;
+  } else if (streak === 2) {
+    streakHtml = `<span class="warn" style="font-size:12px">2 losses · next trade at 50% size</span>`;
+  } else {
+    streakHtml = `<span class="loss" style="font-size:12px">${streak} losses · paused until streak resets</span>`;
+  }
+
   wrap.innerHTML = `
     <div class="session-live">
       <div class="session-header">
@@ -2180,11 +2219,23 @@ function autoRenderLiveSession(s) {
         </div>
         <span class="session-history-date">${h}h ${m}m left</span>
       </div>
+
+      <div style="display:flex;justify-content:center;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+        <span class="tag" style="border-color:rgba(98,140,255,0.5);color:var(--accent-soft)">
+          ${tier.label} tier
+        </span>
+        <span class="tag" style="border-color:rgba(98,140,255,0.3)">
+          Risk ${effectiveRisk}%${riskWasCapped ? ' (capped from ' + userRisk.toFixed(2) + '%)' : ''}
+        </span>
+      </div>
+
       <div class="session-pnl ${pnlClass}">${pnlSign}$${Math.abs(pnl).toFixed(2)}</div>
       <div class="session-target">Account change · target +$${target.toFixed(2)} · ${marketsLabel}</div>
+
       <div class="session-bar">
         <div class="session-bar-fill ${fillClass}" style="width:${progress.toFixed(1)}%"></div>
       </div>
+
       <div class="session-stats">
         <div class="session-stat">
           <div class="session-stat-label">Session P&L</div>
@@ -2199,12 +2250,18 @@ function autoRenderLiveSession(s) {
           <div class="session-stat-value">${s.wins_count} / ${s.losses_count}</div>
         </div>
       </div>
-      <div class="info-row" style="margin:10px 0 4px;font-size:12px">
+
+      <div class="info-row" style="margin:10px 0 6px;font-size:12px">
         <span class="muted">Balance $${parseFloat(s.current_balance).toFixed(2)}</span>
-        <span class="muted">Risk ${parseFloat(s.risk_per_trade_pct).toFixed(2)}%</span>
-        <span class="muted">${s.leverage}×</span>
+        <span class="muted">Leverage ${s.leverage}× auto-capped</span>
+        <span class="muted">Floor $${parseFloat(s.safety_floor_value).toFixed(2)}</span>
       </div>
-      <button class="stop" onclick="autoStopSession()" style="margin-top:10px">Stop session</button>
+
+      <div style="text-align:center;margin:8px 0 12px">
+        ${streakHtml}
+      </div>
+
+      <button class="stop" onclick="autoStopSession()" style="margin-top:6px">Stop session</button>
     </div>
   `;
 }
