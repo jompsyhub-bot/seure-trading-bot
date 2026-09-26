@@ -1,14 +1,5 @@
-cd C:\Users\USER\Documents\Codex\2026-09-09\i\outputs\secure_trading_bot
-
-@'
 #!/usr/bin/env python3
-"""Backtest for 4h/1D strategies. Fetches 4h + 1D candles from OKX public REST.
-
-Usage:
-    python -m scripts.backtest ETH-USDT-SWAP --bars 2000
-    python -m scripts.backtest DOGE-USDT-SWAP --bars 1000
-    python -m scripts.backtest ETH-USDT-SWAP --bars 2000 --log-trades
-"""
+"""Backtest for the DailyPullback strategy on OKX public candles."""
 from __future__ import annotations
 
 import argparse
@@ -29,8 +20,6 @@ OKX_BASE = "https://www.okx.com"
 
 
 async def fetch_candles(session, inst_id, bar, limit):
-    """Fetch up to `limit` closed candles, oldest-first. Uses history-candles
-    for deeper history than /candles allows."""
     url = f"{OKX_BASE}/api/v5/market/history-candles"
     rows = []
     after = None
@@ -40,8 +29,23 @@ async def fetch_candles(session, inst_id, bar, limit):
         params = {"instId": inst_id, "bar": bar, "limit": str(batch)}
         if after is not None:
             params["after"] = str(after)
-        async with session.get(url, params=params) as r:
-            data = await r.json(content_type=None)
+
+        data = None
+        last_err = None
+        for attempt in range(5):
+            try:
+                async with session.get(url, params=params) as r:
+                    data = await r.json(content_type=None)
+                break
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+                last_err = exc
+                wait = 2 ** attempt
+                print(f"  network error ({attempt+1}/5), retrying in {wait}s: {exc}")
+                await asyncio.sleep(wait)
+
+        if data is None:
+            raise RuntimeError(f"OKX unreachable after 5 retries: {last_err}")
+
         if data.get("code") != "0":
             raise RuntimeError(f"OKX fetch failed: {data.get('msg')}")
         chunk = data.get("data") or []
@@ -53,6 +57,7 @@ async def fetch_candles(session, inst_id, bar, limit):
         if len(chunk) < batch:
             break
         await asyncio.sleep(0.15)
+
     rows.sort(key=lambda r: int(r[0]))
     out = []
     seen = set()
@@ -92,7 +97,7 @@ def simulate(market, c4h, c1d, fee_rate=0.0005, slippage=0.0002,
              log_trades=False):
     strat = DailyPullbackStrategy()
     strat.TIME_STOP_BARS = time_stop_bars
-    tp_mult = strat.ATR_TP_MULT / strat.ATR_SL_MULT
+    rr_win = strat.ATR_TP_MULT / strat.ATR_SL_MULT
 
     trades = []
     open_trade = None
@@ -182,7 +187,7 @@ def simulate(market, c4h, c1d, fee_rate=0.0005, slippage=0.0002,
     r_multiples = []
     for t in closed:
         risk = bal * risk_pct
-        r = tp_mult if t.outcome == "win" else -1.0
+        r = rr_win if t.outcome == "win" else -1.0
         r -= t.fee_as_r
         bal += risk * r
         r_multiples.append(r)
@@ -225,55 +230,6 @@ def _log(t):
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("market")
-    ap.add_argument("--strategy", default="daily_pullback",
-                    choices=["daily_pullback"])
     ap.add_argument("--bars", type=int, default=2000)
     ap.add_argument("--fee", type=float, default=0.0005)
-    ap.add_argument("--slippage", type=float, default=0.0002)
-    ap.add_argument("--risk", type=float, default=0.01)
-    ap.add_argument("--capital", type=float, default=1000.0)
-    ap.add_argument("--log-trades", action="store_true")
-    args = ap.parse_args()
-
-    d1_limit = args.bars // 6 + 100
-
-    timeout = aiohttp.ClientTimeout(total=240)
-    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-        print(f"Fetching {args.bars} 4h bars + {d1_limit} 1D bars for {args.market}...")
-        c4h = await fetch_candles(session, args.market, "4H", args.bars)
-        c1d = await fetch_candles(session, args.market, "1Dutc", d1_limit)
-
-    print(f"Got {len(c4h)} 4h bars, {len(c1d)} 1D bars.")
-
-    if len(c4h) < 100 or len(c1d) < 60:
-        print("Not enough data.")
-        return
-
-    result = simulate(
-        args.market, c4h, c1d,
-        fee_rate=args.fee, slippage=args.slippage,
-        start_capital=args.capital, risk_pct=args.risk,
-        log_trades=args.log_trades,
-    )
-
-    print()
-    print("=" * 62)
-    print(f"BACKTEST — {result['market']}  [daily_pullback]")
-    print("=" * 62)
-    for k in ("date_from", "date_to", "bars", "trades", "wins", "losses",
-              "win_rate_pct", "expectancy_r", "start_balance", "end_balance",
-              "return_pct", "max_drawdown_pct"):
-        print(f"  {k:>18}: {result[k]}")
-    print("=" * 62)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-'@ | Set-Content -Path scripts\backtest.py -Encoding UTF8
-
-Write-Host ""
-Write-Host "=== Verify ===" -ForegroundColor Cyan
-Get-ChildItem scripts\backtest.py | Select-Object Name, Length
-python -c "from app.strategies import DailyPullbackStrategy; print('strategy OK')"
+    ap.add
