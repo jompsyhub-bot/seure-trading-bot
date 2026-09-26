@@ -20,7 +20,7 @@ class EndReason(str, Enum):
     EXPIRED = "expired"
     USER_STOP = "user_stop"
     ERROR = "error"
-
+    
 
 class SessionStatus(str, Enum):
     ACTIVE = "active"
