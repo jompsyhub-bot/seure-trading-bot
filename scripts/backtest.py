@@ -232,4 +232,45 @@ async def main():
     ap.add_argument("market")
     ap.add_argument("--bars", type=int, default=2000)
     ap.add_argument("--fee", type=float, default=0.0005)
-    ap.add
+    ap.add_argument("--slippage", type=float, default=0.0002)
+    ap.add_argument("--risk", type=float, default=0.01)
+    ap.add_argument("--capital", type=float, default=1000.0)
+    ap.add_argument("--log-trades", action="store_true")
+    args = ap.parse_args()
+
+    d1_limit = args.bars // 6 + 100
+
+    timeout = aiohttp.ClientTimeout(total=240)
+    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+
+    async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        print(f"Fetching {args.bars} 4h bars + {d1_limit} 1D bars for {args.market}...")
+        c4h = await fetch_candles(session, args.market, "4H", args.bars)
+        c1d = await fetch_candles(session, args.market, "1Dutc", d1_limit)
+
+    print(f"Got {len(c4h)} 4h bars, {len(c1d)} 1D bars.")
+
+    if len(c4h) < 100 or len(c1d) < 60:
+        print("Not enough data.")
+        return
+
+    result = simulate(
+        args.market, c4h, c1d,
+        fee_rate=args.fee, slippage=args.slippage,
+        start_capital=args.capital, risk_pct=args.risk,
+        log_trades=args.log_trades,
+    )
+
+    print()
+    print("=" * 62)
+    print(f"BACKTEST — {result['market']}  [daily_pullback]")
+    print("=" * 62)
+    for k in ("date_from", "date_to", "bars", "trades", "wins", "losses",
+              "win_rate_pct", "expectancy_r", "start_balance", "end_balance",
+              "return_pct", "max_drawdown_pct"):
+        print(f"  {k:>18}: {result[k]}")
+    print("=" * 62)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
