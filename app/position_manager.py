@@ -1,19 +1,4 @@
-@'
-"""Automatic trade management: candle-close breakeven and trailing stop.
 
-Handles the real-world problem of price wicking against a position before
-continuing. Rules:
-
-  - Only evaluates on candle close, never intra-candle.
-  - Never moves SL to exact entry — always leaves an ATR-based buffer
-    outside the typical wick zone.
-  - Breakeven move: candle closes at >= +1.5R. SL moves to
-    entry + 0.3xATR (long) or entry - 0.3xATR (short).
-  - Trail start: candle closes at >= +2R. SL trails 0.5xATR behind close.
-  - Tighten: candle closes at >= +3R. Trail narrows to 0.3xATR.
-  - SL never widens, only tightens.
-  - Original TP or time stop closes the position outright.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -73,7 +58,6 @@ def evaluate(
     atr: Decimal,
     bars_held: int,
 ) -> PositionAction:
-    """Return the SL action (if any) that should be applied right now."""
     if entry_price <= 0 or initial_sl <= 0 or last_closed_candle_close <= 0 or atr <= 0:
         return PositionAction.none("invalid inputs")
 
@@ -89,21 +73,17 @@ def evaluate(
         profit = entry_price - candle_close
     r_multiple = profit / r_distance
 
-    # 1. Original TP reached
     if side == "long" and candle_close >= original_tp:
         return PositionAction.close("reached take profit")
     if side == "short" and candle_close <= original_tp:
         return PositionAction.close("reached take profit")
 
-    # 2. Time stop
     if bars_held >= TIME_STOP_BARS:
         return PositionAction.close(f"time stop after {bars_held} bars")
 
-    # 3. Only act on new candles
     if last_action_candle_ts == last_closed_candle_ts:
         return PositionAction.none("already acted on this candle")
 
-    # 4. Breakeven + buffer
     if r_multiple >= BREAKEVEN_TRIGGER_R:
         buffer = atr * BREAKEVEN_BUFFER_ATR
         if side == "long":
@@ -117,7 +97,6 @@ def evaluate(
                 last_closed_candle_ts,
             )
 
-    # 5. Trailing (candle-based)
     if r_multiple >= TRAIL_START_R:
         if r_multiple >= TIGHTEN_TRIGGER_R:
             mult = TRAIL_TIGHT_ATR
@@ -138,16 +117,6 @@ def evaluate(
 
 
 def _would_tighten(side: str, current_sl: Decimal, candidate: Decimal) -> bool:
-    """True if `candidate` is a tighter stop than `current_sl`."""
     if side == "long":
         return candidate > current_sl
     return candidate < current_sl
-'@ | Set-Content -Path app\position_manager.py -Encoding UTF8
-
-# Strip BOM
-$path = Resolve-Path "app\position_manager.py"
-$text = [System.IO.File]::ReadAllText($path)
-$text = $text.TrimStart([char]0xFEFF)
-[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
-
-python -c "from app.position_manager import evaluate, Action, PositionAction; print('position_manager OK')"
