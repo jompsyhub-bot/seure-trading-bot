@@ -54,6 +54,10 @@ DEFAULT_PRICE_INSTRUMENTS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP")
 _instruments_cache: dict = {"data": None, "ts": 0.0}
 INSTRUMENTS_CACHE_TTL = 300
 
+# Portfolio response cache — avoids hammering OKX on every frontend poll.
+_portfolio_cache: dict = {}
+PORTFOLIO_CACHE_TTL = 5.0
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -216,7 +220,11 @@ def okx_demo_client_for(user_id: int) -> OKXDemoClient:
     if not settings.encryption_key or not credentials.get("encrypted_passphrase"):
         raise HTTPException(503, "OKX Demo credentials are incomplete. Reconnect the account.")
     vault = CredentialVault(settings.encryption_key)
-    return OKXDemoClient(vault.decrypt(credentials["encrypted_api_key"]), vault.decrypt(credentials["encrypted_api_secret"]), vault.decrypt(credentials["encrypted_passphrase"]))
+    return OKXDemoClient(
+        vault.decrypt(credentials["encrypted_api_key"]),
+        vault.decrypt(credentials["encrypted_api_secret"]),
+        vault.decrypt(credentials["encrypted_passphrase"]),
+    )
 
 
 async def publish_futures_event(user_id: int, event_type: str) -> None:
@@ -298,12 +306,15 @@ def active_position_keys(rows: list[dict]) -> set[tuple[str, str]]:
     }
 
 
-async def notify_position_closed(user_id: int, notifier: TelegramNotifier, instrument: str, side: str) -> None:
+async def notify_position_closed(user_id: int, notifier: TelegramNotifier,
+                                 instrument: str, side: str) -> None:
     await sync_okx_order_history(user_id)
+    _portfolio_cache.pop(user_id, None)
     await notifier.send(
         user_id,
         f"🔔 OKX Demo position closed\n{instrument} · {side}\n"
-        "The exchange pushed this update immediately. It may have been a TP, SL, or a manual close; the ticket is reconciling the final P&L now.",
+        "The exchange pushed this update immediately. It may have been a TP, SL, or a manual close; "
+        "the ticket is reconciling the final P&L now.",
     )
     await publish_futures_event(user_id, "portfolio_changed")
 
@@ -336,9 +347,11 @@ async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> 
                                 known_positions.add(key)
                     for instrument, side in closed:
                         await notify_position_closed(user_id, notifier, instrument, side)
+                    _portfolio_cache.pop(user_id, None)
                     await publish_futures_event(user_id, "portfolio_changed")
                 elif channel == "orders":
                     if any(row.get("state") in {"filled", "canceled"} for row in rows):
+                        _portfolio_cache.pop(user_id, None)
                         await sync_okx_order_history(user_id)
                         await publish_futures_event(user_id, "portfolio_changed")
         except asyncio.CancelledError:
@@ -359,7 +372,8 @@ async def monitor_okx_private_events(notifier: TelegramNotifier) -> None:
             users = set(database.okx_demo_users())
             for user_id in users - tasks.keys():
                 tasks[user_id] = asyncio.create_task(
-                    monitor_okx_private_user(user_id, notifier), name=f"okx-demo-private-{user_id}"
+                    monitor_okx_private_user(user_id, notifier),
+                    name=f"okx-demo-private-{user_id}",
                 )
             for user_id in set(tasks) - users:
                 tasks.pop(user_id).cancel()
@@ -379,7 +393,11 @@ def reject_unsafe_permissions(info: dict) -> None:
     forbidden = {"Withdraw", "AccountTransfer", "SubMemberTransfer", "SubMemberTransferList"}
     if forbidden.intersection(wallet_permissions):
         raise HTTPException(400, "Use a trade-only Bybit key: withdrawal and transfer permissions are forbidden")
-    trade_permissions = set(permissions.get("Spot", [])) | set(permissions.get("Derivatives", [])) | set(permissions.get("ContractTrade", []))
+    trade_permissions = (
+        set(permissions.get("Spot", []))
+        | set(permissions.get("Derivatives", []))
+        | set(permissions.get("ContractTrade", []))
+    )
     if not trade_permissions:
         raise HTTPException(400, "This key has no trading permission")
 
@@ -420,7 +438,11 @@ async def futures_updates(websocket: WebSocket) -> None:
     subscribers.add(websocket)
     api.state.futures_price_preferences[websocket] = "BTC-USDT-SWAP"
     try:
-        await websocket.send_json({"type": "connected", "environment": "demo", "price_instrument": "BTC-USDT-SWAP"})
+        await websocket.send_json({
+            "type": "connected",
+            "environment": "demo",
+            "price_instrument": "BTC-USDT-SWAP",
+        })
         while True:
             message = await websocket.receive_text()
             try:
@@ -460,7 +482,13 @@ async def okx_connectivity() -> dict:
         if not isinstance(data, dict) or data.get("code") != "0" or not data.get("data"):
             raise HTTPException(502, "OKX returned an unexpected public API response")
         instrument = data["data"][0]
-        return {"ok": True, "exchange": "okx", "instrument": instrument["instId"], "state": instrument.get("state"), "max_leverage": instrument.get("lever")}
+        return {
+            "ok": True,
+            "exchange": "okx",
+            "instrument": instrument["instId"],
+            "state": instrument.get("state"),
+            "max_leverage": instrument.get("lever"),
+        }
     except HTTPException:
         raise
     except (aiohttp.ClientError, TimeoutError, ValueError):
@@ -522,7 +550,8 @@ async def exchange_instruments(x_telegram_init_data: str | None = Header(default
 
 
 @api.post("/api/okx/connect")
-async def connect_okx_demo(request: OKXDemoConnectionRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def connect_okx_demo(request: OKXDemoConnectionRequest,
+                           x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     if not settings.encryption_key:
         raise HTTPException(503, "Credential vault is not configured")
@@ -530,9 +559,16 @@ async def connect_okx_demo(request: OKXDemoConnectionRequest, x_telegram_init_da
     try:
         account = await client.account_config()
         vault = CredentialVault(settings.encryption_key)
-        database.save_okx_connection(int(user["id"]), vault.encrypt(request.api_key), vault.encrypt(request.api_secret), vault.encrypt(request.passphrase), account)
+        database.save_okx_connection(
+            int(user["id"]),
+            vault.encrypt(request.api_key),
+            vault.encrypt(request.api_secret),
+            vault.encrypt(request.passphrase),
+            account,
+        )
         _instruments_cache["data"] = None
         _instruments_cache["ts"] = 0.0
+        _portfolio_cache.pop(int(user["id"]), None)
         return {"connected": True, "provider": "okx", "environment": "demo"}
     except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
         raise HTTPException(400, f"OKX Demo connection rejected: {exc}") from None
@@ -541,27 +577,53 @@ async def connect_okx_demo(request: OKXDemoConnectionRequest, x_telegram_init_da
 
 
 @api.post("/api/paper-settings")
-async def paper_settings(request: PaperSettingsRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def paper_settings(request: PaperSettingsRequest,
+                         x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     try:
-        database.update_paper_settings(int(user["id"]), request.enabled, Decimal(request.max_order_notional), Decimal(request.max_daily_loss))
+        database.update_paper_settings(
+            int(user["id"]),
+            request.enabled,
+            Decimal(request.max_order_notional),
+            Decimal(request.max_daily_loss),
+        )
     except (InvalidOperation, ValueError):
         raise HTTPException(400, "Limits must be valid positive numbers") from None
     return database.dashboard(int(user["id"]))
 
 
 @api.post("/api/automation")
-async def automation_settings(request: AutomationProfileRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def automation_settings(request: AutomationProfileRequest,
+                              x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
-    dashboard_data = database.dashboard(int(user["id"]))
-    if request.enabled and (dashboard_data.get("environment") != "demo" or dashboard_data.get("provider") != "bybit"):
-        raise HTTPException(400, "OKX execution is not enabled yet. Automation remains paused until the OKX futures execution adapter is tested.")
+    dash = database.dashboard(int(user["id"]))
+    if request.enabled and (dash.get("environment") != "demo" or dash.get("provider") != "bybit"):
+        raise HTTPException(
+            400,
+            "OKX execution is not enabled yet. Automation remains paused until the OKX "
+            "futures execution adapter is tested.",
+        )
     try:
-        database.save_automation_profile(int(user["id"]), request.enabled, request.strategy, request.symbol, Decimal(request.max_order_notional), request.max_trades_per_day, Decimal(request.stop_loss_pct), Decimal(request.take_profit_pct))
+        database.save_automation_profile(
+            int(user["id"]),
+            request.enabled,
+            request.strategy,
+            request.symbol,
+            Decimal(request.max_order_notional),
+            request.max_trades_per_day,
+            Decimal(request.stop_loss_pct),
+            Decimal(request.take_profit_pct),
+        )
     except (InvalidOperation, ValueError):
         raise HTTPException(400, "Check your strategy limits") from None
     state = "started" if request.enabled else "paused"
-    await api.state.notifier.send(int(user["id"]), f"🧪 Demo automation {state}\nStrategy: {request.strategy}\nSymbol: {request.symbol}\nMax order: {request.max_order_notional} USDT\nMax trades/day: {request.max_trades_per_day}\nUse STOP ALL AUTOMATION in the dashboard to disable future scans.")
+    await api.state.notifier.send(
+        int(user["id"]),
+        f"🧪 Demo automation {state}\nStrategy: {request.strategy}\n"
+        f"Symbol: {request.symbol}\nMax order: {request.max_order_notional} USDT\n"
+        f"Max trades/day: {request.max_trades_per_day}\n"
+        f"Use STOP ALL AUTOMATION in the dashboard to disable future scans.",
+    )
     return database.automation_profile(int(user["id"]))
 
 
@@ -569,7 +631,11 @@ async def automation_settings(request: AutomationProfileRequest, x_telegram_init
 async def kill_switch(x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     database.set_kill_switch(int(user["id"]))
-    await api.state.notifier.send(int(user["id"]), "🛑 Demo automation stopped. No future scans will submit orders. Review open orders in Bybit Demo Trading separately.")
+    await api.state.notifier.send(
+        int(user["id"]),
+        "🛑 Demo automation stopped. No future scans will submit orders. "
+        "Review open orders in Bybit Demo Trading separately.",
+    )
     return {"enabled": False, "message": "Automation stopped"}
 
 
@@ -579,7 +645,11 @@ async def disconnect_exchange(x_telegram_init_data: str | None = Header(default=
     database.disconnect_bybit(int(user["id"]))
     _instruments_cache["data"] = None
     _instruments_cache["ts"] = 0.0
-    await api.state.notifier.send(int(user["id"]), "🔒 Exchange Demo connection removed and automation stopped.")
+    _portfolio_cache.pop(int(user["id"]), None)
+    await api.state.notifier.send(
+        int(user["id"]),
+        "🔒 Exchange Demo connection removed and automation stopped.",
+    )
     return {"connected": False}
 
 
@@ -590,19 +660,47 @@ async def history(x_telegram_init_data: str | None = Header(default=None)) -> li
     return database.history(int(user["id"]))
 
 
-async def sync_okx_order_history(user_id: int) -> None:
+async def sync_okx_order_history(user_id: int, *, parallel: bool = True) -> None:
+    """Refresh bot-originated orders. Skips orders already in a terminal state,
+    runs remaining fetches in parallel."""
     if database.connection_provider(user_id) != "okx":
         return
     client = okx_demo_client_for(user_id)
     try:
-        for row in database.orders_for_sync(user_id):
-            detail = await client.order_detail(row["symbol"], row["order_id"])
+        rows = list(database.orders_for_sync(user_id))
+        pending = [
+            r for r in rows
+            if str(r.get("status", "")).upper() not in {"FILLED", "CANCELED", "CANCELLED"}
+        ]
+        if not pending:
+            return
+
+        async def fetch_one(row):
+            try:
+                detail = await client.order_detail(row["symbol"], row["order_id"])
+            except Exception:
+                return None
+            return (row, detail)
+
+        if parallel:
+            results = await asyncio.gather(*(fetch_one(r) for r in pending))
+        else:
+            results = [await fetch_one(r) for r in pending]
+
+        for item in results:
+            if item is None:
+                continue
+            row, detail = item
             if not detail:
                 continue
             price = Decimal(detail.get("avgPx") or detail.get("fillPx") or "0")
             quantity = Decimal(detail.get("accFillSz") or "0")
             pnl = Decimal(detail.get("pnl") or "0")
-            database.reconcile_exchange_order(row["idempotency_key"], detail.get("state", "unknown").upper(), price, quantity, pnl)
+            database.reconcile_exchange_order(
+                row["idempotency_key"],
+                detail.get("state", "unknown").upper(),
+                price, quantity, pnl,
+            )
     finally:
         await client.close()
 
@@ -611,12 +709,40 @@ async def sync_okx_order_history(user_id: int) -> None:
 async def portfolio(x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
-    await sync_okx_order_history(user_id)
+
+    now = time.monotonic()
+    cached = _portfolio_cache.get(user_id)
+    if cached and (now - cached[0]) < PORTFOLIO_CACHE_TTL:
+        return cached[1]
+
+    try:
+        await sync_okx_order_history(user_id)
+    except Exception as exc:
+        log.warning("Portfolio sync failed for %s: %s", user_id, exc)
+
     client = okx_demo_client_for(user_id)
     try:
         positions = await client.swap_positions()
-        active = [{"instrument": row.get("instId"), "side": row.get("posSide"), "contracts": row.get("pos"), "entry_price": row.get("avgPx"), "mark_price": row.get("markPx"), "unrealized_pnl": row.get("upl"), "realized_pnl": row.get("realizedPnl"), "leverage": row.get("lever"), "margin_mode": row.get("mgnMode"), "liquidation_price": row.get("liqPx") or None} for row in positions]
-        return {"exchange": "okx", "environment": "demo", "active_positions": active, "bot_trade_history": database.history(user_id)}
+        active = [{
+            "instrument": row.get("instId"),
+            "side": row.get("posSide"),
+            "contracts": row.get("pos"),
+            "entry_price": row.get("avgPx"),
+            "mark_price": row.get("markPx"),
+            "unrealized_pnl": row.get("upl"),
+            "realized_pnl": row.get("realizedPnl"),
+            "leverage": row.get("lever"),
+            "margin_mode": row.get("mgnMode"),
+            "liquidation_price": row.get("liqPx") or None,
+        } for row in positions]
+        response = {
+            "exchange": "okx",
+            "environment": "demo",
+            "active_positions": active,
+            "bot_trade_history": database.history(user_id),
+        }
+        _portfolio_cache[user_id] = (now, response)
+        return response
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation) as exc:
         raise HTTPException(502, f"OKX portfolio sync unavailable: {exc}") from None
     finally:
@@ -624,17 +750,25 @@ async def portfolio(x_telegram_init_data: str | None = Header(default=None)) -> 
 
 
 @api.post("/api/backtest")
-async def backtest(request: BacktestRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def backtest(request: BacktestRequest,
+                   x_telegram_init_data: str | None = Header(default=None)) -> dict:
     telegram_user(x_telegram_init_data)
     try:
         candles = await PublicBybitMarket().candles(request.symbol, request.interval)
-        return run_rsi_reversion(candles, rsi_threshold=request.rsi_threshold, stop_loss_pct=request.stop_loss_pct, take_profit_pct=request.take_profit_pct, order_notional=request.order_notional)
+        return run_rsi_reversion(
+            candles,
+            rsi_threshold=request.rsi_threshold,
+            stop_loss_pct=request.stop_loss_pct,
+            take_profit_pct=request.take_profit_pct,
+            order_notional=request.order_notional,
+        )
     except (MarketDataError, ValueError, aiohttp.ClientError, TimeoutError) as exc:
         raise HTTPException(502, f"Backtest market data unavailable: {exc}") from None
 
 
 @api.post("/api/futures/leverage-options")
-async def leverage_options(request: LeverageRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def leverage_options(request: LeverageRequest,
+                           x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     environment = database.connection_environment(int(user["id"]))
     provider = database.connection_provider(int(user["id"]))
@@ -644,7 +778,18 @@ async def leverage_options(request: LeverageRequest, x_telegram_init_data: str |
     client = OKXDemoClient("", "", "")
     try:
         instrument = await client.swap_instrument(inst_id)
-        return {"symbol": request.symbol, "instrument": inst_id, "min_leverage": "1", "max_leverage": instrument.get("lever", "1"), "leverage_step": "1", "tick_size": instrument["tickSz"], "min_contracts": instrument["minSz"], "contract_value": instrument["ctVal"], "contract_currency": instrument["ctValCcy"], "state": instrument["state"]}
+        return {
+            "symbol": request.symbol,
+            "instrument": inst_id,
+            "min_leverage": "1",
+            "max_leverage": instrument.get("lever", "1"),
+            "leverage_step": "1",
+            "tick_size": instrument["tickSz"],
+            "min_contracts": instrument["minSz"],
+            "contract_value": instrument["ctVal"],
+            "contract_currency": instrument["ctValCcy"],
+            "state": instrument["state"],
+        }
     except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
         raise HTTPException(502, f"Futures rules unavailable: {exc}") from None
     finally:
@@ -652,13 +797,18 @@ async def leverage_options(request: LeverageRequest, x_telegram_init_data: str |
 
 
 @api.post("/api/futures/preview")
-async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def futures_preview(request: FuturesPreviewRequest,
+                          x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     client = okx_demo_client_for(user_id)
     inst_id = resolve_okx_swap_inst_id(request.symbol)
     try:
-        instrument, price, available_balance = await asyncio.gather(client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
+        instrument, price, available_balance = await asyncio.gather(
+            client.swap_instrument(inst_id),
+            client.last_price(inst_id),
+            client.account_balance(),
+        )
         maximum_leverage = Decimal(instrument.get("lever") or "1")
         leverage = Decimal(request.leverage)
         if leverage > maximum_leverage:
@@ -669,13 +819,45 @@ async def futures_preview(request: FuturesPreviewRequest, x_telegram_init_data: 
         contract_notional = contract_value * price
         contracts = (requested_notional / contract_notional).to_integral_value(rounding=ROUND_DOWN)
         if contracts < Decimal(instrument["minSz"]):
-            raise HTTPException(400, f"Margin is too small for OKX's {instrument['minSz']} contract minimum at the current price.")
+            raise HTTPException(
+                400,
+                f"Margin is too small for OKX's {instrument['minSz']} contract minimum at the current price.",
+            )
         actual_notional = contracts * contract_notional
         initial_margin = actual_notional / leverage
         permitted_margin = available_balance * settings.max_demo_margin_pct / Decimal("100")
         if initial_margin > permitted_margin:
-            raise HTTPException(400, f"Balance safety check: about {initial_margin:.2f} USDT margin is needed. This ticket permits up to {permitted_margin:.2f} USDT ({settings.max_demo_margin_pct}% of your {available_balance:.2f} USDT Demo balance), leaving a buffer for fees and adverse moves.")
-        return {"preview_only": True, "exchange": "okx", "environment": "demo", "instrument": inst_id, "side": request.side, "mark_price": str(price), "leverage": str(leverage), "contracts": str(contracts), "contract_notional_usdt": str(contract_notional), "estimated_notional_usdt": str(actual_notional), "estimated_initial_margin_usdt": str(initial_margin), "available_usdt": str(available_balance), "maximum_recommended_margin_usdt": str(permitted_margin), "remaining_usdt_before_fees": str(available_balance - initial_margin), "position_mode": "Not changed by this preview", "liquidation_price": "Not estimated: it depends on OKX risk tiers, maintenance margin, account mode, and other positions.", "next_step": "No order was placed. Execution requires a separate confirmation-and-reconciliation build step."}
+            raise HTTPException(
+                400,
+                f"Balance safety check: about {initial_margin:.2f} USDT margin is needed. "
+                f"This ticket permits up to {permitted_margin:.2f} USDT "
+                f"({settings.max_demo_margin_pct}% of your {available_balance:.2f} USDT Demo balance).",
+            )
+        return {
+            "preview_only": True,
+            "exchange": "okx",
+            "environment": "demo",
+            "instrument": inst_id,
+            "side": request.side,
+            "mark_price": str(price),
+            "leverage": str(leverage),
+            "contracts": str(contracts),
+            "contract_notional_usdt": str(contract_notional),
+            "estimated_notional_usdt": str(actual_notional),
+            "estimated_initial_margin_usdt": str(initial_margin),
+            "available_usdt": str(available_balance),
+            "maximum_recommended_margin_usdt": str(permitted_margin),
+            "remaining_usdt_before_fees": str(available_balance - initial_margin),
+            "position_mode": "Not changed by this preview",
+            "liquidation_price": (
+                "Not estimated: it depends on OKX risk tiers, maintenance margin, "
+                "account mode, and other positions."
+            ),
+            "next_step": (
+                "No order was placed. Execution requires a separate "
+                "confirmation-and-reconciliation build step."
+            ),
+        }
     except HTTPException:
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
@@ -691,7 +873,18 @@ async def futures_account(x_telegram_init_data: str | None = Header(default=None
     try:
         account = await client.account_config()
         levels = {"1": "Spot", "2": "Futures", "3": "Multi-currency margin", "4": "Portfolio margin"}
-        return {"exchange": "okx", "environment": "demo", "account_mode": levels.get(account.get("acctLv"), "Unknown"), "account_mode_code": account.get("acctLv"), "position_mode": account.get("posMode"), "can_change_position_mode": account.get("acctLv") != "4", "note": "Account mode is controlled in OKX Demo's website/app. Position mode changes require no open positions or pending orders."}
+        return {
+            "exchange": "okx",
+            "environment": "demo",
+            "account_mode": levels.get(account.get("acctLv"), "Unknown"),
+            "account_mode_code": account.get("acctLv"),
+            "position_mode": account.get("posMode"),
+            "can_change_position_mode": account.get("acctLv") != "4",
+            "note": (
+                "Account mode is controlled in OKX Demo's website/app. "
+                "Position mode changes require no open positions or pending orders."
+            ),
+        }
     except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
         raise HTTPException(502, f"OKX account configuration unavailable: {exc}") from None
     finally:
@@ -699,7 +892,8 @@ async def futures_account(x_telegram_init_data: str | None = Header(default=None
 
 
 @api.post("/api/futures/position-mode")
-async def set_futures_position_mode(request: PositionModeRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def set_futures_position_mode(request: PositionModeRequest,
+                                    x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     client = okx_demo_client_for(int(user["id"]))
     try:
@@ -707,7 +901,10 @@ async def set_futures_position_mode(request: PositionModeRequest, x_telegram_ini
         if account.get("acctLv") == "4" and request.position_mode != "net_mode":
             raise HTTPException(400, "OKX Portfolio Margin only supports net position mode.")
         changed = await client.set_position_mode(request.position_mode)
-        return {"position_mode": changed.get("posMode", request.position_mode), "message": "OKX Demo position mode updated. No order was placed."}
+        return {
+            "position_mode": changed.get("posMode", request.position_mode),
+            "message": "OKX Demo position mode updated. No order was placed.",
+        }
     except HTTPException:
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, ValueError) as exc:
@@ -717,15 +914,25 @@ async def set_futures_position_mode(request: PositionModeRequest, x_telegram_ini
 
 
 @api.post("/api/futures/demo-order")
-async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def place_futures_demo_order(request: FuturesDemoOrderRequest,
+                                   x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     client = okx_demo_client_for(user_id)
     inst_id = resolve_okx_swap_inst_id(request.symbol)
     try:
-        account, instrument, price, available_balance = await asyncio.gather(client.account_config(), client.swap_instrument(inst_id), client.last_price(inst_id), client.account_balance())
+        account, instrument, price, available_balance = await asyncio.gather(
+            client.account_config(),
+            client.swap_instrument(inst_id),
+            client.last_price(inst_id),
+            client.account_balance(),
+        )
         if account.get("acctLv") not in {"2", "3", "4"}:
-            raise HTTPException(400, "OKX Demo account is in Spot mode. In OKX Demo Trading, switch Account mode to Futures mode or Multi-currency margin mode before submitting a perpetual order.")
+            raise HTTPException(
+                400,
+                "OKX Demo account is in Spot mode. In OKX Demo Trading, switch Account mode "
+                "to Futures mode or Multi-currency margin mode before submitting a perpetual order.",
+            )
         leverage = Decimal(request.leverage)
         if leverage > Decimal(instrument.get("lever") or "1"):
             raise HTTPException(400, f"{inst_id} supports up to {instrument.get('lever')}× leverage.")
@@ -741,23 +948,38 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
         initial_margin = actual_notional / leverage
         permitted_margin = available_balance * settings.max_demo_margin_pct / Decimal("100")
         if initial_margin > permitted_margin:
-            raise HTTPException(400, f"Balance safety check refused {initial_margin:.2f} USDT margin; maximum is {permitted_margin:.2f} USDT.")
+            raise HTTPException(
+                400,
+                f"Balance safety check refused {initial_margin:.2f} USDT margin; "
+                f"maximum is {permitted_margin:.2f} USDT.",
+            )
         if account.get("posMode") == "long_short_mode":
             position_side = request.side
         else:
             position_side = "net"
         exchange_side = "buy" if request.side == "long" else "sell"
-        intent = OrderIntent(user_id, inst_id, Side.BUY if exchange_side == "buy" else Side.SELL, actual_notional, request.client_order_id)
+        intent = OrderIntent(
+            user_id, inst_id,
+            Side.BUY if exchange_side == "buy" else Side.SELL,
+            actual_notional, request.client_order_id,
+        )
         if not database.reserve(intent):
             existing = database.existing_order(request.client_order_id)
             if existing:
-                return {"accepted": True, "replayed": True, "order_id": existing.order_id, "status": existing.status}
+                return {
+                    "accepted": True, "replayed": True,
+                    "order_id": existing.order_id, "status": existing.status,
+                }
             raise HTTPException(409, "This Demo order is already being processed. Do not submit it again.")
         submission_started = False
         try:
             await client.set_leverage(inst_id, leverage, position_side)
             submission_started = True
-            accepted = await client.place_market_swap(inst_id=inst_id, side=exchange_side, position_side=position_side, contracts=contracts, client_order_id=request.client_order_id, take_profit=request.take_profit, stop_loss=request.stop_loss)
+            accepted = await client.place_market_swap(
+                inst_id=inst_id, side=exchange_side, position_side=position_side,
+                contracts=contracts, client_order_id=request.client_order_id,
+                take_profit=request.take_profit, stop_loss=request.stop_loss,
+            )
             order_id = accepted.get("ordId")
             if not order_id:
                 raise ExchangeError("OKX accepted the request without an order ID; check Demo order history before retrying.")
@@ -765,7 +987,10 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
             status = (detail or {}).get("state", "live").upper()
             filled_price = Decimal((detail or {}).get("avgPx") or str(price))
             filled_contracts = Decimal((detail or {}).get("accFillSz") or str(contracts))
-            database.finalize(request.client_order_id, OrderResult(order_id, status, filled_price, filled_contracts))
+            database.finalize(
+                request.client_order_id,
+                OrderResult(order_id, status, filled_price, filled_contracts),
+            )
         except OrderRejected:
             database.cancel_reservation(request.client_order_id)
             raise
@@ -773,10 +998,34 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
             if not submission_started:
                 database.cancel_reservation(request.client_order_id)
             raise
-        await api.state.notifier.send(user_id, f"🧪 OKX Demo order accepted\n{request.side.upper()} {inst_id}\nLeverage: {leverage}× · Contracts: {contracts}\nOrder: {order_id}\nStatus: {status}\nTP: {request.take_profit} · SL: {request.stop_loss}")
-        return {"accepted": True, "replayed": False, "exchange": "okx", "environment": "demo", "order_id": order_id, "status": status, "contracts": str(contracts), "estimated_initial_margin_usdt": str(initial_margin), "take_profit": str(request.take_profit), "stop_loss": str(request.stop_loss), "message": "Demo order accepted and reconciled. Check the OKX Demo Trading order/position screen as the source of truth."}
+        _portfolio_cache.pop(user_id, None)
+        await api.state.notifier.send(
+            user_id,
+            f"🧪 OKX Demo order accepted\n{request.side.upper()} {inst_id}\n"
+            f"Leverage: {leverage}× · Contracts: {contracts}\nOrder: {order_id}\n"
+            f"Status: {status}\nTP: {request.take_profit} · SL: {request.stop_loss}",
+        )
+        return {
+            "accepted": True,
+            "replayed": False,
+            "exchange": "okx",
+            "environment": "demo",
+            "order_id": order_id,
+            "status": status,
+            "contracts": str(contracts),
+            "estimated_initial_margin_usdt": str(initial_margin),
+            "take_profit": str(request.take_profit),
+            "stop_loss": str(request.stop_loss),
+            "message": (
+                "Demo order accepted and reconciled. Check the OKX Demo Trading "
+                "order/position screen as the source of truth."
+            ),
+        }
     except HTTPException as exc:
-        log.info("OKX Demo order rejected: instrument=%s status=%s reason=%s", inst_id, exc.status_code, exc.detail)
+        log.info(
+            "OKX Demo order rejected: instrument=%s status=%s reason=%s",
+            inst_id, exc.status_code, exc.detail,
+        )
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
         log.warning("OKX Demo order exchange rejection: instrument=%s reason=%s", inst_id, exc)
@@ -786,14 +1035,20 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest, x_telegram_
 
 
 @api.post("/api/futures/close-position")
-async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def close_futures_demo_position(request: ClosePositionRequest,
+                                      x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
     client = okx_demo_client_for(user_id)
     close_key = f"close{uuid.uuid4().hex[:23]}"
     try:
         positions = await client.swap_positions()
-        position = next((row for row in positions if row.get("instId") == request.instrument and row.get("posSide") == request.position_side), None)
+        position = next(
+            (row for row in positions
+             if row.get("instId") == request.instrument
+             and row.get("posSide") == request.position_side),
+            None,
+        )
         if not position:
             raise HTTPException(404, "That position is no longer active. Refresh the portfolio.")
         contracts = abs(Decimal(position["pos"]))
@@ -805,13 +1060,21 @@ async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_
             close_side = "buy"
         else:
             close_side = "sell" if Decimal(position["pos"]) > 0 else "buy"
-        intent = OrderIntent(user_id, request.instrument, Side.SELL if close_side == "sell" else Side.BUY, Decimal("0"), close_key)
+        intent = OrderIntent(
+            user_id, request.instrument,
+            Side.SELL if close_side == "sell" else Side.BUY,
+            Decimal("0"), close_key,
+        )
         if not database.reserve(intent):
             raise HTTPException(409, "Could not reserve the close request. Refresh and retry once.")
         submission_started = False
         try:
             submission_started = True
-            accepted = await client.close_market_swap(inst_id=request.instrument, side=close_side, position_side=request.position_side, contracts=contracts, client_order_id=close_key)
+            accepted = await client.close_market_swap(
+                inst_id=request.instrument, side=close_side,
+                position_side=request.position_side, contracts=contracts,
+                client_order_id=close_key,
+            )
             order_id = accepted.get("ordId")
             if not order_id:
                 raise ExchangeError("OKX accepted the close request without an order ID. Check OKX Demo before retrying.")
@@ -829,8 +1092,26 @@ async def close_futures_demo_position(request: ClosePositionRequest, x_telegram_
             if not submission_started:
                 database.cancel_reservation(close_key)
             raise
-        await api.state.notifier.send(user_id, f"🧪 OKX Demo close accepted\n{request.instrument} · {request.position_side}\nOrder: {order_id}\nStatus: {status}\nRealized P&L reported by order: {pnl} USDT\nCheck OKX Demo as the source of truth.")
-        return {"closed": True, "order_id": order_id, "status": status, "realized_pnl_usdt": str(pnl), "fill_price": str(price), "contracts": str(filled or contracts), "message": "Close order accepted. The realized P&L is from OKX's order response and may update after final exchange settlement."}
+        _portfolio_cache.pop(user_id, None)
+        await api.state.notifier.send(
+            user_id,
+            f"🧪 OKX Demo close accepted\n{request.instrument} · {request.position_side}\n"
+            f"Order: {order_id}\nStatus: {status}\n"
+            f"Realized P&L reported by order: {pnl} USDT\n"
+            f"Check OKX Demo as the source of truth.",
+        )
+        return {
+            "closed": True,
+            "order_id": order_id,
+            "status": status,
+            "realized_pnl_usdt": str(pnl),
+            "fill_price": str(price),
+            "contracts": str(filled or contracts),
+            "message": (
+                "Close order accepted. The realized P&L is from OKX's order response "
+                "and may update after final exchange settlement."
+            ),
+        }
     except HTTPException:
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
@@ -867,6 +1148,7 @@ def _session_to_dict(s: "SessionState") -> dict:
         "trades_count": s.trades_count,
         "wins_count": s.wins_count,
         "losses_count": s.losses_count,
+        "loss_streak": s.loss_streak,
         "status": s.status.value,
         "end_reason": s.end_reason,
     }
@@ -911,8 +1193,7 @@ async def auto_start(request: StartSessionRequest,
         await api.state.notifier.send(
             user_id,
             f"🚀 Auto trading started — session #{session_id}\n"
-            f"Mode: {request.mode}\n"
-            f"Duration: {request.duration_hours}h\n"
+            f"Mode: {request.mode}\nDuration: {request.duration_hours}h\n"
             f"Target: +{request.target_profit} USDT · Max loss: -{request.max_loss} USDT\n"
             f"Risk/trade: {request.risk_per_trade_pct}% of balance\n"
             f"Starting balance: {balance:.2f} USDT",
@@ -965,8 +1246,9 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
             close_key = f"stop{session.id}{uuid.uuid4().hex[:18]}"[:28]
             try:
                 accepted = await client.close_market_swap(
-                    inst_id=tp.inst_id, side=close_side, position_side=tp.pos_side,
-                    contracts=contracts, client_order_id=close_key,
+                    inst_id=tp.inst_id, side=close_side,
+                    position_side=tp.pos_side, contracts=contracts,
+                    client_order_id=close_key,
                 )
                 detail = await client.order_detail(tp.inst_id, accepted.get("ordId", ""))
                 status = (detail or {}).get("state", "live").upper()
@@ -997,6 +1279,8 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
     account_change = balance - session.starting_balance
     sp_sign = "+" if session_pnl >= 0 else "-"
     ac_sign = "+" if account_change >= 0 else "-"
+
+    _portfolio_cache.pop(user_id, None)
 
     try:
         await api.state.notifier.send(
