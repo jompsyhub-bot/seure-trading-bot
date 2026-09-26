@@ -1,4 +1,4 @@
-@'
+
 from __future__ import annotations
 
 import hashlib
@@ -525,12 +525,3 @@ class PaperBroker:
         if qty <= 0:
             raise ExchangeError("Notional too small")
         return OrderResult(f"paper-{uuid.uuid4()}", "FILLED", price, qty)
-'@ | Set-Content -Path app\exchange.py -Encoding UTF8
-
-# Strip BOM
-$path = Resolve-Path "app\exchange.py"
-$text = [System.IO.File]::ReadAllText($path)
-$text = $text.TrimStart([char]0xFEFF)
-[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
-
-python -c "from app.exchange import OKXDemoClient, ExchangeError, OrderRejected; print('exchange OK')"
