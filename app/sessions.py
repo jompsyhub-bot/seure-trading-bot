@@ -1,7 +1,5 @@
-cd C:\Users\USER\Documents\Codex\2026-09-09\i\outputs\secure_trading_bot
 
-@'
-"""Session lifecycle and risk guard for auto trading."""
+
 from __future__ import annotations
 
 import logging
@@ -682,14 +680,3 @@ def should_end_session(session: SessionState, balance: Decimal) -> Optional[EndR
     if session.seconds_remaining <= 0:
         return EndReason.EXPIRED
     return None
-'@ | Set-Content -Path app\sessions.py -Encoding UTF8
-
-# Strip BOM
-$path = Resolve-Path "app\sessions.py"
-$text = [System.IO.File]::ReadAllText($path)
-$text = $text.TrimStart([char]0xFEFF)
-[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
-
-Write-Host ""
-Write-Host "=== Verify ===" -ForegroundColor Cyan
-python -c "from app.sessions import SessionManager, SessionConfig, SessionState, TrackedPosition; print('sessions OK')"
