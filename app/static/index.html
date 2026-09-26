@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -58,8 +57,6 @@ button:disabled{opacity:.55;cursor:not-allowed}
 button.stop{background:var(--danger)}
 button.ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
 button.mini{width:auto;padding:6px 10px;font-size:12px;margin:0;background:var(--danger)}
-.checkbox{display:flex;align-items:center;gap:10px;margin:10px 0;font-size:14px}
-.checkbox input{width:auto;margin:0;accent-color:var(--accent)}
 .nav{position:fixed;bottom:0;left:0;right:0;background:#121a2c;
   display:flex;justify-content:space-around;border-top:1px solid var(--border);
   padding-bottom:env(safe-area-inset-bottom);z-index:50}
@@ -81,19 +78,16 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 .feed-meta{font-size:11px;color:var(--muted);margin-top:3px;transition:color .2s}
 .feed-meta.stale{color:var(--warn)}
 .feed-meta.dead{color:#ff8997}
-
 .price{font-size:24px;font-weight:800;line-height:1.2;display:inline-block;transition:color .3s}
 .price.flash-up{animation:flashUp .55s ease-out}
 .price.flash-down{animation:flashDown .55s ease-out}
 @keyframes flashUp{0%{color:var(--good);transform:scale(1.04)}100%{color:var(--text);transform:scale(1)}}
 @keyframes flashDown{0%{color:#ff8997;transform:scale(1.04)}100%{color:var(--text);transform:scale(1)}}
-
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
   background:#a8b4cd;margin-right:6px;vertical-align:middle}
 .dot.on{background:var(--good)}
 .dot.stale{background:var(--warn)}
 .dot.dead{background:#ff8997}
-
 #toast{
   position:fixed;bottom:84px;left:50%;transform:translateX(-50%) translateY(20px);
   background:#1d2a45;border:1px solid var(--border);color:var(--text);
@@ -103,19 +97,16 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 #toast.err{border-color:#8a3a52;color:#ffc7d4}
 @media(max-width:390px){.grid{grid-template-columns:1fr}}
-
 .step-label{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;
   color:var(--accent-soft);margin:22px 0 8px;text-transform:uppercase;letter-spacing:0.5px}
 .step-label:first-of-type{margin-top:4px}
 .step-num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
   background:rgba(98,140,255,0.15);color:var(--accent);border-radius:50%;font-size:12px;font-weight:700}
-
 .side-toggle{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:6px 0}
 .side-btn{background:var(--field);color:var(--muted);border:2px solid transparent;
   padding:14px;font-size:15px;font-weight:700;border-radius:10px;cursor:pointer;transition:all .15s;margin:0}
 .side-btn[data-side="long"].active{background:rgba(77,221,172,0.12);color:var(--good);border-color:var(--good)}
 .side-btn[data-side="short"].active{background:rgba(255,137,151,0.12);color:#ff8997;border-color:#ff8997}
-
 .chip-row{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}
 .chip{flex:1 1 0;min-width:55px;padding:10px 4px;margin:0;background:var(--field);color:var(--text);
   border:1px solid var(--border);font-size:14px;font-weight:600;border-radius:9px;cursor:pointer;transition:all .12s}
@@ -125,36 +116,28 @@ th{color:var(--muted);font-weight:500;font-size:12px}
   background:rgba(98,140,255,0.08);color:var(--accent-soft);border-color:transparent}
 .chip.mini-chip.good{background:rgba(77,221,172,0.10);color:var(--good)}
 .chip.mini-chip.loss{background:rgba(255,137,151,0.10);color:#ff8997}
-
 .warning{background:rgba(243,196,108,0.08);border:1px solid rgba(243,196,108,0.35);
   color:var(--warn);padding:10px 12px;border-radius:9px;font-size:13px;margin:8px 0;line-height:1.45}
-
 .info-row{display:flex;justify-content:space-between;align-items:center;
   padding:10px 12px;background:rgba(98,140,255,0.06);border-radius:9px;margin:10px 0;font-size:14px}
-
 .hint{color:var(--muted);font-size:12px;margin:4px 0 8px;line-height:1.4}
 .hint.good{color:var(--good)}
 .hint.loss{color:#ff8997}
-
 .summary-table{width:100%;font-size:14px}
 .summary-table td{padding:10px 0;border-bottom:1px solid var(--border)}
 .summary-table tr:last-child td{border-bottom:none}
 .summary-table td:last-child{text-align:right}
-
 .account-bar{display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:14px;margin:14px 0}
 .account-bar #accountIcon{font-size:16px}
 .account-bar #accountText{flex:1}
-
 button.mini-ghost{width:auto;padding:6px 12px;margin:0;background:transparent;
   border:1px solid var(--border);color:var(--muted);font-size:12px;font-weight:500}
-
 details.advanced{padding:14px 16px}
 details.advanced summary{cursor:pointer;font-size:13px;list-style:none;user-select:none}
 details.advanced summary::-webkit-details-marker{display:none}
 details.advanced summary::before{content:'▸ ';display:inline-block;transition:transform .15s}
 details.advanced[open] summary::before{transform:rotate(90deg)}
 details.advanced[open] summary{margin-bottom:12px}
-
 .lev-slider-wrap{margin:14px 0 8px;padding:14px 12px 10px;
   background:rgba(98,140,255,0.05);border:1px solid var(--border);border-radius:12px}
 .lev-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
@@ -168,7 +151,6 @@ details.advanced[open] summary{margin-bottom:12px}
   background:rgba(77,221,172,0.15);color:var(--good)}
 .lev-display.risk-mid  ~ .lev-risk-tag{background:rgba(243,196,108,0.15);color:var(--warn)}
 .lev-display.risk-high ~ .lev-risk-tag{background:rgba(255,137,151,0.15);color:#ff8997}
-
 input[type="range"].lev-slider{-webkit-appearance:none;appearance:none;width:100%;height:8px;
   border-radius:4px;outline:none;padding:0;margin:8px 0 4px;border:none;
   background:linear-gradient(to right,
@@ -186,7 +168,6 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
   margin-top:2px;padding:0 4px}
 .lev-ticks span:nth-child(2){opacity:0.6}
 .lev-source{font-size:11px;color:var(--muted);margin-top:8px;text-align:center;font-style:italic}
-
 .tab-bar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0 6px;
   background:rgba(98,140,255,0.06);padding:5px;border-radius:12px;border:1px solid var(--border)}
 .tab-bar .tab{display:flex;align-items:center;justify-content:center;gap:6px;
@@ -196,16 +177,13 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .tab-bar .tab-ico{font-size:15px}
 .tab-pane{display:block}
 .tab-pane.hidden{display:none}
-
 .parsed-dot{display:inline-block;width:8px;height:8px;border-radius:50%;
   margin-left:6px;vertical-align:middle}
 .parsed-dot.ok{background:var(--good)}
 .parsed-dot.warn{background:var(--warn)}
 .parsed-dot.miss{background:#ff8997}
-
 .field-missing input,
 .field-missing select{border-color:rgba(255,137,151,0.55);background:rgba(255,137,151,0.06)}
-
 .risk-box{padding:14px;border-radius:12px;margin:12px 0;display:grid;
   grid-template-columns:1fr 1fr;gap:12px;background:rgba(98,140,255,0.06);border:1px solid var(--border)}
 .risk-box .risk-cell{text-align:center}
@@ -213,7 +191,6 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .risk-box .risk-value{font-size:20px;font-weight:800;margin-top:4px}
 .risk-box .risk-value.good{color:var(--good)}
 .risk-box .risk-value.loss{color:#ff8997}
-
 .rr-bar{margin:12px 0;padding:12px;background:rgba(98,140,255,0.04);
   border-radius:10px;border:1px solid var(--border)}
 .rr-bar .rr-label{font-size:12px;color:var(--muted);margin-bottom:8px;text-align:center}
@@ -222,7 +199,6 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .rr-bar .rr-reward{background:linear-gradient(90deg,rgba(77,221,172,.9),rgba(77,221,172,.5));transition:width .3s ease}
 .rr-bar .rr-legend{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:6px}
 .rr-bar .rr-ratio{text-align:center;font-size:15px;font-weight:700;margin-top:8px;color:var(--text)}
-
 .pos-card{background:rgba(98,140,255,0.05);border:1px solid var(--border);
   border-radius:12px;padding:14px;margin:10px 0;transition:border-color .15s}
 .pos-card.long{border-left:4px solid var(--good)}
@@ -245,11 +221,9 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .pos-close-btn{width:100%;padding:11px;background:rgba(199,81,97,0.12);color:#ff8997;
   border:1px solid rgba(199,81,97,0.4);border-radius:9px;font-weight:600;font-size:14px;margin:0;transition:all .15s}
 .pos-close-btn:active{background:rgba(199,81,97,0.25)}
-
 .act-summary{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .act-summary .card{margin:0;padding:14px}
 .act-summary .metric{font-size:22px}
-
 .history-card{display:flex;justify-content:space-between;align-items:center;
   padding:12px 0;border-bottom:1px solid var(--border);font-size:13px}
 .history-card:last-child{border-bottom:none}
@@ -262,62 +236,42 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .history-status.filled{background:rgba(77,221,172,0.12);color:var(--good)}
 .history-status.canceled{background:rgba(199,81,97,0.12);color:#ff8997}
 .history-pnl{text-align:right;font-weight:700;margin-left:10px;font-variant-numeric:tabular-nums}
-
-/* ── Token picker (searchable) ─────────────── */
 .token-picker{position:relative;margin:6px 0}
-.token-btn{
-  display:flex;align-items:center;gap:10px;width:100%;
+.token-btn{display:flex;align-items:center;gap:10px;width:100%;
   padding:14px;background:var(--field);color:var(--text);
   border:1px solid var(--border);border-radius:10px;
   font-size:15px;font-weight:600;margin:0;text-align:left;
-  cursor:pointer;transition:border-color .15s;
-}
+  cursor:pointer;transition:border-color .15s}
 .token-btn:active{filter:brightness(.95)}
 .token-btn-icon{font-size:14px;opacity:.65}
 .token-btn-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.token-btn-chevron{
-  opacity:.65;font-size:12px;transition:transform .15s;
-}
+.token-btn-chevron{opacity:.65;font-size:12px;transition:transform .15s}
 .token-picker.open .token-btn-chevron{transform:rotate(180deg)}
-.token-panel{
-  position:absolute;top:calc(100% + 6px);left:0;right:0;
+.token-panel{position:absolute;top:calc(100% + 6px);left:0;right:0;
   background:var(--card);border:1px solid var(--border);
   border-radius:12px;padding:10px;z-index:60;
   box-shadow:0 12px 32px rgba(0,0,0,.5);
-  max-height:380px;display:flex;flex-direction:column;
-}
-.token-search-input{
-  margin:0 0 8px 0;padding:12px;background:var(--field);color:var(--text);
-  border:1px solid var(--border);border-radius:9px;font-size:15px;
-  width:100%;
-}
+  max-height:380px;display:flex;flex-direction:column}
+.token-search-input{margin:0 0 8px 0;padding:12px;background:var(--field);color:var(--text);
+  border:1px solid var(--border);border-radius:9px;font-size:15px;width:100%}
 .token-search-input:focus{border-color:var(--accent);outline:none}
 .token-results{overflow-y:auto;flex:1;max-height:280px;-webkit-overflow-scrolling:touch}
-.token-result{
-  display:flex;justify-content:space-between;align-items:center;
+.token-result{display:flex;justify-content:space-between;align-items:center;
   padding:12px 10px;border-radius:8px;cursor:pointer;
-  font-size:14px;font-weight:500;
-  transition:background .1s;
-}
+  font-size:14px;font-weight:500;transition:background .1s}
 .token-result:active{background:rgba(98,140,255,0.15)}
-.token-result.selected{
-  background:rgba(98,140,255,0.15);color:var(--accent-soft);
-}
+.token-result.selected{background:rgba(98,140,255,0.15);color:var(--accent-soft)}
 .token-result-meta{font-size:11px;color:var(--muted);margin-left:8px;white-space:nowrap}
 .token-no-results{padding:22px;text-align:center;color:var(--muted);font-size:13px}
 .token-hint{padding:4px 10px 8px;font-size:11px;color:var(--muted);text-align:center}
-
-/* ── Auto trading sessions ─────────────────── */
-.session-mode{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:6px 0}
+.session-mode{display:grid;grid-template-columns:1fr;gap:8px;margin:6px 0}
 .session-mode button{padding:14px;background:var(--field);color:var(--muted);
   border:2px solid transparent;font-weight:700;border-radius:10px;margin:0;cursor:pointer;
   font-size:14px;width:auto;transition:all .15s}
 .session-mode button.active{background:rgba(98,140,255,0.15);color:var(--accent-soft);
   border-color:var(--accent)}
-.session-mode button:disabled{opacity:0.4;cursor:not-allowed}
 .dual{display:grid;grid-template-columns:1fr 130px;gap:8px;margin:6px 0;align-items:center}
 .dual input,.dual select{margin:0}
-
 .session-live{padding:18px;border-radius:14px;
   background:linear-gradient(135deg,rgba(98,140,255,0.14),rgba(98,140,255,0.04));
   border:1px solid rgba(98,140,255,0.35);margin:14px 0}
@@ -336,20 +290,17 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .session-stat{text-align:center;padding:10px 6px;background:rgba(0,0,0,0.18);border-radius:9px}
 .session-stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.3px}
 .session-stat-value{font-size:16px;font-weight:700;margin-top:3px}
-
 .session-history{padding:12px 0;border-bottom:1px solid var(--border);font-size:13px}
 .session-history:last-child{border-bottom:none}
 .session-history-row{display:flex;justify-content:space-between;align-items:center}
 .session-history-reason{font-size:11px;color:var(--muted);margin-top:3px}
 .session-history-pnl{font-weight:700;font-variant-numeric:tabular-nums;margin-left:8px}
 .session-history-date{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
-
 .market-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;
   background:rgba(98,140,255,0.12);color:var(--accent-soft);border-radius:999px;
   font-size:12px;font-weight:600;margin:3px 4px 3px 0}
 .market-chip .x{cursor:pointer;opacity:0.7;font-weight:700;padding:0 2px}
 .market-chip .x:active{opacity:1}
-
 .token-result.picked{background:rgba(77,221,172,0.15);color:var(--good)}
 .token-result.picked .token-result-meta{color:var(--good)}
 </style>
@@ -419,7 +370,6 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
     </button>
   </div>
 
-  <!-- ============ MANUAL INPUT TRADE ============ -->
   <div id="tab-manual" class="tab-pane">
     <div class="card">
       <h2>Paste a trade signal</h2>
@@ -484,10 +434,8 @@ SL @ 77,000"></textarea>
     </div>
   </div>
 
-  <!-- ============ AUTO TRADING ============ -->
   <div id="tab-auto" class="tab-pane hidden">
 
-    <!-- Start form (shown when no session is running) -->
     <div id="autoNoSession">
       <div class="card">
         <h2>Start a new session</h2>
@@ -496,11 +444,11 @@ SL @ 77,000"></textarea>
           when your target, max loss, safety floor, or time limit is reached.
         </p>
 
-        <div class="step-label"><span class="step-num">1</span> Mode</div>
+        <div class="step-label"><span class="step-num">1</span> Strategy</div>
         <div class="session-mode">
-          <button id="modeDay" class="active" onclick="autoSetMode('day_trading')">📊 Day trading</button>
-          <button id="modeScalp" disabled title="Coming soon">⚡ Scalping</button>
+          <button id="modeDay" class="active" disabled>📊 Daily pullback</button>
         </div>
+        <p class="hint">Buys pullbacks in daily uptrends, sells rallies in daily downtrends. 4h entries, 1D trend filter.</p>
 
         <div class="step-label"><span class="step-num">2</span> Duration</div>
         <div class="chip-row" id="durationChips">
@@ -545,7 +493,7 @@ SL @ 77,000"></textarea>
 
         <div class="step-label"><span class="step-num">6</span> Leverage</div>
         <input id="sessLeverage" inputmode="numeric" value="10" placeholder="10">
-        <p class="hint">Per-trade leverage. 5×–20× recommended for this strategy.</p>
+        <p class="hint">Per-trade leverage. 5×–20× recommended.</p>
 
         <div class="step-label"><span class="step-num">7</span> Markets</div>
         <div class="session-mode" style="grid-template-columns:1fr 1fr">
@@ -581,10 +529,8 @@ SL @ 77,000"></textarea>
       </div>
     </div>
 
-    <!-- Live session (shown when a session is running) -->
     <div id="autoHasSession" class="hidden"></div>
 
-    <!-- History -->
     <div class="card" style="margin-top:14px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <h2 style="margin:0">Session history</h2>
@@ -642,7 +588,6 @@ SL @ 77,000"></textarea>
 
     <div class="step-label"><span class="step-num">1</span> Direction</div>
 
-    <!-- Searchable token picker -->
     <div class="token-picker" id="futTokenPicker">
       <button type="button" class="token-btn" onclick="futToggleTokenSearch(event)">
         <span class="token-btn-icon">🔍</span>
@@ -803,9 +748,6 @@ SL @ 77,000"></textarea>
 <div id="toast"></div>
 
 <script>
-/* =========================================================
-   Bootstrap + shared helpers
-========================================================= */
 const tg = window.Telegram?.WebApp;
 tg?.ready?.();
 tg?.expand?.();
@@ -844,9 +786,6 @@ function escapeHtml(s) {
   })[c]);
 }
 
-/* =========================================================
-   Instruments cache + dynamic dropdowns
-========================================================= */
 let instrumentsCache = null;
 
 async function loadInstruments() {
@@ -869,16 +808,10 @@ async function populateSymbolSelects() {
   const optionsHtml = rows
     .map(r => `<option value="${r.instId}">${r.displayName || r.instId}</option>`)
     .join('');
-  const ids = ['parseSymbol'];
-  for (const id of ids) {
-    const sel = document.getElementById(id);
-    if (!sel) continue;
+  const sel = document.getElementById('parseSymbol');
+  if (sel) {
     const current = sel.value;
-    if (id === 'parseSymbol') {
-      sel.innerHTML = `<option value="">— pick —</option>${optionsHtml}`;
-    } else {
-      sel.innerHTML = optionsHtml;
-    }
+    sel.innerHTML = `<option value="">— pick —</option>${optionsHtml}`;
     if (current && Array.from(sel.options).some(o => o.value === current)) {
       sel.value = current;
     }
@@ -886,9 +819,6 @@ async function populateSymbolSelects() {
   futUpdateTokenLabel();
 }
 
-/* =========================================================
-   Searchable token picker
-========================================================= */
 function futUpdateTokenLabel() {
   const label = document.getElementById('futTokenLabel');
   const hidden = document.getElementById('futSymbol');
@@ -902,7 +832,6 @@ function futToggleTokenSearch(event) {
   const picker = document.getElementById('futTokenPicker');
   const panel  = document.getElementById('futTokenPanel');
   if (!picker || !panel) return;
-
   const isOpen = !panel.classList.contains('hidden');
   if (isOpen) {
     futCloseTokenSearch();
@@ -942,17 +871,14 @@ function futFilterTokenResults() {
   filtered = filtered.slice(0, 120);
 
   if (!filtered.length) {
-    list.innerHTML = `<div class="token-no-results">
-      No markets match <b>${escapeHtml(query)}</b>
-    </div>`;
+    list.innerHTML = `<div class="token-no-results">No markets match <b>${escapeHtml(query)}</b></div>`;
     return;
   }
 
   list.innerHTML = filtered.map(r => {
     const selected = r.instId === currentValue ? ' selected' : '';
     const lev = r.maxLeverage ? `${r.maxLeverage}× max` : '';
-    return `<div class="token-result${selected}"
-                 onclick="futSelectToken('${r.instId}')">
+    return `<div class="token-result${selected}" onclick="futSelectToken('${r.instId}')">
       <span>${escapeHtml(r.displayName || r.instId)}</span>
       <span class="token-result-meta">${escapeHtml(lev)}</span>
     </div>`;
@@ -968,17 +894,13 @@ function futSelectToken(instId) {
   futOnSymbolChange();
 }
 
-/* =========================================================
-   Navigation
-========================================================= */
 function go(id, btn) {
   if (!state.connected && id !== 'account') {
     toast('Connect an account first');
     id = 'account';
     btn = document.querySelector('.nav button[data-view="account"]');
   }
-  document.querySelectorAll('.view').forEach(v =>
-    v.classList.toggle('active', v.id === id));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === id));
   document.querySelectorAll('.nav button').forEach(b =>
     b.classList.toggle('active', b === btn || b.dataset.view === id));
   if (id === 'futures') futInit();
@@ -986,12 +908,8 @@ function go(id, btn) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-/* =========================================================
-   Dashboard / automation
-========================================================= */
 function render(d) {
   state.connected = !!d.connected;
-
   document.getElementById('connectForm').classList.toggle('hidden', state.connected);
   document.getElementById('accountInfo').classList.toggle('hidden', !state.connected);
   if (state.connected) {
@@ -1000,19 +918,16 @@ function render(d) {
     document.getElementById('accountProvider').textContent = `${provider} · ${env}`;
     document.getElementById('accountEnv').textContent = env;
   }
-
   document.getElementById('welcome').textContent =
     d.name ? `Welcome, ${d.name}` : 'Your trading space';
   document.getElementById('summary').textContent = state.connected
     ? `Your ${(d.provider || 'okx').toUpperCase()} ${d.environment || 'demo'} account is connected.`
     : 'Connect an OKX Demo account to get started.';
-
   const conn = document.getElementById('conn');
   conn.textContent = state.connected
     ? `${(d.provider || 'okx').toUpperCase()} ${(d.environment || 'demo').toUpperCase()}`
     : 'NOT CONNECTED';
   conn.className = `metric ${state.connected ? 'good' : 'warn'}`;
-
   const autoEl = document.getElementById('auto');
   const autoOn = !!d.automation?.enabled;
   autoEl.textContent = autoOn ? 'ACTIVE' : 'PAUSED';
@@ -1039,7 +954,6 @@ async function connect() {
   const secret = document.getElementById('secret').value.trim();
   const pass   = document.getElementById('passphrase').value.trim();
   if (!key || !secret || !pass) return toast('Fill in all three fields', true);
-
   const btn = document.getElementById('connectBtn');
   btn.disabled = true;
   btn.textContent = 'Validating…';
@@ -1081,9 +995,6 @@ async function kill() {
   } catch (e) { toast(e.message, true); }
 }
 
-/* =========================================================
-   Manual input — signal parser
-========================================================= */
 let futParsedPreview = null;
 
 const PARSER_KEYWORDS = new Set([
@@ -1102,15 +1013,10 @@ function futClearSignal() {
 }
 
 function parseTradeSignal(text) {
-  const out = {
-    symbol: null, side: null, leverage: null,
-    take_profit: null, stop_loss: null, margin: null
-  };
+  const out = { symbol: null, side: null, leverage: null, take_profit: null, stop_loss: null, margin: null };
   const t = ' ' + String(text || '') + ' ';
-
   if (/\b(short|sell|bearish)\b/i.test(t)) out.side = 'short';
   else if (/\b(long|buy|bullish)\b/i.test(t)) out.side = 'long';
-
   const pairMatch = t.match(/\b([A-Z][A-Z0-9]{1,11})\s*[\/\-]?\s*(USDT|USDC|USD)\b/i);
   if (pairMatch) {
     out.symbol = `${pairMatch[1].toUpperCase()}-${pairMatch[2].toUpperCase()}-SWAP`;
@@ -1123,7 +1029,6 @@ function parseTradeSignal(text) {
       }
     }
   }
-
   const parseNum = raw => {
     if (!raw) return null;
     let s = String(raw).replace(/[$,\s]/g, '');
@@ -1134,7 +1039,6 @@ function parseTradeSignal(text) {
     if (!isFinite(n) || n <= 0) return null;
     return n * mult;
   };
-
   let m;
   m = t.match(/\b(?:leverage|lev)\s*[:=@\-]?\s*(\d+(?:\.\d+)?)\s*[x×]?/i);
   if (m) out.leverage = Math.round(parseNum(m[1]));
@@ -1146,51 +1050,37 @@ function parseTradeSignal(text) {
     m = t.match(/[x×]\s*(\d+(?:\.\d+)?)/i);
     if (m) out.leverage = Math.round(parseNum(m[1]));
   }
-
   m = t.match(/\b(?:take[\s-]?profit|tp|target|t\/p)\b\s*(?:[:=@]|at|is|of)?\s*\$?\s*([\d,]+(?:\.\d+)?\s*[kmKM]?)/i);
   if (m) out.take_profit = parseNum(m[1]);
-
   m = t.match(/\b(?:stop[\s-]?loss|stoploss|stoplose|sl|s\/l)\b\s*(?:[:=@]|at|is|of)?\s*\$?\s*([\d,]+(?:\.\d+)?\s*[kmKM]?)/i);
   if (m) out.stop_loss = parseNum(m[1]);
-
   m = t.match(/\b(?:margin|size|invest|amount)\s*[:=@]?\s*\$?\s*([\d,]+(?:\.\d+)?\s*[kmKM]?)/i);
   if (m) out.margin = parseNum(m[1]);
-
   return out;
 }
 
 async function futAnalyzeSignal() {
   const text = document.getElementById('signalInput').value;
   if (!text.trim()) return toast('Paste a signal first', true);
-
   await populateSymbolSelects();
-
   const parsed = parseTradeSignal(text);
   const sel = document.getElementById('parseSymbol');
-
   if (parsed.symbol && !Array.from(sel.options).some(o => o.value === parsed.symbol)) {
     sel.add(new Option(parsed.symbol, parsed.symbol));
   }
-
   sel.value = parsed.symbol || '';
   document.getElementById('parseSide').value     = parsed.side || '';
   document.getElementById('parseLeverage').value = parsed.leverage != null ? parsed.leverage : '';
   document.getElementById('parseMargin').value   = parsed.margin != null ? parsed.margin : '';
   document.getElementById('parseTp').value       = parsed.take_profit != null ? parsed.take_profit : '';
   document.getElementById('parseSl').value       = parsed.stop_loss != null ? parsed.stop_loss : '';
-
   document.getElementById('parsedCard').classList.remove('hidden');
   document.getElementById('manualResult').classList.add('hidden');
   document.getElementById('manualPlaceWrap').classList.add('hidden');
   futParsedPreview = null;
-
   const anyFound = parsed.symbol || parsed.side || parsed.leverage || parsed.take_profit || parsed.stop_loss;
-  if (!anyFound) {
-    toast('Could not read any values from that text', true);
-  } else {
-    toast('Signal parsed — check the fields below');
-  }
-
+  if (!anyFound) toast('Could not read any values from that text', true);
+  else toast('Signal parsed — check the fields below');
   futParseRevalidate();
   document.getElementById('parsedCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -1208,7 +1098,6 @@ function futReadParsedForm() {
 
 function futParseRevalidate() {
   const v = futReadParsedForm();
-
   const setDot = (id, ok) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -1219,14 +1108,12 @@ function futParseRevalidate() {
     if (!el) return;
     el.classList.toggle('field-missing', missing);
   };
-
   setDot('dot-symbol', !!v.symbol);  setMissing('wrap-symbol', !v.symbol);
   setDot('dot-side', !!v.side);      setMissing('wrap-side', !v.side);
   setDot('dot-lev', !!v.leverage);   setMissing('wrap-lev', !v.leverage);
   setDot('dot-margin', !!v.margin);  setMissing('wrap-margin', !v.margin);
   setDot('dot-tp', !!v.tp);          setMissing('wrap-tp', !v.tp);
   setDot('dot-sl', !!v.sl);          setMissing('wrap-sl', !v.sl);
-
   const missing = [];
   if (!v.symbol)   missing.push('market');
   if (!v.side)     missing.push('direction');
@@ -1234,7 +1121,6 @@ function futParseRevalidate() {
   if (!v.margin)   missing.push('margin');
   if (!v.tp)       missing.push('take profit price');
   if (!v.sl)       missing.push('stop loss price');
-
   const warn = document.getElementById('parseWarnings');
   if (missing.length) {
     warn.textContent = `Still need: ${missing.join(', ')}.`;
@@ -1251,23 +1137,14 @@ async function futParsePreview() {
   if (!v.leverage) return toast('Enter leverage', true);
   if (!v.margin)   return toast('Enter margin in USDT', true);
   if (!v.tp || !v.sl) return toast('Enter both TP and SL prices', true);
-
   try {
     const d = await api('/api/futures/preview', {
       method: 'POST',
-      body: JSON.stringify({
-        symbol: v.symbol,
-        side: v.side,
-        leverage: v.leverage,
-        margin_usdt: v.margin
-      })
+      body: JSON.stringify({ symbol: v.symbol, side: v.side, leverage: v.leverage, margin_usdt: v.margin })
     });
-
     futParsedPreview = { ...v, previewData: d };
     renderManualPreview(v, d);
-  } catch (e) {
-    toast(e.message, true);
-  }
+  } catch (e) { toast(e.message, true); }
 }
 
 function renderManualPreview(v, d) {
@@ -1276,10 +1153,8 @@ function renderManualPreview(v, d) {
   const available = parseFloat(d.available_usdt);
   const marginPct = (v.margin / available * 100).toFixed(1);
   const displaySymbol = String(v.symbol).replace('-USDT-SWAP', '').replace('-SWAP', '');
-
   const wrongSideTp = v.side === 'long' ? v.tp <= entry : v.tp >= entry;
   const wrongSideSl = v.side === 'long' ? v.sl >= entry : v.sl <= entry;
-
   if (wrongSideTp || wrongSideSl) {
     const problems = [];
     if (wrongSideTp) problems.push(`take profit must be ${v.side === 'long' ? 'above' : 'below'} $${entry.toFixed(2)}`);
@@ -1290,35 +1165,26 @@ function renderManualPreview(v, d) {
       <h2>⚠️ Cannot preview this trade</h2>
       <p class="muted">Current ${displaySymbol} price is <b>$${entry.toFixed(2)}</b>.</p>
       <div class="warning">${problems.join('<br>')}</div>
-      <p class="muted" style="font-size:13px">
-        Edit the values above and tap <b>Show trade preview</b> again.
-      </p>
+      <p class="muted" style="font-size:13px">Edit the values above and tap <b>Show trade preview</b> again.</p>
     `;
     document.getElementById('manualPlaceWrap').classList.add('hidden');
     res.scrollIntoView({ behavior: 'smooth', block: 'start' });
     return;
   }
-
   const tpMovePct = v.side === 'long' ? (v.tp / entry - 1) * 100 : (1 - v.tp / entry) * 100;
   const slMovePct = v.side === 'long' ? (1 - v.sl / entry) * 100 : (v.sl / entry - 1) * 100;
   const tpProfit = notional * (tpMovePct / 100);
   const slLoss   = notional * (slMovePct / 100);
-
   const riskReward = slLoss > 0 ? (tpProfit / slLoss) : null;
   const rrText = riskReward != null ? `1 : ${riskReward.toFixed(2)}` : '—';
-
   const total = tpProfit + slLoss;
   const riskPct = total > 0 ? (slLoss / total * 100) : 50;
   const rewardPct = 100 - riskPct;
-
   const res = document.getElementById('manualResult');
   res.classList.remove('hidden');
   res.innerHTML = `
     <h2>Trade preview</h2>
-    <p class="muted" style="font-size:13px;margin-top:0">
-      Nothing has been placed yet. Review, then confirm at the bottom.
-    </p>
-
+    <p class="muted" style="font-size:13px;margin-top:0">Nothing has been placed yet. Review, then confirm at the bottom.</p>
     <table class="summary-table">
       <tr><td class="muted">Market</td><td><b>${escapeHtml(displaySymbol)}</b></td></tr>
       <tr><td class="muted">Direction</td><td><b class="${v.side === 'long' ? 'good' : 'loss'}">${v.side === 'long' ? '↑ Long' : '↓ Short'}</b></td></tr>
@@ -1327,7 +1193,6 @@ function renderManualPreview(v, d) {
       <tr><td class="muted">Margin</td><td>$${v.margin.toFixed(2)} <span class="muted">(${marginPct}% of balance)</span></td></tr>
       <tr><td class="muted">Position size</td><td>$${notional.toFixed(2)}</td></tr>
     </table>
-
     <div class="risk-box">
       <div class="risk-cell">
         <div class="risk-label">Take profit hit</div>
@@ -1340,7 +1205,6 @@ function renderManualPreview(v, d) {
         <div class="hint loss">-${slMovePct.toFixed(2)}% · at $${v.sl.toFixed(2)}</div>
       </div>
     </div>
-
     <div class="rr-bar">
       <div class="rr-label">Risk / reward</div>
       <div class="rr-track">
@@ -1354,7 +1218,6 @@ function renderManualPreview(v, d) {
       <div class="rr-ratio">R : R  =  ${rrText}</div>
     </div>
   `;
-
   document.getElementById('manualPlaceWrap').classList.remove('hidden');
   res.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -1362,28 +1225,19 @@ function renderManualPreview(v, d) {
 async function futManualPlace() {
   if (!futParsedPreview) return toast('Preview the trade first', true);
   const v = futParsedPreview;
-
   if (!confirm(
     `Place ONE OKX DEMO ${v.side.toUpperCase()} order?\n\n` +
     `${v.symbol} · ${v.leverage}× · margin $${v.margin}\n` +
-    `TP $${v.tp.toFixed(2)} · SL $${v.sl.toFixed(2)}\n\n` +
-    `This uses Demo money only.`
+    `TP $${v.tp.toFixed(2)} · SL $${v.sl.toFixed(2)}\n\nThis uses Demo money only.`
   )) return;
-
   if (!futOrderKey) futOrderKey = crypto.randomUUID().replaceAll('-', '').slice(0, 28);
-
   try {
     const d = await api('/api/futures/demo-order', {
       method: 'POST',
       body: JSON.stringify({
-        symbol: v.symbol,
-        side: v.side,
-        leverage: v.leverage,
-        margin_usdt: v.margin,
-        take_profit: v.tp,
-        stop_loss: v.sl,
-        client_order_id: futOrderKey,
-        confirmation: 'PLACE_DEMO_ORDER'
+        symbol: v.symbol, side: v.side, leverage: v.leverage,
+        margin_usdt: v.margin, take_profit: v.tp, stop_loss: v.sl,
+        client_order_id: futOrderKey, confirmation: 'PLACE_DEMO_ORDER'
       })
     });
     futOrderKey = '';
@@ -1391,9 +1245,7 @@ async function futManualPlace() {
       <h2>✅ Demo order accepted</h2>
       <p>Order ID: <b>${d.order_id}</b></p>
       <p>Status: <b>${d.status}</b></p>
-      <p class="muted" style="font-size:13px">
-        A confirmation was sent to your Telegram chat. Open <b>Activity</b> to track it.
-      </p>
+      <p class="muted" style="font-size:13px">A confirmation was sent to your Telegram chat. Open <b>Activity</b> to track it.</p>
     `;
     document.getElementById('manualPlaceWrap').classList.add('hidden');
     toast('Demo order accepted');
@@ -1401,9 +1253,6 @@ async function futManualPlace() {
   } catch (e) { toast(e.message, true); }
 }
 
-/* =========================================================
-   Shared WebSocket feed + portfolio refresh
-========================================================= */
 let feedReady = false;
 let futSocket = null, futKeepalive = null, futRetry = null;
 let portfolioBusy = false;
@@ -1444,13 +1293,10 @@ function activityInit() {
 function futConnectFeed() {
   clearTimeout(futRetry);
   if (!tg?.initData) return;
-  if (futSocket?.readyState === WebSocket.OPEN ||
-      futSocket?.readyState === WebSocket.CONNECTING) return;
-
+  if (futSocket?.readyState === WebSocket.OPEN || futSocket?.readyState === WebSocket.CONNECTING) return;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const stateEl = fut$('feedState');
   if (stateEl) stateEl.textContent = 'Connecting…';
-
   try {
     futSocket = new WebSocket(`${proto}://${location.host}/ws/futures`);
     futSocket.onopen = () => {
@@ -1507,23 +1353,18 @@ function futSubscribeTicker() {
 function futShowPrice(value) {
   const n = parseFloat(value);
   if (!isFinite(n)) return;
-
   futPrevPrice = futLatestPrice;
   futLatestPrice = n;
   futLastTick = Date.now();
-
   const el = fut$('livePrice');
   if (el) {
-    el.textContent = `$${n.toLocaleString('en-US', {
-      minimumFractionDigits: 2, maximumFractionDigits: 6
-    })}`;
+    el.textContent = `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
     if (futPrevPrice != null && n !== futPrevPrice) {
       el.classList.remove('flash-up', 'flash-down');
       void el.offsetWidth;
       el.classList.add(n > futPrevPrice ? 'flash-up' : 'flash-down');
     }
   }
-
   fut$('priceSymbol').textContent = futInstrument();
   futUpdateProtection();
   updateFeedAge();
@@ -1538,35 +1379,22 @@ function updateFeedAge() {
     return;
   }
   const ageS = (Date.now() - futLastTick) / 1000;
-
   if (ageS < 2) {
     meta.textContent = 'Updated just now';
     meta.className = 'feed-meta';
-    if (fut$('feedDot')) {
-      fut$('feedDot').classList.remove('stale', 'dead');
-      fut$('feedDot').classList.add('on');
-    }
+    if (fut$('feedDot')) { fut$('feedDot').classList.remove('stale', 'dead'); fut$('feedDot').classList.add('on'); }
   } else if (ageS < 5) {
     meta.textContent = `Updated ${ageS.toFixed(1)}s ago`;
     meta.className = 'feed-meta';
-    if (fut$('feedDot')) {
-      fut$('feedDot').classList.remove('stale', 'dead');
-      fut$('feedDot').classList.add('on');
-    }
+    if (fut$('feedDot')) { fut$('feedDot').classList.remove('stale', 'dead'); fut$('feedDot').classList.add('on'); }
   } else if (ageS < 12) {
     meta.textContent = `Delayed — last tick ${ageS.toFixed(0)}s ago`;
     meta.className = 'feed-meta stale';
-    if (fut$('feedDot')) {
-      fut$('feedDot').classList.remove('on', 'dead');
-      fut$('feedDot').classList.add('stale');
-    }
+    if (fut$('feedDot')) { fut$('feedDot').classList.remove('on', 'dead'); fut$('feedDot').classList.add('stale'); }
   } else {
     meta.textContent = `Stale — last tick ${ageS.toFixed(0)}s ago. Auto-recovering…`;
     meta.className = 'feed-meta dead';
-    if (fut$('feedDot')) {
-      fut$('feedDot').classList.remove('on', 'stale');
-      fut$('feedDot').classList.add('dead');
-    }
+    if (fut$('feedDot')) { fut$('feedDot').classList.remove('on', 'stale'); fut$('feedDot').classList.add('dead'); }
     if (futSocket) {
       try { futSocket.close(); } catch {}
       futSocket = null;
@@ -1577,10 +1405,7 @@ function updateFeedAge() {
 }
 
 function futForceReconnect() {
-  if (futSocket) {
-    try { futSocket.close(); } catch {}
-    futSocket = null;
-  }
+  if (futSocket) { try { futSocket.close(); } catch {} futSocket = null; }
   futLastTick = 0;
   futPrevPrice = null;
   futSubscribeTicker();
@@ -1588,9 +1413,6 @@ function futForceReconnect() {
   toast('Reconnecting to price feed…');
 }
 
-/* =========================================================
-   Futures — account readiness
-========================================================= */
 async function futAccount() {
   const icon = fut$('accountIcon');
   const text = fut$('accountText');
@@ -1626,9 +1448,6 @@ async function futSetMode() {
   } catch (e) { toast(e.message, true); }
 }
 
-/* =========================================================
-   Futures — leverage slider
-========================================================= */
 async function futLoadLeverageOptions() {
   try {
     const d = await api('/api/futures/leverage-options', {
@@ -1636,30 +1455,23 @@ async function futLoadLeverageOptions() {
       body: JSON.stringify({ symbol: fut$('futSymbol').value })
     });
     futInstrumentMeta = d;
-
     futLevMin  = Math.max(1, parseInt(d.min_leverage) || 1);
     futLevMax  = Math.max(futLevMin, parseInt(d.max_leverage) || 1);
     futLevStep = Math.max(1, parseInt(d.leverage_step) || 1);
-
     const slider = fut$('levSlider');
     slider.min = futLevMin;
     slider.max = futLevMax;
     slider.step = futLevStep;
-
     fut$('levMinLabel').textContent = `${futLevMin}×`;
     fut$('levMaxLabel').textContent = `${futLevMax}×`;
     const mid = Math.round((futLevMin + futLevMax) / 2);
     fut$('levMidLabel').textContent = `${mid}×`;
-
-    fut$('levSource').textContent =
-      `${d.instrument} supports ${futLevMin}× – ${futLevMax}× · loaded live from OKX`;
-
+    fut$('levSource').textContent = `${d.instrument} supports ${futLevMin}× – ${futLevMax}× · loaded live from OKX`;
     const sel = fut$('leverage');
     sel.innerHTML = '';
     for (let x = futLevMin; x <= futLevMax; x += futLevStep) {
       sel.add(new Option(`${x}×`, x));
     }
-
     const starting = Math.min(5, futLevMax);
     sel.value = starting;
     slider.value = starting;
@@ -1686,9 +1498,7 @@ function futSetLeverage(v) {
   }
   const sel = fut$('leverage');
   let matched = false;
-  for (const opt of sel.options) {
-    if (+opt.value === v) { sel.value = v; matched = true; break; }
-  }
+  for (const opt of sel.options) { if (+opt.value === v) { sel.value = v; matched = true; break; } }
   if (!matched) { sel.add(new Option(`${v}×`, v)); sel.value = v; }
   slider.value = v;
   futUpdateSliderUI(v);
@@ -1743,9 +1553,6 @@ function futUpdateLeverageWarning() {
   }
 }
 
-/* =========================================================
-   Futures — form input handlers
-========================================================= */
 function futOnSymbolChange() {
   futSubscribeTicker();
   futLoadLeverageOptions();
@@ -1763,10 +1570,7 @@ function futSetSide(side) {
   fut$('sideHint').textContent = side === 'long'
     ? 'Long: you profit when price goes up.'
     : 'Short: you profit when price goes down.';
-  if (changed && !futProtectionTouched) {
-    fut$('tp').value = '';
-    fut$('sl').value = '';
-  }
+  if (changed && !futProtectionTouched) { fut$('tp').value = ''; fut$('sl').value = ''; }
   futUpdateProtection();
 }
 
@@ -1792,9 +1596,7 @@ function futQuickTp(pct) {
   const entry = parseFloat(futLatestPrice);
   if (!entry) return toast('Waiting for live price…', true);
   const side = fut$('side').value;
-  const price = side === 'long'
-    ? entry * (1 + pct / 100)
-    : entry * (1 - pct / 100);
+  const price = side === 'long' ? entry * (1 + pct / 100) : entry * (1 - pct / 100);
   fut$('tp').value = price.toFixed(2);
   futProtectionTouched = true;
   futUpdateProtection();
@@ -1804,9 +1606,7 @@ function futQuickSl(pct) {
   const entry = parseFloat(futLatestPrice);
   if (!entry) return toast('Waiting for live price…', true);
   const side = fut$('side').value;
-  const price = side === 'long'
-    ? entry * (1 - pct / 100)
-    : entry * (1 + pct / 100);
+  const price = side === 'long' ? entry * (1 - pct / 100) : entry * (1 + pct / 100);
   fut$('sl').value = price.toFixed(2);
   futProtectionTouched = true;
   futUpdateProtection();
@@ -1818,22 +1618,14 @@ function futUpdateProtection() {
   const margin = parseFloat(fut$('margin').value) || 0;
   const leverage = parseInt(fut$('levSlider').value) || 1;
   const notional = margin * leverage;
-
   const tpEl = fut$('tpProfit');
   const slEl = fut$('slLoss');
-
   if (entry && !futProtectionTouched) {
-    if (!fut$('tp').value) {
-      fut$('tp').value = (side === 'long' ? entry * 1.02 : entry * 0.98).toFixed(2);
-    }
-    if (!fut$('sl').value) {
-      fut$('sl').value = (side === 'long' ? entry * 0.99 : entry * 1.01).toFixed(2);
-    }
+    if (!fut$('tp').value) fut$('tp').value = (side === 'long' ? entry * 1.02 : entry * 0.98).toFixed(2);
+    if (!fut$('sl').value) fut$('sl').value = (side === 'long' ? entry * 0.99 : entry * 1.01).toFixed(2);
   }
-
   const tp = parseFloat(fut$('tp').value);
   const sl = parseFloat(fut$('sl').value);
-
   if (!entry) {
     tpEl.className = 'hint good';
     tpEl.textContent = 'Waiting for live price…';
@@ -1841,7 +1633,6 @@ function futUpdateProtection() {
     slEl.textContent = 'Waiting for live price…';
     return;
   }
-
   if (tp) {
     const tpPct = side === 'long' ? (tp / entry - 1) * 100 : (1 - tp / entry) * 100;
     const tpPnl = notional * (tpPct / 100);
@@ -1860,7 +1651,6 @@ function futUpdateProtection() {
     tpEl.className = 'hint good';
     tpEl.textContent = 'Enter a price above the market';
   }
-
   if (sl) {
     const slPct = side === 'long' ? (1 - sl / entry) * 100 : (sl / entry - 1) * 100;
     const slLoss = notional * (slPct / 100);
@@ -1881,61 +1671,39 @@ function futUpdateProtection() {
   }
 }
 
-/* =========================================================
-   Futures — preview + place
-========================================================= */
 async function futPreview() {
   const margin = parseFloat(fut$('margin').value) || 0;
   const entry = parseFloat(futLatestPrice);
   const side = fut$('side').value;
   const tp = parseFloat(fut$('tp').value);
   const sl = parseFloat(fut$('sl').value);
-
   if (!margin) return toast('Enter a margin amount first', true);
   if (!entry) return toast('Waiting for live price…', true);
   if (!tp || !sl) return toast('Enter take profit and stop loss prices', true);
-
-  if (side === 'long' && !(sl < entry && entry < tp)) {
-    return toast('For a long: SL below and TP above current price', true);
-  }
-  if (side === 'short' && !(tp < entry && entry < sl)) {
-    return toast('For a short: TP below and SL above current price', true);
-  }
-
+  if (side === 'long' && !(sl < entry && entry < tp)) return toast('For a long: SL below and TP above current price', true);
+  if (side === 'short' && !(tp < entry && entry < sl)) return toast('For a short: TP below and SL above current price', true);
   try {
     const d = await api('/api/futures/preview', {
       method: 'POST',
-      body: JSON.stringify({
-        symbol: fut$('futSymbol').value,
-        side,
-        leverage: parseInt(fut$('levSlider').value),
-        margin_usdt: fut$('margin').value
-      })
+      body: JSON.stringify({ symbol: fut$('futSymbol').value, side, leverage: parseInt(fut$('levSlider').value), margin_usdt: fut$('margin').value })
     });
-
     fut$('protection').classList.remove('hidden');
     const res = fut$('futResult');
     res.classList.remove('hidden');
-
     const symbol = fut$('futSymbol').value;
     const displaySymbol = symbol.replace('-USDT-SWAP', '').replace('-SWAP', '');
     const lev = parseInt(fut$('levSlider').value);
     const marketPrice = parseFloat(d.mark_price);
     const notional = parseFloat(d.estimated_notional_usdt);
-
     const tpPct = side === 'long' ? (tp / marketPrice - 1) * 100 : (1 - tp / marketPrice) * 100;
     const slPct = side === 'long' ? (1 - sl / marketPrice) * 100 : (sl / marketPrice - 1) * 100;
     const tpPnl = notional * (tpPct / 100);
     const slPnl = notional * (slPct / 100);
-
     const available = parseFloat(d.available_usdt);
     const marginPct = (margin / available * 100).toFixed(1);
-
     res.innerHTML = `
       <h2>Order summary</h2>
-      <p class="muted" style="font-size:13px;margin-top:0">
-        Nothing has been placed yet. Review, then scroll down to <b>Place Demo order</b>.
-      </p>
+      <p class="muted" style="font-size:13px;margin-top:0">Nothing has been placed yet. Review, then scroll down to <b>Place Demo order</b>.</p>
       <table class="summary-table">
         <tr><td class="muted">Market</td><td><b>${escapeHtml(displaySymbol)}</b></td></tr>
         <tr><td class="muted">Direction</td><td><b class="${side === 'long' ? 'good' : 'loss'}">${side === 'long' ? '↑ Long' : '↓ Short'}</b></td></tr>
@@ -1956,51 +1724,34 @@ async function futPlace() {
   const side = fut$('side').value;
   const tp = parseFloat(fut$('tp').value);
   const sl = parseFloat(fut$('sl').value);
-
   if (!tp || !sl) return toast('Set take profit and stop loss prices first', true);
   if (entry) {
-    if (side === 'long' && !(sl < entry && entry < tp)) {
-      return toast('For a long: SL below and TP above current price', true);
-    }
-    if (side === 'short' && !(tp < entry && entry < sl)) {
-      return toast('For a short: TP below and SL above current price', true);
-    }
+    if (side === 'long' && !(sl < entry && entry < tp)) return toast('For a long: SL below and TP above current price', true);
+    if (side === 'short' && !(tp < entry && entry < sl)) return toast('For a short: TP below and SL above current price', true);
   }
-
   if (!futOrderKey) futOrderKey = crypto.randomUUID().replaceAll('-', '').slice(0, 28);
-
   const symbol = fut$('futSymbol').value;
   const margin = fut$('margin').value;
   const leverage = parseInt(fut$('levSlider').value);
-
   if (!confirm(
     `Place ONE OKX DEMO ${side.toUpperCase()} order?\n\n` +
     `${symbol} · ${leverage}× · margin $${margin}\n` +
-    `TP $${tp.toFixed(2)} · SL $${sl.toFixed(2)}\n\n` +
-    `This uses Demo money only.`
+    `TP $${tp.toFixed(2)} · SL $${sl.toFixed(2)}\n\nThis uses Demo money only.`
   )) return;
-
   try {
     const d = await api('/api/futures/demo-order', {
       method: 'POST',
       body: JSON.stringify({
-        symbol,
-        side,
-        leverage,
-        margin_usdt: margin,
-        take_profit: tp,
-        stop_loss: sl,
-        client_order_id: futOrderKey,
-        confirmation: 'PLACE_DEMO_ORDER'
+        symbol, side, leverage, margin_usdt: margin,
+        take_profit: tp, stop_loss: sl,
+        client_order_id: futOrderKey, confirmation: 'PLACE_DEMO_ORDER'
       })
     });
     fut$('futResult').innerHTML = `
       <h2>✅ Demo order accepted</h2>
       <p>Order ID: <b>${d.order_id}</b></p>
       <p>Status: <b>${d.status}</b></p>
-      <p class="muted" style="font-size:13px">
-        Check OKX Demo Trading to see it live. A confirmation was also sent to your Telegram chat.
-      </p>
+      <p class="muted" style="font-size:13px">Check OKX Demo Trading to see it live. A confirmation was also sent to your Telegram chat.</p>
     `;
     futOrderKey = '';
     refreshPortfolio();
@@ -2010,27 +1761,17 @@ async function futPlace() {
 
 async function futClosePosition(inst, side) {
   const pretty = String(inst).replace('-USDT-SWAP', '').replace('-SWAP', '');
-  if (!confirm(
-    `Close the entire ${side.toUpperCase()} position for ${pretty} at market?\n\n` +
-    `OKX DEMO only. This cannot be undone.`
-  )) return;
+  if (!confirm(`Close the entire ${side.toUpperCase()} position for ${pretty} at market?\n\nOKX DEMO only. This cannot be undone.`)) return;
   try {
     const d = await api('/api/futures/close-position', {
       method: 'POST',
-      body: JSON.stringify({
-        instrument: inst,
-        position_side: side,
-        confirmation: 'CLOSE_DEMO_POSITION'
-      })
+      body: JSON.stringify({ instrument: inst, position_side: side, confirmation: 'CLOSE_DEMO_POSITION' })
     });
     toast(`Close accepted · P&L: $${Number(d.realized_pnl_usdt || 0).toFixed(2)}`);
     refreshPortfolio();
   } catch (e) { toast(e.message, true); }
 }
 
-/* =========================================================
-   Portfolio rendering
-========================================================= */
 function fmtPrice(v) {
   const n = Number(v || 0);
   if (n >= 1000) return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -2047,9 +1788,7 @@ function approxPnlPct(pos) {
   const mark  = Number(pos.mark_price || 0);
   const lev   = Number(pos.leverage || 1);
   if (!entry || !mark) return null;
-  const move = pos.side === 'short'
-    ? (entry - mark) / entry
-    : (mark - entry) / entry;
+  const move = pos.side === 'short' ? (entry - mark) / entry : (mark - entry) / entry;
   return move * lev * 100;
 }
 
@@ -2060,7 +1799,6 @@ async function refreshPortfolio() {
     const d = await api('/api/portfolio');
     const positions = d.active_positions || [];
     const historyRows = d.bot_trade_history || [];
-
     renderFuturesPositions(positions, historyRows);
     renderActivitySummary(positions);
     renderActivityPositions(positions);
@@ -2078,42 +1816,30 @@ async function refreshPortfolio() {
 function renderFuturesPositions(positions, historyRows) {
   const el = document.getElementById('portfolioOutput');
   if (!el) return;
-
   const active = positions.length
     ? `<table>
         <tr><th>Market</th><th>Live P&amp;L</th><th></th></tr>
         ${positions.map(x => `<tr>
           <td><b>${escapeHtml(prettySymbol(x.instrument))}</b>
-            <span class="${x.side === 'long' ? 'good' : 'loss'}">
-              ${x.side === 'long' ? '↑' : '↓'} ${x.side}
-            </span>
-            <br><span class="muted" style="font-size:12px">
-              ${x.leverage}× · entry ${fmtPrice(x.entry_price)}
-              · now ${fmtPrice(x.mark_price)}
-            </span>
+            <span class="${x.side === 'long' ? 'good' : 'loss'}">${x.side === 'long' ? '↑' : '↓'} ${x.side}</span>
+            <br><span class="muted" style="font-size:12px">${x.leverage}× · entry ${fmtPrice(x.entry_price)} · now ${fmtPrice(x.mark_price)}</span>
           </td>
           <td>${futPnl(x.unrealized_pnl)}</td>
           <td><button class="mini" onclick="futClosePosition('${x.instrument}','${x.side}')">Close</button></td>
         </tr>`).join('')}
       </table>`
     : '<div class="empty">No open Demo positions.</div>';
-
   const hist = historyRows.length
     ? `<table>
         <tr><th>Trade</th><th>Status</th><th>Realized P&amp;L</th></tr>
         ${historyRows.slice(0, 10).map(x => `<tr>
           <td>${escapeHtml(prettySymbol(x.symbol))}<br><span class="muted">${escapeHtml(x.side)}</span></td>
-          <td>${escapeHtml(x.status)}<br>
-            <span class="muted" style="font-size:12px">${fmtPrice(x.fill_price)}</span>
-          </td>
+          <td>${escapeHtml(x.status)}<br><span class="muted" style="font-size:12px">${fmtPrice(x.fill_price)}</span></td>
           <td>${futPnl(x.realized_pnl)}</td>
         </tr>`).join('')}
       </table>`
     : '<div class="empty">No bot-originated orders yet.</div>';
-
-  el.innerHTML =
-    `<h3 style="margin-top:0">Open positions (${positions.length})</h3>${active}
-     <h3>Recent bot trades</h3>${hist}`;
+  el.innerHTML = `<h3 style="margin-top:0">Open positions (${positions.length})</h3>${active}<h3>Recent bot trades</h3>${hist}`;
 }
 
 function futPnl(v) {
@@ -2126,9 +1852,7 @@ function renderActivitySummary(positions) {
   const countEl = document.getElementById('actPosCount');
   const pnlEl   = document.getElementById('actPnlTotal');
   if (!countEl || !pnlEl) return;
-
   countEl.textContent = positions.length;
-
   const total = positions.reduce((sum, p) => sum + Number(p.unrealized_pnl || 0), 0);
   const sign  = total > 0 ? '+' : (total < 0 ? '-' : '');
   pnlEl.textContent = `${sign}$${Math.abs(total).toFixed(2)}`;
@@ -2138,16 +1862,10 @@ function renderActivitySummary(positions) {
 function renderActivityPositions(positions) {
   const el = document.getElementById('activityPositions');
   if (!el) return;
-
   if (!positions.length) {
-    el.innerHTML = `
-      <div class="empty">
-        No open positions right now.<br>
-        <span style="font-size:12px">Open a trade from Futures or Automate → Manual input.</span>
-      </div>`;
+    el.innerHTML = `<div class="empty">No open positions right now.<br><span style="font-size:12px">Open a trade from Futures or Automate → Manual input trade.</span></div>`;
     return;
   }
-
   el.innerHTML = positions.map(x => {
     const sideClass = x.side === 'short' ? 'short' : 'long';
     const sideLabel = x.side === 'short' ? '↓ Short' : '↑ Long';
@@ -2155,51 +1873,24 @@ function renderActivityPositions(positions) {
     const pnlSign = pnl > 0 ? '+' : (pnl < 0 ? '-' : '');
     const pnlClass = pnl > 0 ? 'good' : pnl < 0 ? 'loss' : '';
     const pct = approxPnlPct(x);
-    const pctText = pct == null
-      ? ''
-      : `<div class="pos-pnl-pct ${pct > 0 ? 'good' : pct < 0 ? 'loss' : 'muted'}">
-           ${pct > 0 ? '+' : ''}${pct.toFixed(2)}% of margin
-         </div>`;
-
+    const pctText = pct == null ? '' : `<div class="pos-pnl-pct ${pct > 0 ? 'good' : pct < 0 ? 'loss' : 'muted'}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}% of margin</div>`;
     return `
       <div class="pos-card ${sideClass}">
         <div class="pos-head">
-          <div class="pos-market">
-            ${escapeHtml(prettySymbol(x.instrument))}
-            <span class="pos-badge ${sideClass}">${sideLabel}</span>
-          </div>
+          <div class="pos-market">${escapeHtml(prettySymbol(x.instrument))}<span class="pos-badge ${sideClass}">${sideLabel}</span></div>
           <span class="pos-lev">${x.leverage}×</span>
         </div>
-
         <div class="pos-pnl">
-          <div class="pos-pnl-value ${pnlClass}">
-            ${pnlSign}$${Math.abs(pnl).toFixed(2)}
-          </div>
+          <div class="pos-pnl-value ${pnlClass}">${pnlSign}$${Math.abs(pnl).toFixed(2)}</div>
           ${pctText}
         </div>
-
         <div class="pos-details">
-          <div class="pos-detail">
-            <span class="pos-detail-label">Entry</span>
-            <span class="pos-detail-value">${fmtPrice(x.entry_price)}</span>
-          </div>
-          <div class="pos-detail">
-            <span class="pos-detail-label">Now</span>
-            <span class="pos-detail-value">${fmtPrice(x.mark_price)}</span>
-          </div>
-          <div class="pos-detail">
-            <span class="pos-detail-label">Size</span>
-            <span class="pos-detail-value">${x.contracts} cts</span>
-          </div>
-          <div class="pos-detail">
-            <span class="pos-detail-label">Margin mode</span>
-            <span class="pos-detail-value">${escapeHtml(x.margin_mode || '—')}</span>
-          </div>
+          <div class="pos-detail"><span class="pos-detail-label">Entry</span><span class="pos-detail-value">${fmtPrice(x.entry_price)}</span></div>
+          <div class="pos-detail"><span class="pos-detail-label">Now</span><span class="pos-detail-value">${fmtPrice(x.mark_price)}</span></div>
+          <div class="pos-detail"><span class="pos-detail-label">Size</span><span class="pos-detail-value">${x.contracts} cts</span></div>
+          <div class="pos-detail"><span class="pos-detail-label">Margin mode</span><span class="pos-detail-value">${escapeHtml(x.margin_mode || '—')}</span></div>
         </div>
-
-        <button class="pos-close-btn" onclick="futClosePosition('${x.instrument}','${x.side}')">
-          Close position
-        </button>
+        <button class="pos-close-btn" onclick="futClosePosition('${x.instrument}','${x.side}')">Close position</button>
       </div>
     `;
   }).join('');
@@ -2208,34 +1899,22 @@ function renderActivityPositions(positions) {
 function renderActivityHistory(rows) {
   const el = document.getElementById('activityHistory');
   if (!el) return;
-
   if (!rows || !rows.length) {
     el.innerHTML = '<div class="empty">No orders yet.</div>';
     return;
   }
-
   el.innerHTML = rows.map(o => {
     const status = String(o.status || 'unknown').toLowerCase();
-    const statusClass =
-      status.includes('filled') ? 'filled'
-      : status.includes('cancel') ? 'canceled'
-      : '';
+    const statusClass = status.includes('filled') ? 'filled' : status.includes('cancel') ? 'canceled' : '';
     const pnl = Number(o.realized_pnl || 0);
     const showPnl = Number.isFinite(pnl) && (o.realized_pnl != null);
     const pnlClass = pnl > 0 ? 'good' : pnl < 0 ? 'loss' : 'muted';
     const pnlSign = pnl > 0 ? '+' : (pnl < 0 ? '-' : '');
-
     return `
       <div class="history-card">
         <div class="history-left">
-          <div class="history-market">
-            ${escapeHtml(prettySymbol(o.symbol))}
-            <span class="muted" style="font-size:11px">· ${escapeHtml(o.side || '')}</span>
-          </div>
-          <div class="history-meta">
-            Fill ${fmtPrice(o.fill_price)}
-            ${o.quantity ? ` · ${o.quantity} cts` : ''}
-          </div>
+          <div class="history-market">${escapeHtml(prettySymbol(o.symbol))}<span class="muted" style="font-size:11px">· ${escapeHtml(o.side || '')}</span></div>
+          <div class="history-meta">Fill ${fmtPrice(o.fill_price)}${o.quantity ? ` · ${o.quantity} cts` : ''}</div>
         </div>
         <div style="text-align:right">
           <span class="history-status ${statusClass}">${escapeHtml(o.status || '—')}</span>
@@ -2246,16 +1925,12 @@ function renderActivityHistory(rows) {
   }).join('');
 }
 
-/* =========================================================
-   Auto trading sessions
-========================================================= */
 const autoState = {
   session: null,
   marketsMode: 'auto',
   selectedMarkets: new Set(),
   durationHours: 24,
   floorPct: 80,
-  mode: 'day_trading',
   statusTimer: null,
   historyLoaded: false,
 };
@@ -2275,12 +1950,6 @@ function autoInit() {
   }
   if (!autoState.historyLoaded) autoRefreshHistory();
   autoRenderSelectedMarkets();
-}
-
-function autoSetMode(mode) {
-  autoState.mode = mode;
-  document.getElementById('modeDay').classList.toggle('active', mode === 'day_trading');
-  document.getElementById('modeScalp').classList.toggle('active', mode === 'scalping');
 }
 
 function autoSetDuration(hours) {
@@ -2408,7 +2077,6 @@ async function autoStartSession() {
   const risk = parseFloat(document.getElementById('sessRisk').value);
   const riskUnit = document.getElementById('sessRiskUnit').value;
   const leverage = parseInt(document.getElementById('sessLeverage').value);
-
   if (!(duration > 0)) return toast('Enter a duration in hours', true);
   if (!(target > 0))   return toast('Enter a target profit', true);
   if (!(maxLoss > 0))  return toast('Enter a max loss', true);
@@ -2417,23 +2085,19 @@ async function autoStartSession() {
   if (autoState.marketsMode === 'custom' && autoState.selectedMarkets.size === 0) {
     return toast('Pick at least one market', true);
   }
-
   const markets = autoState.marketsMode === 'custom'
     ? Array.from(autoState.selectedMarkets).join(',')
     : 'auto';
-
   if (riskUnit === 'usdt') {
     return toast('Fixed USDT risk is not supported yet — use % mode', true);
   }
-
   const btn = event?.target;
   if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
-
   try {
     await api('/api/auto/start', {
       method: 'POST',
       body: JSON.stringify({
-        mode: autoState.mode,
+        mode: 'day_trading',
         strategy: 'daily_pullback',
         duration_hours: duration,
         target_profit: target,
@@ -2469,9 +2133,7 @@ async function autoRefreshStatus() {
     autoState.session = d.active ? d.session : null;
     if (d.active) autoRenderLiveSession(d.session);
     else autoRenderNoSession();
-  } catch (e) {
-    // silent — polling
-  }
+  } catch (e) {}
 }
 
 function autoRenderNoSession() {
@@ -2483,47 +2145,36 @@ function autoRenderLiveSession(s) {
   document.getElementById('autoNoSession').classList.add('hidden');
   const wrap = document.getElementById('autoHasSession');
   wrap.classList.remove('hidden');
-
   const pnl = parseFloat(s.pnl);
+  const sessionPnl = parseFloat(s.session_pnl || '0');
   const target = parseFloat(s.target_profit);
   const pnlSign = pnl >= 0 ? '+' : '-';
   const pnlClass = pnl > 0 ? 'good' : pnl < 0 ? 'loss' : 'muted';
-
   const progress = target > 0 ? Math.max(0, Math.min(100, (pnl / target) * 100)) : 0;
   const fillClass = pnl < 0 ? 'loss' : '';
-
   const secsRemaining = s.seconds_remaining;
   const h = Math.floor(secsRemaining / 3600);
   const m = Math.floor((secsRemaining % 3600) / 60);
-
-  const modeLabel = s.mode === 'scalping' ? 'Scalping' : 'Day trading';
   const marketsLabel = s.markets === 'auto' ? 'Auto-scan' : s.markets.split(',').length + ' markets';
-
+  const spSign = sessionPnl >= 0 ? '+' : '-';
   wrap.innerHTML = `
     <div class="session-live">
       <div class="session-header">
         <div class="session-status">
           <span class="session-pulse"></span>
-          <span>${modeLabel} · ACTIVE</span>
+          <span>Daily pullback · ACTIVE</span>
         </div>
         <span class="session-history-date">${h}h ${m}m left</span>
       </div>
-
-      <div class="session-pnl ${pnlClass}">
-        ${pnlSign}$${Math.abs(pnl).toFixed(2)}
-      </div>
-      <div class="session-target">
-        Target +$${target.toFixed(2)} · ${marketsLabel}
-      </div>
-
+      <div class="session-pnl ${pnlClass}">${pnlSign}$${Math.abs(pnl).toFixed(2)}</div>
+      <div class="session-target">Account change · target +$${target.toFixed(2)} · ${marketsLabel}</div>
       <div class="session-bar">
         <div class="session-bar-fill ${fillClass}" style="width:${progress.toFixed(1)}%"></div>
       </div>
-
       <div class="session-stats">
         <div class="session-stat">
-          <div class="session-stat-label">Balance</div>
-          <div class="session-stat-value">$${parseFloat(s.current_balance).toFixed(2)}</div>
+          <div class="session-stat-label">Session P&L</div>
+          <div class="session-stat-value ${sessionPnl >= 0 ? 'good' : 'loss'}">${spSign}$${Math.abs(sessionPnl).toFixed(2)}</div>
         </div>
         <div class="session-stat">
           <div class="session-stat-label">Trades</div>
@@ -2534,16 +2185,12 @@ function autoRenderLiveSession(s) {
           <div class="session-stat-value">${s.wins_count} / ${s.losses_count}</div>
         </div>
       </div>
-
       <div class="info-row" style="margin:10px 0 4px;font-size:12px">
-        <span class="muted">Floor ${s.safety_floor_pct}% → $${parseFloat(s.safety_floor_value).toFixed(2)}</span>
+        <span class="muted">Balance $${parseFloat(s.current_balance).toFixed(2)}</span>
         <span class="muted">Risk ${parseFloat(s.risk_per_trade_pct).toFixed(2)}%</span>
         <span class="muted">${s.leverage}×</span>
       </div>
-
-      <button class="stop" onclick="autoStopSession()" style="margin-top:10px">
-        Stop session
-      </button>
+      <button class="stop" onclick="autoStopSession()" style="margin-top:10px">Stop session</button>
     </div>
   `;
 }
@@ -2558,7 +2205,7 @@ async function autoRefreshHistory() {
       return;
     }
     el.innerHTML = rows.map(s => {
-      const pnl = parseFloat(s.pnl || (s.ending_balance ? (parseFloat(s.ending_balance) - parseFloat(s.starting_balance)) : 0));
+      const pnl = parseFloat(s.session_pnl || '0');
       const sign = pnl >= 0 ? '+' : '-';
       const cls = pnl > 0 ? 'good' : pnl < 0 ? 'loss' : 'muted';
       const reason = {
@@ -2569,12 +2216,11 @@ async function autoRefreshHistory() {
         user_stop: '⏹️ Stopped',
         error: '⚠️ Error',
       }[s.end_reason] || s.end_reason || 'Ended';
-      const mode = s.mode === 'scalping' ? 'Scalp' : 'Day';
       const date = (s.started_at || '').slice(0, 16).replace('T', ' ');
       return `
         <div class="session-history">
           <div class="session-history-row">
-            <span><b>${mode}</b> · ${s.trades_count} trades (W${s.wins_count}/L${s.losses_count})</span>
+            <span><b>Session P&L</b> · ${s.trades_count} trades (W${s.wins_count}/L${s.losses_count})</span>
             <span class="session-history-pnl ${cls}">${sign}$${Math.abs(pnl).toFixed(2)}</span>
           </div>
           <div class="session-history-row">
@@ -2589,7 +2235,6 @@ async function autoRefreshHistory() {
   }
 }
 
-/* Outside-click handlers */
 document.addEventListener('click', (e) => {
   const p1 = document.getElementById('futTokenPicker');
   const p1p = document.getElementById('futTokenPanel');
@@ -2610,9 +2255,6 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-/* =========================================================
-   Visibility + lifecycle
-========================================================= */
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   if (futSocket?.readyState === WebSocket.OPEN) {
@@ -2623,9 +2265,6 @@ document.addEventListener('visibilitychange', () => {
   refreshPortfolio();
 });
 
-/* =========================================================
-   Boot
-========================================================= */
 load();
 </script>
 </body>
