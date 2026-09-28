@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from enum import Enum
 from typing import Optional
 
@@ -202,28 +202,47 @@ def pick_safe_leverage(
     available_margin: Decimal,
     notional_needed: Decimal,
 ) -> Optional[int]:
+    """Return the leverage to use for this trade.
+
+    Priority order:
+      1. The user's chosen leverage (what they asked for in the session config)
+      2. Capped by the exchange's max for this instrument
+      3. Capped by liquidation safety: the stop loss must always fire
+         before the liquidation price is reached
+      4. Must still fit the trade's notional inside the available margin
+         (with a free-margin buffer kept back)
+
+    Returns None if no leverage satisfies every constraint.
+    """
     if stop_distance_pct <= 0 or available_margin <= 0 or notional_needed <= 0:
         return None
 
+    # Liquidation-safe ceiling: with isolated margin, liquidation happens at
+    # roughly 1/leverage adverse move. Keep the stop distance at most
+    # LIQUIDATION_BUFFER × that, so SL always fires first.
     safe_max = int(
         (LIQUIDATION_BUFFER / stop_distance_pct).to_integral_value(rounding=ROUND_DOWN)
     )
 
+    # User's choice, capped by safety and exchange limits.
     ceiling = min(user_max_leverage, exchange_max_leverage, safe_max)
     if ceiling < 1:
         return None
 
+    # Margin budget after keeping a free-margin cushion.
     margin_budget = available_margin * (Decimal("1") - FREE_MARGIN_FRACTION)
     if margin_budget <= 0:
         return None
 
+    # Minimum leverage needed to fit the notional inside the margin budget.
     min_required = int(
-        (notional_needed / margin_budget).to_integral_value(rounding=ROUND_DOWN) + 1
+        (notional_needed / margin_budget).to_integral_value(rounding=ROUND_CEILING)
     )
     if min_required > ceiling:
         return None
 
-    return max(min_required, 1)
+    # Use the user's chosen leverage (already capped), not the bare minimum.
+    return ceiling
 
 
 def compute_contracts(
