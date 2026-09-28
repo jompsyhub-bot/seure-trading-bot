@@ -1,3 +1,11 @@
+"""Session-aware auto trading worker.
+
+Wires together:
+  * app.risk             — tier caps, loss-streak sizing, auto-leverage
+  * app.position_manager — breakeven, trailing, time stop
+  * app.exchange         — OKX Demo REST + WS
+  * app.sessions         — persistent session and position state
+"""
 from __future__ import annotations
 
 import asyncio
@@ -54,7 +62,6 @@ def _candle_from_exchange(row: dict) -> Candle:
 
 
 def _algo_clordid_for(client_order_id: str) -> str:
-    """Must match the attachAlgoClOrdId sent in place_market_swap."""
     return f"tp{client_order_id}"[:32]
 
 
@@ -151,11 +158,9 @@ class AutoTradingWorker:
             self.vault.decrypt(creds["encrypted_passphrase"]),
         )
         try:
-            # 1. Reconcile positions that closed since last scan
             await self._reconcile_tracked_positions(client, session)
             session = self.session_manager.get_by_id(session.id) or session
 
-            # 2. Balance + end conditions
             balance = await client.account_balance()
             self.session_manager.update_balance(session.id, balance)
 
@@ -164,10 +169,8 @@ class AutoTradingWorker:
                 await self._end_session(client, session, reason, balance)
                 return
 
-            # 3. Manage existing positions (SL moves, closes)
             await self._manage_open_positions(client, session)
 
-            # 4. Look for new entries
             try:
                 positions = await client.swap_positions()
             except ExchangeError as exc:
@@ -180,46 +183,82 @@ class AutoTradingWorker:
                 return
 
             strategy = _strategy_for(session.config.strategy)
+
+            long_signals = 0
+            short_signals = 0
+            entries_placed = 0
+            skips = 0
+            skip_reasons: list[str] = []
+
             for market in markets:
                 if market in open_inst_ids:
                     continue
 
                 decision = evaluate_entry(
                     balance=balance,
-                    session_risk_pct=session.config.risk_per_trade_pct,
+                    session_risk_pct=(
+                        session.config.risk_per_trade_pct
+                        if session.config.risk_unit != "usdt" else None
+                    ),
+                    session_risk_usdt=(
+                        session.config.risk_per_trade_usdt
+                        if session.config.risk_unit == "usdt" else None
+                    ),
                     current_exposure=self.session_manager.session_open_exposure(session.id),
                     open_positions_count=len(positions),
                     loss_streak=session.loss_streak,
+                    last_loss_at=session.last_loss_at,
                 )
                 if not decision.allowed:
-                    log.debug("Session %s: entry skipped — %s", session.id, decision.reason)
+                    log.debug("Session %s: %s risk skip — %s",
+                              session.id, market, decision.reason)
+                    skip_reasons.append(f"{market}: risk ({decision.reason})")
                     break
 
                 try:
                     signal = await self._evaluate_market(client, strategy, market)
                 except Exception as exc:
-                    log.debug("Session %s: evaluate %s failed — %s", session.id, market, exc)
+                    log.debug("Session %s: evaluate %s failed — %s",
+                              session.id, market, exc)
+                    continue
+
+                if signal is None:
+                    skips += 1
+                    skip_reasons.append(f"{market}: no signal")
                     continue
 
                 if not signal.is_entry or not signal.is_valid():
+                    skips += 1
+                    skip_reasons.append(f"{market}: {signal.reason}")
                     continue
+
+                if signal.action == "long":
+                    long_signals += 1
+                else:
+                    short_signals += 1
 
                 placed = await self._place_entry(
                     client, session, signal, balance, decision.risk_amount
                 )
                 if placed:
-                    try:
-                        positions = await client.swap_positions()
-                        open_inst_ids = {p.get("instId") for p in positions}
-                    except Exception:
-                        pass
+                    entries_placed += 1
+
+            log.info(
+                "Session %s: scan done — markets=%d long_signals=%d "
+                "short_signals=%d entries=%d skips=%d",
+                session.id, len(markets), long_signals, short_signals,
+                entries_placed, skips,
+            )
+            if skip_reasons:
+                log.info("Session %s: skip detail — %s",
+                         session.id, " | ".join(skip_reasons[:6]))
 
             self.session_manager.touch_scan(session.id)
         finally:
             await client.close()
 
     # --------------------------------------------------------------
-    # Position management (breakeven, trailing, time stop)
+    # Position management
     # --------------------------------------------------------------
 
     async def _manage_open_positions(self, client, session: SessionState) -> None:
@@ -231,13 +270,21 @@ class AutoTradingWorker:
         if not tracked:
             return
 
-        for tp in tracked:
-            if tp.initial_sl is None or tp.current_sl is None:
-                continue
-
+        # Parallel candle fetch — one round-trip worth of latency, not N.
+        async def fetch_candles(tp: TrackedPosition):
             try:
-                candles = await client.candles(tp.inst_id, "4H", 30)
+                return await client.candles(tp.inst_id, "4H", 30)
             except ExchangeError:
+                return None
+
+        candle_results = await asyncio.gather(
+            *(fetch_candles(tp) for tp in tracked)
+        )
+
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+
+        for tp, candles in zip(tracked, candle_results, strict=True):
+            if tp.initial_sl is None or tp.current_sl is None:
                 continue
             if not candles:
                 continue
@@ -246,27 +293,32 @@ class AutoTradingWorker:
             last_close = Decimal(str(last["close"]))
             last_ts = int(last["timestamp"])
 
-            # Need the original TP. Reconstruct from initial SL distance.
-            r_distance = abs(tp.entry_price - tp.initial_sl)
-            if tp.pos_side in ("long",):
-                original_tp = tp.entry_price + r_distance * Decimal("2.5")
-            elif tp.pos_side in ("short",):
-                original_tp = tp.entry_price - r_distance * Decimal("2.5")
-            else:
-                original_tp = tp.entry_price + r_distance * Decimal("2.5")
+            # Direction is authoritative now — never guess from pos_side.
+            side = tp.direction
+            if side not in ("long", "short"):
+                continue
 
-            try:
-                atr_series_candles = [_candle_from_exchange(c) for c in candles]
-                atr = self._atr(atr_series_candles, 14)
-            except Exception:
-                atr = Decimal("0")
+            # Original TP: use the value we stored at entry. Only reconstruct
+            # if for some reason it's missing (older rows).
+            if tp.take_profit is not None:
+                original_tp = tp.take_profit
+            else:
+                r_distance = abs(tp.entry_price - tp.initial_sl)
+                if side == "long":
+                    original_tp = tp.entry_price + r_distance * Decimal("2.5")
+                else:
+                    original_tp = tp.entry_price - r_distance * Decimal("2.5")
+
+            atr_series_candles = [_candle_from_exchange(c) for c in candles]
+            atr = self._atr(atr_series_candles, 14)
             if atr <= 0:
                 continue
 
-            bars_held = max(1, (int(datetime.now(UTC).timestamp() * 1000) - int(tp.opened_at.timestamp() * 1000)) // (4 * 3600 * 1000))
+            opened_ms = int(tp.opened_at.timestamp() * 1000)
+            bars_held = max(1, (now_ms - opened_ms) // (4 * 3600 * 1000))
 
             action = pm_evaluate(
-                side=tp.pos_side if tp.pos_side != "net" else "long",
+                side=side,
                 entry_price=tp.entry_price,
                 initial_sl=tp.initial_sl,
                 original_tp=original_tp,
@@ -291,15 +343,16 @@ class AutoTradingWorker:
                         action.new_sl,
                         last_ts,
                     )
-                    log.info("Session %s: %s SL -> %s (%s)",
-                             session.id, tp.inst_id, action.new_sl, action.reason)
+                    log.info("Session %s: %s [%s] SL -> %s (%s)",
+                             session.id, tp.inst_id, side,
+                             action.new_sl, action.reason)
                 except Exception as exc:
                     log.warning("Session %s: amend SL failed for %s — %s",
                                 session.id, tp.inst_id, exc)
 
             elif action.action == PMAction.CLOSE:
-                log.info("Session %s: closing %s — %s",
-                         session.id, tp.inst_id, action.reason)
+                log.info("Session %s: closing %s [%s] — %s",
+                         session.id, tp.inst_id, side, action.reason)
                 await self._close_tracked_position(client, session, tp)
 
     async def _close_tracked_position(self, client, session: SessionState,
@@ -310,7 +363,8 @@ class AutoTradingWorker:
             live = []
         match = next(
             (p for p in live
-             if p.get("instId") == tp.inst_id and (p.get("posSide") or "net") == tp.pos_side),
+             if p.get("instId") == tp.inst_id
+             and (p.get("posSide") or "net") == tp.pos_side),
             None,
         )
         if not match:
@@ -348,7 +402,9 @@ class AutoTradingWorker:
                 except Exception:
                     bal = session.current_balance
                 self.session_manager.record_trade_result(
-                    session.id, is_win=(pnl > 0) if pnl != 0 else None, new_balance=bal
+                    session.id,
+                    is_win=(pnl > 0) if pnl != 0 else None,
+                    new_balance=bal,
                 )
         except Exception as exc:
             log.warning("Session %s: close %s failed — %s", session.id, tp.inst_id, exc)
@@ -458,7 +514,6 @@ class AutoTradingWorker:
         sl = signal.stop_loss
         tp = signal.take_profit
 
-        # Instrument lookup
         try:
             instrument = await client.swap_instrument(market)
         except ExchangeError as exc:
@@ -466,47 +521,51 @@ class AutoTradingWorker:
             return False
 
         try:
-            contract_value = Decimal(instrument["ctVal"]) * Decimal(instrument.get("ctMult") or "1")
+            ct_val = Decimal(instrument["ctVal"])
+            ct_mult = Decimal(instrument.get("ctMult") or "1")
+            contract_value = ct_val * ct_mult
             min_sz = Decimal(instrument["minSz"])
             exchange_max_lev = int(instrument.get("lever") or 1)
         except (KeyError, TypeError, ArithmeticError) as exc:
             log.info("Session %s: bad instrument data — %s", session.id, exc)
             return False
 
-        # Contracts from risk budget
         contracts = compute_contracts(
             risk_amount=risk_amount,
             entry_price=entry,
             stop_price=sl,
-            contract_value=Decimal(instrument["ctVal"]),
-            contract_multiplier=Decimal(instrument.get("ctMult") or "1"),
+            contract_value=ct_val,
+            contract_multiplier=ct_mult,
             min_contracts=min_sz,
         )
 
         if contracts is None:
-            # Not enough capital for the exchange minimum at this risk level.
-            # Compute the balance the user would need to trade this market.
             needed = minimum_viable_balance(
                 entry_price=entry,
                 stop_price=sl,
-                contract_value=Decimal(instrument["ctVal"]),
-                contract_multiplier=Decimal(instrument.get("ctMult") or "1"),
+                contract_value=ct_val,
+                contract_multiplier=ct_mult,
                 min_contracts=min_sz,
-                risk_pct=session.config.risk_per_trade_pct,
+                risk_pct=(
+                    session.config.risk_per_trade_pct
+                    if session.config.risk_unit != "usdt"
+                    else Decimal("1")
+                ),
             )
             log.info(
-                "Session %s: %s needs at least $%s balance to trade at %s%% risk",
-                session.id, market, needed, session.config.risk_per_trade_pct,
+                "Session %s: %s needs at least $%s balance to trade at "
+                "current risk setting — skipping",
+                session.id, market, needed,
             )
             return False
 
-        # Notional from contracts
         notional = contracts * contract_value * entry
 
-        # Pick safe leverage: user choice capped by exchange, liquidation safety,
-        # and available margin.
         user_choice = session.config.leverage
-        sl_distance_pct = (abs(entry - sl) / entry).quantize(Decimal("0.00001")) if entry > 0 else Decimal("0")
+        sl_distance_pct = (
+            (abs(entry - sl) / entry).quantize(Decimal("0.00001"))
+            if entry > 0 else Decimal("0")
+        )
         safe_leverage = pick_safe_leverage(
             user_max_leverage=user_choice,
             exchange_max_leverage=exchange_max_lev,
@@ -517,13 +576,14 @@ class AutoTradingWorker:
         if safe_leverage is None:
             log.info(
                 "Session %s: no safe leverage fits %s at notional $%s (balance $%s)",
-                session.id, market, notional.quantize(Decimal("0.01")), balance,
+                session.id, market,
+                notional.quantize(Decimal("0.01")),
+                balance,
             )
             return False
 
         leverage = Decimal(safe_leverage)
 
-        # Position side + exchange side
         try:
             account = await client.account_config()
         except ExchangeError as exc:
@@ -576,8 +636,10 @@ class AutoTradingWorker:
                     session_id=session.id,
                     inst_id=market,
                     pos_side=position_side,
+                    direction=signal.action,
                     entry_price=filled_price,
                     contracts=filled_contracts,
+                    take_profit=tp,
                     client_order_id=client_order_id,
                     order_id=order_id,
                     initial_sl=sl,
