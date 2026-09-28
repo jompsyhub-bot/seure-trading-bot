@@ -1,5 +1,4 @@
-
-
+"""Session lifecycle and risk guard for auto trading."""
 from __future__ import annotations
 
 import logging
@@ -36,6 +35,8 @@ class SessionConfig:
     target_profit: Decimal
     max_loss: Decimal
     risk_per_trade_pct: Decimal
+    risk_per_trade_usdt: Decimal
+    risk_unit: str
     safety_floor_pct: Decimal
     leverage: int
     markets: str
@@ -97,8 +98,10 @@ class TrackedPosition:
     session_id: int
     inst_id: str
     pos_side: str
+    direction: str
     entry_price: Decimal
     contracts: Decimal
+    take_profit: Optional[Decimal]
     opened_at: datetime
     client_order_id: str
     order_id: Optional[str] = None
@@ -171,7 +174,9 @@ _DDL_POSTGRES = [
         ending_balance NUMERIC,
         target_profit NUMERIC NOT NULL,
         max_loss NUMERIC NOT NULL,
-        risk_per_trade_pct NUMERIC NOT NULL,
+        risk_per_trade_pct NUMERIC NOT NULL DEFAULT 1.0,
+        risk_per_trade_usdt NUMERIC NOT NULL DEFAULT 0.0,
+        risk_unit TEXT NOT NULL DEFAULT 'pct',
         safety_floor_pct NUMERIC NOT NULL,
         leverage INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'active',
@@ -191,8 +196,10 @@ _DDL_POSTGRES = [
         session_id INTEGER NOT NULL,
         inst_id TEXT NOT NULL,
         pos_side TEXT NOT NULL,
+        direction TEXT NOT NULL DEFAULT 'long',
         entry_price NUMERIC,
         contracts NUMERIC,
+        take_profit NUMERIC,
         opened_at TIMESTAMPTZ NOT NULL,
         closed_at TIMESTAMPTZ,
         realized_pnl NUMERIC,
@@ -223,7 +230,9 @@ _DDL_SQLITE = [
         ending_balance TEXT,
         target_profit TEXT NOT NULL,
         max_loss TEXT NOT NULL,
-        risk_per_trade_pct TEXT NOT NULL,
+        risk_per_trade_pct TEXT NOT NULL DEFAULT '1.0',
+        risk_per_trade_usdt TEXT NOT NULL DEFAULT '0.0',
+        risk_unit TEXT NOT NULL DEFAULT 'pct',
         safety_floor_pct TEXT NOT NULL,
         leverage INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'active',
@@ -243,8 +252,10 @@ _DDL_SQLITE = [
         session_id INTEGER NOT NULL,
         inst_id TEXT NOT NULL,
         pos_side TEXT NOT NULL,
+        direction TEXT NOT NULL DEFAULT 'long',
         entry_price TEXT,
         contracts TEXT,
+        take_profit TEXT,
         opened_at TEXT NOT NULL,
         closed_at TEXT,
         realized_pnl TEXT,
@@ -260,15 +271,20 @@ _DDL_SQLITE = [
     "CREATE INDEX IF NOT EXISTS idx_session_positions_open ON session_positions(session_id, closed_at)",
 ]
 
-# Each migration is attempted independently so a failure never blocks the rest.
+# Each migration attempted independently so failures never block.
 _MIGRATIONS = [
     "ALTER TABLE auto_sessions ADD COLUMN loss_streak INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE auto_sessions ADD COLUMN last_loss_at TEXT",
+    "ALTER TABLE auto_sessions ADD COLUMN risk_per_trade_pct TEXT DEFAULT '1.0'",
+    "ALTER TABLE auto_sessions ADD COLUMN risk_per_trade_usdt TEXT DEFAULT '0.0'",
+    "ALTER TABLE auto_sessions ADD COLUMN risk_unit TEXT DEFAULT 'pct'",
     "ALTER TABLE session_positions ADD COLUMN order_id TEXT",
     "ALTER TABLE session_positions ADD COLUMN initial_sl TEXT",
     "ALTER TABLE session_positions ADD COLUMN current_sl TEXT",
     "ALTER TABLE session_positions ADD COLUMN algo_clordid TEXT",
     "ALTER TABLE session_positions ADD COLUMN last_action_candle_ts INTEGER",
+    "ALTER TABLE session_positions ADD COLUMN direction TEXT DEFAULT 'long'",
+    "ALTER TABLE session_positions ADD COLUMN take_profit TEXT",
 ]
 
 
@@ -288,15 +304,12 @@ class SessionManager:
                 failures += 1
                 log.warning("ensure_schema DDL %d failed: %s | %s",
                             i, exc, stmt.strip()[:80])
-
         for stmt in _MIGRATIONS:
             try:
                 with self.backend.cursor() as cur:
                     cur.execute(stmt)
             except Exception:
-                # Column already exists — normal on repeat startups
                 pass
-
         log.info("session schema ensured (%s) - %d DDL, %d failures",
                  "postgres" if self.backend.is_postgres else "sqlite",
                  len(ddl), failures)
@@ -314,15 +327,20 @@ class SessionManager:
                   (user_id, mode, strategy, markets,
                    started_at, ends_at,
                    starting_balance, current_balance,
-                   target_profit, max_loss, risk_per_trade_pct,
+                   target_profit, max_loss,
+                   risk_per_trade_pct, risk_per_trade_usdt, risk_unit,
                    safety_floor_pct, leverage, status, loss_streak)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, 'active', 0)
             """, (
                 user_id, config.mode, config.strategy, config.markets,
                 datetime.now(UTC), ends_at,
                 str(starting_balance), str(starting_balance),
                 str(config.target_profit), str(config.max_loss),
-                str(config.risk_per_trade_pct), str(config.safety_floor_pct),
+                str(config.risk_per_trade_pct),
+                str(config.risk_per_trade_usdt),
+                config.risk_unit,
+                str(config.safety_floor_pct),
                 config.leverage,
             ))
             if self.backend.is_postgres:
@@ -339,7 +357,6 @@ class SessionManager:
 
     def record_trade_result(self, session_id: int, is_win: Optional[bool],
                             new_balance: Decimal) -> None:
-        """Update counters. On win: reset loss_streak. On loss: increment streak."""
         if is_win is True:
             with self.backend.cursor() as cur:
                 self.backend.run(cur, """
@@ -402,21 +419,27 @@ class SessionManager:
     # Position tracking
     # --------------------------------------------------------------
 
-    def track_position(self, session_id: int, inst_id: str, pos_side: str,
-                       entry_price: Decimal, contracts: Decimal,
-                       client_order_id: str, order_id: Optional[str] = None,
-                       initial_sl: Optional[Decimal] = None,
-                       algo_clordid: Optional[str] = None) -> None:
+    def track_position(
+        self, session_id: int, inst_id: str, pos_side: str,
+        entry_price: Decimal, contracts: Decimal,
+        client_order_id: str, order_id: Optional[str] = None,
+        initial_sl: Optional[Decimal] = None,
+        algo_clordid: Optional[str] = None,
+        direction: str = "long",
+        take_profit: Optional[Decimal] = None,
+    ) -> None:
         with self.backend.cursor() as cur:
             self.backend.run(cur, """
                 INSERT INTO session_positions
-                  (session_id, inst_id, pos_side, entry_price, contracts,
+                  (session_id, inst_id, pos_side, direction,
+                   entry_price, contracts, take_profit,
                    opened_at, client_order_id, order_id,
                    initial_sl, current_sl, algo_clordid)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
-                session_id, inst_id, pos_side,
+                session_id, inst_id, pos_side, direction,
                 str(entry_price), str(contracts),
+                str(take_profit) if take_profit is not None else None,
                 datetime.now(UTC), client_order_id, order_id,
                 str(initial_sl) if initial_sl is not None else None,
                 str(initial_sl) if initial_sl is not None else None,
@@ -434,7 +457,6 @@ class SessionManager:
     def update_position_sl(self, client_order_id: str,
                            new_sl: Decimal,
                            candle_ts: int) -> None:
-        """Record the new SL and the candle we acted on."""
         with self.backend.cursor() as cur:
             self.backend.run(cur, """
                 UPDATE session_positions
@@ -468,7 +490,6 @@ class SessionManager:
         return Decimal(str(row["total"] or 0))
 
     def session_open_exposure(self, session_id: int) -> Decimal:
-        """Sum of initial margin across all open positions for this session."""
         try:
             with self.backend.cursor() as cur:
                 rows = self.backend.fetchall(cur, """
@@ -483,10 +504,6 @@ class SessionManager:
             return total
         except Exception:
             return Decimal("0")
-
-    # --------------------------------------------------------------
-    # Startup repair helpers
-    # --------------------------------------------------------------
 
     def list_sessions_with_open_positions(self) -> list[tuple[int, int]]:
         with self.backend.cursor() as cur:
@@ -582,62 +599,72 @@ class SessionManager:
         return Decimal(str(value))
 
     def _to_state(self, row: dict) -> SessionState:
+        row_dict = dict(row)
+        risk_pct = self._dec(row_dict.get("risk_per_trade_pct") or "1.0")
+        risk_usdt = self._dec(row_dict.get("risk_per_trade_usdt") or "0.0")
+        risk_unit = row_dict.get("risk_unit") or "pct"
+
         cfg = SessionConfig(
-            mode=row["mode"],
-            strategy=row["strategy"],
+            mode=row_dict["mode"],
+            strategy=row_dict["strategy"],
             duration_hours=0,
-            target_profit=self._dec(row["target_profit"]),
-            max_loss=self._dec(row["max_loss"]),
-            risk_per_trade_pct=self._dec(row["risk_per_trade_pct"]),
-            safety_floor_pct=self._dec(row["safety_floor_pct"]),
-            leverage=int(row["leverage"]),
-            markets=row["markets"],
+            target_profit=self._dec(row_dict["target_profit"]),
+            max_loss=self._dec(row_dict["max_loss"]),
+            risk_per_trade_pct=risk_pct,
+            risk_per_trade_usdt=risk_usdt,
+            risk_unit=risk_unit,
+            safety_floor_pct=self._dec(row_dict["safety_floor_pct"]),
+            leverage=int(row_dict["leverage"]),
+            markets=row_dict["markets"],
         )
         return SessionState(
-            id=int(row["id"]),
-            user_id=int(row["user_id"]),
+            id=int(row_dict["id"]),
+            user_id=int(row_dict["user_id"]),
             config=cfg,
-            started_at=self._parse_dt(row["started_at"]),
-            ends_at=self._parse_dt(row["ends_at"]),
-            starting_balance=self._dec(row["starting_balance"]),
-            current_balance=self._dec(row["current_balance"]),
-            target_profit=self._dec(row["target_profit"]),
-            max_loss=self._dec(row["max_loss"]),
-            status=SessionStatus(row["status"]),
-            trades_count=int(row["trades_count"] or 0),
-            wins_count=int(row["wins_count"] or 0),
-            losses_count=int(row["losses_count"] or 0),
-            loss_streak=int(row.get("loss_streak") or 0),
-            last_loss_at=self._parse_dt(row.get("last_loss_at")),
-            end_reason=row["end_reason"],
-            ending_balance=self._dec(row["ending_balance"]) if row["ending_balance"] is not None else None,
+            started_at=self._parse_dt(row_dict["started_at"]),
+            ends_at=self._parse_dt(row_dict["ends_at"]),
+            starting_balance=self._dec(row_dict["starting_balance"]),
+            current_balance=self._dec(row_dict["current_balance"]),
+            target_profit=self._dec(row_dict["target_profit"]),
+            max_loss=self._dec(row_dict["max_loss"]),
+            status=SessionStatus(row_dict["status"]),
+            trades_count=int(row_dict.get("trades_count") or 0),
+            wins_count=int(row_dict.get("wins_count") or 0),
+            losses_count=int(row_dict.get("losses_count") or 0),
+            loss_streak=int(row_dict.get("loss_streak") or 0),
+            last_loss_at=self._parse_dt(row_dict.get("last_loss_at")),
+            end_reason=row_dict["end_reason"],
+            ending_balance=(self._dec(row_dict["ending_balance"])
+                            if row_dict["ending_balance"] is not None else None),
         )
 
     def _to_position(self, row: dict) -> TrackedPosition:
+        row_dict = dict(row)
         return TrackedPosition(
-            id=int(row["id"]),
-            session_id=int(row["session_id"]),
-            inst_id=row["inst_id"],
-            pos_side=row["pos_side"],
-            entry_price=self._dec(row["entry_price"]),
-            contracts=self._dec(row["contracts"]),
-            opened_at=self._parse_dt(row["opened_at"]),
-            client_order_id=row["client_order_id"],
-            order_id=row.get("order_id") if isinstance(row, dict) else None,
-            initial_sl=self._dec_opt(row.get("initial_sl")),
-            current_sl=self._dec_opt(row.get("current_sl")),
-            algo_clordid=row.get("algo_clordid"),
-            last_action_candle_ts=(int(row["last_action_candle_ts"])
-                                   if row.get("last_action_candle_ts") is not None
+            id=int(row_dict["id"]),
+            session_id=int(row_dict["session_id"]),
+            inst_id=row_dict["inst_id"],
+            pos_side=row_dict["pos_side"],
+            direction=row_dict.get("direction") or "long",
+            entry_price=self._dec(row_dict["entry_price"]),
+            contracts=self._dec(row_dict["contracts"]),
+            take_profit=self._dec_opt(row_dict.get("take_profit")),
+            opened_at=self._parse_dt(row_dict["opened_at"]),
+            client_order_id=row_dict["client_order_id"],
+            order_id=row_dict.get("order_id"),
+            initial_sl=self._dec_opt(row_dict.get("initial_sl")),
+            current_sl=self._dec_opt(row_dict.get("current_sl")),
+            algo_clordid=row_dict.get("algo_clordid"),
+            last_action_candle_ts=(int(row_dict["last_action_candle_ts"])
+                                   if row_dict.get("last_action_candle_ts") is not None
                                    else None),
-            closed_at=self._parse_dt(row["closed_at"]) if row["closed_at"] else None,
-            realized_pnl=self._dec_opt(row["realized_pnl"]),
+            closed_at=self._parse_dt(row_dict["closed_at"]) if row_dict["closed_at"] else None,
+            realized_pnl=self._dec_opt(row_dict["realized_pnl"]),
         )
 
 
 # ---------------------------------------------------------------------------
-# Legacy risk guard — kept for backward compatibility.
-# The worker uses app.risk.evaluate_entry instead.
+# Legacy helpers — kept for backward compatibility
 # ---------------------------------------------------------------------------
 
 @dataclass
