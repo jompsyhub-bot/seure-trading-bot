@@ -23,6 +23,7 @@ from .risk import (
     pick_safe_leverage,
     compute_contracts,
     minimum_viable_balance,
+    rules_for,
     MIN_ACCOUNT_BALANCE,
 )
 from .sessions import (
@@ -190,9 +191,26 @@ class AutoTradingWorker:
             skips = 0
             skip_reasons: list[str] = []
 
+            # Tier cap for this account size — enforced per-scan, not per-market.
+            tier_max_concurrent = rules_for(balance).max_concurrent
+            placed_this_scan = 0
+
             for market in markets:
                 if market in open_inst_ids:
                     continue
+
+                # Count includes positions we placed earlier in THIS scan.
+                current_open = len(positions) + placed_this_scan
+                if current_open >= tier_max_concurrent:
+                    log.info(
+                        "Session %s: tier cap reached (%d/%d) — "
+                        "stopping scan to protect the account",
+                        session.id, current_open, tier_max_concurrent,
+                    )
+                    break
+
+                # Re-read exposure so newly placed positions are counted.
+                current_exposure = self.session_manager.session_open_exposure(session.id)
 
                 decision = evaluate_entry(
                     balance=balance,
@@ -204,8 +222,8 @@ class AutoTradingWorker:
                         session.config.risk_per_trade_usdt
                         if session.config.risk_unit == "usdt" else None
                     ),
-                    current_exposure=self.session_manager.session_open_exposure(session.id),
-                    open_positions_count=len(positions),
+                    current_exposure=current_exposure,
+                    open_positions_count=current_open,
                     loss_streak=session.loss_streak,
                     last_loss_at=session.last_loss_at,
                 )
@@ -242,6 +260,7 @@ class AutoTradingWorker:
                 )
                 if placed:
                     entries_placed += 1
+                    placed_this_scan += 1
 
             log.info(
                 "Session %s: scan done — markets=%d long_signals=%d "
