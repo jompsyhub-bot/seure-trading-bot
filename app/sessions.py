@@ -357,12 +357,6 @@ class SessionManager:
 
     def record_trade_result(self, session_id: int, is_win: Optional[bool],
                             new_balance: Decimal) -> None:
-        """Record a completed trade.
-
-        is_win=True  -> wins_count +1, loss_streak reset
-        is_win=False -> losses_count +1, loss_streak +1, last_loss_at now
-        is_win=None  -> trade counted, neither W nor L touched (unknown PnL)
-        """
         if is_win is True:
             with self.backend.cursor() as cur:
                 self.backend.run(cur, """
@@ -522,32 +516,23 @@ class SessionManager:
         return [(int(r["session_id"]), int(r["user_id"])) for r in rows]
 
     def recount_session_from_positions(self, session_id: int) -> tuple[int, int, int]:
-        """Recompute trades/wins/losses from position rows.
-
-        pnl > 0  -> win
-        pnl < 0  -> loss
-        pnl == 0 -> counted in total, neither win nor loss
-        pnl NULL -> skipped entirely (unknown outcome)
-        """
         with self.backend.cursor() as cur:
             rows = self.backend.fetchall(cur, """
                 SELECT realized_pnl FROM session_positions
                 WHERE session_id = %s AND closed_at IS NOT NULL
             """, (session_id,))
-            total = 0
+            total = len(rows)
             wins = 0
             losses = 0
             for r in rows:
                 raw = r["realized_pnl"]
                 if raw is None:
                     continue
-                total += 1
                 v = Decimal(str(raw))
                 if v > 0:
                     wins += 1
-                elif v < 0:
+                else:
                     losses += 1
-                # v == 0: scratch trade, counted in total only
             self.backend.run(cur, """
                 UPDATE auto_sessions
                 SET trades_count = %s, wins_count = %s, losses_count = %s
@@ -712,12 +697,6 @@ def check_can_open(session: SessionState, balance: Decimal,
 
 
 def should_end_session(session: SessionState, balance: Decimal) -> Optional[EndReason]:
-    """Decide whether the session should end right now.
-
-    `balance` must be the account's TOTAL equity (from totalEq, not availEq).
-    Otherwise a freshly-opened position — whose margin temporarily reduces
-    available equity — would falsely trigger MAX_LOSS.
-    """
     if balance - session.starting_balance >= session.target_profit:
         return EndReason.TARGET
     if session.starting_balance - balance >= abs(session.max_loss):
