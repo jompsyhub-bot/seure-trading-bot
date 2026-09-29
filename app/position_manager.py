@@ -57,6 +57,9 @@ def evaluate(
     atr: Decimal,
     bars_held: int,
 ) -> PositionAction:
+    if side not in ("long", "short"):
+        return PositionAction.none(f"unknown side {side!r}")
+
     if entry_price <= 0 or initial_sl <= 0 or last_closed_candle_close <= 0 or atr <= 0:
         return PositionAction.none("invalid inputs")
 
@@ -66,36 +69,65 @@ def evaluate(
 
     candle_close = last_closed_candle_close
 
+    # Profit in R terms, based on the closed candle price
     if side == "long":
         profit = candle_close - entry_price
     else:
         profit = entry_price - candle_close
     r_multiple = profit / r_distance
 
+    # ----------------------------------------------------------------
+    # 1. Defensive close: candle closed PAST the current SL.
+    #    Exchange SL should have fired already; if not, exit now.
+    # ----------------------------------------------------------------
+    if side == "long" and candle_close <= current_sl:
+        return PositionAction.close(
+            f"candle closed below current SL ({candle_close} <= {current_sl})"
+        )
+    if side == "short" and candle_close >= current_sl:
+        return PositionAction.close(
+            f"candle closed above current SL ({candle_close} >= {current_sl})"
+        )
+
+    # ----------------------------------------------------------------
+    # 2. Take profit on candle close (backup for exchange-attached TP)
+    # ----------------------------------------------------------------
     if side == "long" and candle_close >= original_tp:
         return PositionAction.close("reached take profit")
     if side == "short" and candle_close <= original_tp:
         return PositionAction.close("reached take profit")
 
+    # ----------------------------------------------------------------
+    # 3. Time stop
+    # ----------------------------------------------------------------
     if bars_held >= TIME_STOP_BARS:
         return PositionAction.close(f"time stop after {bars_held} bars")
 
+    # ----------------------------------------------------------------
+    # 4. Only act on SL moves once per candle
+    # ----------------------------------------------------------------
     if last_action_candle_ts == last_closed_candle_ts:
         return PositionAction.none("already acted on this candle")
 
+    # ----------------------------------------------------------------
+    # 5. Collect ALL valid SL candidates and pick the tightest one.
+    #    This fixes the "breakeven blocks trailing" one-candle lag.
+    # ----------------------------------------------------------------
+    candidates: list[tuple[Decimal, str]] = []
+
+    # 5a. Breakeven + ATR buffer at +1.5R
     if r_multiple >= BREAKEVEN_TRIGGER_R:
         buffer = atr * BREAKEVEN_BUFFER_ATR
         if side == "long":
-            candidate = entry_price + buffer
+            be_candidate = entry_price + buffer
         else:
-            candidate = entry_price - buffer
-        if _would_tighten(side, current_sl, candidate):
-            return PositionAction.move_sl(
-                candidate,
-                f"breakeven+buffer at +{r_multiple:.1f}R (candle close)",
-                last_closed_candle_ts,
-            )
+            be_candidate = entry_price - buffer
+        candidates.append((
+            be_candidate,
+            f"breakeven+buffer at +{r_multiple:.1f}R",
+        ))
 
+    # 5b. Trailing stop at +2R (wide) or +3R (tight)
     if r_multiple >= TRAIL_START_R:
         if r_multiple >= TIGHTEN_TRIGGER_R:
             mult = TRAIL_TIGHT_ATR
@@ -105,17 +137,31 @@ def evaluate(
             why = f"trail at +{r_multiple:.1f}R"
 
         if side == "long":
-            candidate = candle_close - atr * mult
+            trail_candidate = candle_close - atr * mult
         else:
-            candidate = candle_close + atr * mult
+            trail_candidate = candle_close + atr * mult
+        candidates.append((trail_candidate, why))
 
-        if _would_tighten(side, current_sl, candidate):
-            return PositionAction.move_sl(candidate, why, last_closed_candle_ts)
+    # 5c. Keep only candidates that tighten the current SL
+    valid = [
+        (c, why) for c, why in candidates
+        if _would_tighten(side, current_sl, c)
+    ]
 
-    return PositionAction.none("holding")
+    if not valid:
+        return PositionAction.none("holding")
+
+    # 5d. Pick the tightest — highest for long, lowest for short
+    if side == "long":
+        best_sl, best_reason = max(valid, key=lambda item: item[0])
+    else:
+        best_sl, best_reason = min(valid, key=lambda item: item[0])
+
+    return PositionAction.move_sl(best_sl, best_reason, last_closed_candle_ts)
 
 
 def _would_tighten(side: str, current_sl: Decimal, candidate: Decimal) -> bool:
+    """True if the candidate SL is tighter than the current one."""
     if side == "long":
         return candidate > current_sl
     return candidate < current_sl
