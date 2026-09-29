@@ -252,27 +252,6 @@ class OKXDemoClient:
             raise OrderRejected(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo close order")
         return item
 
-    async def positions_history(self, inst_id: str, limit: int = 20) -> list[dict]:
-        """Return recently-closed positions for an instrument.
-
-        Each row includes `realizedPnl` for the closed position. Used to
-        reconcile manual closes (user clicks "close" on OKX's UI) since
-        the entry order itself has no PnL.
-        """
-        request_path = (
-            f"/api/v5/account/positions-history"
-            f"?instType=SWAP&instId={inst_id}&limit={limit}"
-        )
-        session = await self._session()
-        async with session.get(
-            f"{self.base_url}{request_path}",
-            headers=self._headers("GET", request_path),
-        ) as response:
-            data = await self._response_json(response)
-        if data.get("code") != "0":
-            raise ExchangeError(data.get("msg", "Could not retrieve OKX position history"))
-        return data.get("data", [])
-
     async def amend_algo_sl(self, *, inst_id: str, algo_clordid: str,
                             new_sl_trigger: Decimal) -> dict:
         """Move the stop-loss leg of an attached algo order to a new trigger.
@@ -331,31 +310,17 @@ class OKXDemoClient:
         return [row for row in data.get("data", []) if Decimal(row.get("pos") or "0") != 0]
 
     async def account_balance(self) -> Decimal:
-        """Return the account's total equity in USDT.
-
-        Uses `totalEq` (equity) rather than `availEq` (available equity).
-        `availEq` drops by the margin amount every time a position is
-        opened, which would falsely trigger the session's max-loss check
-        the moment a trade fills. `totalEq` stays flat on open and only
-        moves with realized + unrealized PnL, which is what we want.
-        """
         request_path = "/api/v5/account/balance?ccy=USDT"
         session = await self._session()
         async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
             data = await self._response_json(response)
         if data.get("code") != "0" or not data.get("data"):
             raise ExchangeError(data.get("msg", "Could not retrieve OKX Demo balance"))
-        account = data["data"][0]
-        # Prefer account-level totalEq (all currencies converted to USD-equivalent).
-        total_eq = account.get("totalEq")
-        if total_eq not in (None, ""):
-            return Decimal(str(total_eq))
-        # Fallback: sum per-currency equity from details.
-        details = account.get("details", [])
+        details = data["data"][0].get("details", [])
         usdt = next((item for item in details if item.get("ccy") == "USDT"), None)
         if not usdt:
             return Decimal("0")
-        return Decimal(str(usdt.get("eq") or usdt.get("cashBal") or "0"))
+        return Decimal(usdt.get("availEq") or usdt.get("availBal") or "0")
 
     async def swap_instrument(self, inst_id: str) -> dict:
         session = await self._session()
