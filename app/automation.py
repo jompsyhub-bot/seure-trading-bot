@@ -445,23 +445,62 @@ class AutoTradingWorker:
     # --------------------------------------------------------------
 
     async def _fetch_position_pnl(self, client, tp: TrackedPosition):
+        """Find the realized PnL for a closed position.
+
+        Priority:
+          1. positions-history — the only place OKX exposes realizedPnl
+             for closed positions (including user-initiated manual closes).
+          2. close order detail — fallback if the position history isn't
+             populated yet, or the entry order's `pnl` field unexpectedly
+             carries a value.
+
+        Returns (pnl_or_None, okx_state_or_None).
+        """
+        # 1. positions-history — most reliable source for realized PnL
+        try:
+            history = await client.positions_history(tp.inst_id, limit=20)
+            candidates = [
+                row for row in history
+                if (row.get("posSide") or "net") == tp.pos_side
+                and row.get("realizedPnl") not in (None, "")
+            ]
+            if candidates:
+                # Most recent first
+                candidates.sort(
+                    key=lambda r: int(r.get("uTime") or "0"),
+                    reverse=True,
+                )
+                raw = candidates[0].get("realizedPnl")
+                return (Decimal(str(raw)), "closed")
+        except Exception:
+            pass
+
+        # 2. Entry order detail — fallback
         if tp.order_id:
             try:
                 detail = await client.order_detail(tp.inst_id, tp.order_id)
                 if detail:
                     raw = detail.get("pnl") or detail.get("realizedPnl")
                     state = detail.get("state")
-                    return (Decimal(str(raw)) if raw is not None else None, state)
+                    if raw not in (None, "", "0"):
+                        return (Decimal(str(raw)), state)
+                    if state:
+                        return (None, state)
             except Exception:
                 pass
+
         try:
             detail = await client.order_detail_by_clordid(tp.inst_id, tp.client_order_id)
             if detail:
                 raw = detail.get("pnl") or detail.get("realizedPnl")
                 state = detail.get("state")
-                return (Decimal(str(raw)) if raw is not None else None, state)
+                if raw not in (None, "", "0"):
+                    return (Decimal(str(raw)), state)
+                if state:
+                    return (None, state)
         except Exception:
             pass
+
         return (None, None)
 
     async def _reconcile_tracked_positions(self, client, session: SessionState) -> None:
