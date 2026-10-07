@@ -23,6 +23,7 @@ from .risk import (
     pick_safe_leverage,
     compute_contracts,
     minimum_viable_balance,
+    rules_for,
     MIN_ACCOUNT_BALANCE,
 )
 from .sessions import (
@@ -190,9 +191,26 @@ class AutoTradingWorker:
             skips = 0
             skip_reasons: list[str] = []
 
+            # Tier cap for this account size — enforced per-scan, not per-market.
+            tier_max_concurrent = rules_for(balance).max_concurrent
+            placed_this_scan = 0
+
             for market in markets:
                 if market in open_inst_ids:
                     continue
+
+                # Count includes positions we placed earlier in THIS scan.
+                current_open = len(positions) + placed_this_scan
+                if current_open >= tier_max_concurrent:
+                    log.info(
+                        "Session %s: tier cap reached (%d/%d) — "
+                        "stopping scan to protect the account",
+                        session.id, current_open, tier_max_concurrent,
+                    )
+                    break
+
+                # Re-read exposure so newly placed positions are counted.
+                current_exposure = self.session_manager.session_open_exposure(session.id)
 
                 decision = evaluate_entry(
                     balance=balance,
@@ -204,8 +222,8 @@ class AutoTradingWorker:
                         session.config.risk_per_trade_usdt
                         if session.config.risk_unit == "usdt" else None
                     ),
-                    current_exposure=self.session_manager.session_open_exposure(session.id),
-                    open_positions_count=len(positions),
+                    current_exposure=current_exposure,
+                    open_positions_count=current_open,
                     loss_streak=session.loss_streak,
                     last_loss_at=session.last_loss_at,
                 )
@@ -242,6 +260,7 @@ class AutoTradingWorker:
                 )
                 if placed:
                     entries_placed += 1
+                    placed_this_scan += 1
 
             log.info(
                 "Session %s: scan done — markets=%d long_signals=%d "
@@ -394,6 +413,16 @@ class AutoTradingWorker:
             fill = Decimal((detail or {}).get("avgPx") or match.get("markPx") or "0")
             filled = Decimal((detail or {}).get("accFillSz") or "0")
             pnl = Decimal((detail or {}).get("pnl") or "0")
+
+            # Three-way classification: win / loss / unknown
+            is_win: Optional[bool]
+            if pnl > 0:
+                is_win = True
+            elif pnl < 0:
+                is_win = False
+            else:
+                is_win = None  # exactly zero — not a loss
+
             self.database.reconcile_exchange_order(close_key, status, fill, filled, pnl)
             newly_closed = self.session_manager.mark_position_closed(tp.client_order_id, pnl)
             if newly_closed:
@@ -403,7 +432,7 @@ class AutoTradingWorker:
                     bal = session.current_balance
                 self.session_manager.record_trade_result(
                     session.id,
-                    is_win=(pnl > 0) if pnl != 0 else None,
+                    is_win=is_win,
                     new_balance=bal,
                 )
         except Exception as exc:
@@ -426,23 +455,62 @@ class AutoTradingWorker:
     # --------------------------------------------------------------
 
     async def _fetch_position_pnl(self, client, tp: TrackedPosition):
+        """Find the realized PnL for a closed position.
+
+        Priority:
+          1. positions-history — the only place OKX exposes realizedPnl
+             for closed positions (including user-initiated manual closes).
+          2. close order detail — fallback if the position history isn't
+             populated yet, or the entry order's `pnl` field unexpectedly
+             carries a value.
+
+        Returns (pnl_or_None, okx_state_or_None).
+        """
+        # 1. positions-history — most reliable source for realized PnL
+        try:
+            history = await client.positions_history(tp.inst_id, limit=20)
+            candidates = [
+                row for row in history
+                if (row.get("posSide") or "net") == tp.pos_side
+                and row.get("realizedPnl") not in (None, "")
+            ]
+            if candidates:
+                # Most recent first
+                candidates.sort(
+                    key=lambda r: int(r.get("uTime") or "0"),
+                    reverse=True,
+                )
+                raw = candidates[0].get("realizedPnl")
+                return (Decimal(str(raw)), "closed")
+        except Exception:
+            pass
+
+        # 2. Entry order detail — fallback
         if tp.order_id:
             try:
                 detail = await client.order_detail(tp.inst_id, tp.order_id)
                 if detail:
                     raw = detail.get("pnl") or detail.get("realizedPnl")
                     state = detail.get("state")
-                    return (Decimal(str(raw)) if raw is not None else None, state)
+                    if raw not in (None, "", "0"):
+                        return (Decimal(str(raw)), state)
+                    if state:
+                        return (None, state)
             except Exception:
                 pass
+
         try:
             detail = await client.order_detail_by_clordid(tp.inst_id, tp.client_order_id)
             if detail:
                 raw = detail.get("pnl") or detail.get("realizedPnl")
                 state = detail.get("state")
-                return (Decimal(str(raw)) if raw is not None else None, state)
+                if raw not in (None, "", "0"):
+                    return (Decimal(str(raw)), state)
+                if state:
+                    return (None, state)
         except Exception:
             pass
+
         return (None, None)
 
     async def _reconcile_tracked_positions(self, client, session: SessionState) -> None:
@@ -476,9 +544,15 @@ class AutoTradingWorker:
             except Exception:
                 bal = session.current_balance
 
+            # Three-way classification: win / loss / unknown.
+            # A PnL of exactly 0 is NOT a loss — it is a scratch trade.
             is_win: Optional[bool] = None
             if pnl is not None:
-                is_win = pnl > 0
+                if pnl > 0:
+                    is_win = True
+                elif pnl < 0:
+                    is_win = False
+                # pnl == 0 → leave as None (unknown), never a loss
 
             self.session_manager.record_trade_result(session.id, is_win, bal)
             log.info("Session %s: reconciled %s %s (pnl=%s, win=%s)",
