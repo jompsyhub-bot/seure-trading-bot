@@ -252,6 +252,27 @@ class OKXDemoClient:
             raise OrderRejected(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo close order")
         return item
 
+    async def positions_history(self, inst_id: str, limit: int = 20) -> list[dict]:
+        """Return recently-closed positions for an instrument.
+
+        Each row includes `realizedPnl` for the closed position. Used to
+        reconcile manual closes (user clicks "close" on OKX's UI) since
+        the entry order itself has no PnL.
+        """
+        request_path = (
+            f"/api/v5/account/positions-history"
+            f"?instType=SWAP&instId={inst_id}&limit={limit}"
+        )
+        session = await self._session()
+        async with session.get(
+            f"{self.base_url}{request_path}",
+            headers=self._headers("GET", request_path),
+        ) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0":
+            raise ExchangeError(data.get("msg", "Could not retrieve OKX position history"))
+        return data.get("data", [])
+
     async def amend_algo_sl(self, *, inst_id: str, algo_clordid: str,
                             new_sl_trigger: Decimal) -> dict:
         """Move the stop-loss leg of an attached algo order to a new trigger.
@@ -310,9 +331,30 @@ class OKXDemoClient:
         return [row for row in data.get("data", []) if Decimal(row.get("pos") or "0") != 0]
 
     async def account_balance(self) -> Decimal:
+        """Return the USDT equity of the account.
+
+        We use the USDT `eq` field, NOT `availEq` and NOT account-level
+        `totalEq`:
+
+          * `availEq` includes cross-currency collateral in multi-currency
+            margin mode, which massively inflates the number when the
+            account holds BTC/ETH test balances. That is what caused the
+            false +$98,856 target hit in session #23.
+          * `availEq` also drops by the margin amount when a position
+            opens, which falsely triggered the session's max-loss check.
+          * `totalEq` mixes all currencies together, so it has the same
+            pollution problem as `availEq`.
+
+        USDT `eq` = cash balance + unrealized PnL for the USDT currency
+        only. It stays flat on position open and only moves with real
+        PnL, which is exactly what the session logic needs.
+        """
         request_path = "/api/v5/account/balance?ccy=USDT"
         session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+        async with session.get(
+            f"{self.base_url}{request_path}",
+            headers=self._headers("GET", request_path),
+        ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0" or not data.get("data"):
             raise ExchangeError(data.get("msg", "Could not retrieve OKX Demo balance"))
@@ -320,7 +362,8 @@ class OKXDemoClient:
         usdt = next((item for item in details if item.get("ccy") == "USDT"), None)
         if not usdt:
             return Decimal("0")
-        return Decimal(usdt.get("availEq") or usdt.get("availBal") or "0")
+        eq = usdt.get("eq") or usdt.get("cashBal") or "0"
+        return Decimal(str(eq))
 
     async def swap_instrument(self, inst_id: str) -> dict:
         session = await self._session()
