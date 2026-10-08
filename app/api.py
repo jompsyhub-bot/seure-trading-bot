@@ -264,7 +264,6 @@ async def okx_demo_client_for_cached(user_id: int) -> OKXDemoClient:
         cached = _okx_client_cache.get(user_id)
         if cached and (time.monotonic() - cached[0]) < OKX_CLIENT_CACHE_TTL:
             return cached[1]
-        # Close the stale client first so its session can drain cleanly.
         if cached:
             try:
                 await cached[1].close()
@@ -290,7 +289,6 @@ def invalidate_okx_client(user_id: int) -> None:
     try:
         asyncio.get_running_loop().create_task(_safe_close())
     except RuntimeError:
-        # No running loop (e.g. called from a sync context) — nothing to close.
         pass
 
 
@@ -502,6 +500,10 @@ async def futures_updates(websocket: WebSocket) -> None:
             raise ValueError("Missing WebSocket authentication")
         user = validate_init_data(auth_payload.get("init_data") or "", settings.telegram_token)
         user_id = int(user["id"])
+    except WebSocketDisconnect:
+        # Client connected and disconnected without completing auth.
+        # Expected during page navigation and stale tab cleanup.
+        return
     except (asyncio.TimeoutError, TelegramAuthError, KeyError, ValueError, json.JSONDecodeError):
         try:
             await websocket.close(code=1008, reason="Invalid Telegram authorization")
@@ -1277,7 +1279,6 @@ async def auto_start(request: StartSessionRequest,
     if balance <= 0:
         raise HTTPException(400, "Demo balance is zero. Fund the account first.")
 
-    # Validate risk mode
     if request.risk_unit == "pct" and request.risk_per_trade_pct <= 0:
         raise HTTPException(400, "Percentage risk must be greater than zero.")
     if request.risk_unit == "usdt" and request.risk_per_trade_usdt <= 0:
@@ -1433,6 +1434,10 @@ async def auto_status(x_telegram_init_data: str | None = Header(default=None)) -
         balance = await client.account_balance()
         session_manager.update_balance(session.id, balance)
         session = session_manager.get_by_id(session.id)
+    except asyncio.CancelledError:
+        # Request was aborted — the frontend navigated away or hit refresh.
+        # Not an error; return the cached session state we already have.
+        return {"active": True, "session": _session_to_dict(session)}
     except Exception as exc:
         log.debug("auto_status balance refresh failed for %s: %s: %s",
                   user_id, type(exc).__name__, exc)
