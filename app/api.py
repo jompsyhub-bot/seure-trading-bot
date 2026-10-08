@@ -289,27 +289,35 @@ async def publish_live_price(instrument: str, price: str) -> None:
 
 
 async def _rest_price_poller() -> None:
-    while True:
-        try:
-            instruments = watched_instruments()
-            if instruments:
-                client = OKXDemoClient("", "", "")
-                try:
+    """Poll REST prices for the watched instruments.
+
+    Reuses one OKXDemoClient for the poller's lifetime. Creating a new
+    client every second raced aiohttp's session close against in-flight
+    requests, which produced a flood of "Fatal error on SSL protocol"
+    messages in the logs.
+    """
+    client = OKXDemoClient("", "", "")
+    try:
+        while True:
+            try:
+                instruments = watched_instruments()
+                if instruments:
                     results = await asyncio.gather(
                         *(client.last_price(inst) for inst in instruments),
                         return_exceptions=True,
                     )
-                finally:
-                    await client.close()
-                for inst, result in zip(instruments, results, strict=True):
-                    if isinstance(result, Exception):
-                        continue
-                    await publish_live_price(inst, str(result))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log.debug("REST price poll iteration failed: %s", exc)
-        await asyncio.sleep(1.0)
+                    for inst, result in zip(instruments, results, strict=True):
+                        if isinstance(result, Exception):
+                            continue
+                        await publish_live_price(inst, str(result))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.debug("REST price poll iteration failed: %s: %s",
+                          type(exc).__name__, exc)
+            await asyncio.sleep(1.0)
+    finally:
+        await client.close()
 
 
 async def monitor_okx_public_prices() -> None:
@@ -749,9 +757,12 @@ async def sync_okx_order_history(user_id: int, *, parallel: bool = True) -> None
 async def _fetch_portfolio(user_id: int) -> dict:
     client = await okx_demo_client_for_cached(user_id)
     try:
-        await asyncio.wait_for(sync_okx_order_history(user_id), timeout=8.0)
+        await asyncio.wait_for(sync_okx_order_history(user_id), timeout=15.0)
+    except asyncio.TimeoutError:
+        log.warning("Portfolio sync timed out for %s — using cached positions", user_id)
     except Exception as exc:
-        log.warning("Portfolio sync slow for %s: %s", user_id, exc)
+        log.warning("Portfolio sync failed for %s — %s: %s",
+                    user_id, type(exc).__name__, exc)
 
     positions = await client.swap_positions()
     active = [{
