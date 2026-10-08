@@ -206,7 +206,7 @@ class ClosePositionRequest(BaseModel):
 
 class StartSessionRequest(BaseModel):
     mode: Literal["day_trading"] = "day_trading"
-    strategy: str = Field(default="daily_pullback", min_length=3, max_length=32)
+    strategy: str = Field(default="daily_breakout", min_length=3, max_length=32)
     duration_hours: float = Field(gt=0, le=24 * 30)
     target_profit: Decimal = Field(gt=0)
     max_loss: Decimal = Field(gt=0)
@@ -1336,9 +1336,9 @@ async def auto_start(request: StartSessionRequest,
     )
 
     log.info(
-        "Session %s STARTED by user %s: mode=%s duration=%sh "
+        "Session %s STARTED by user %s: strategy=%s mode=%s duration=%sh "
         "target=+%s max_loss=-%s risk=%s lev=%sx markets=%s balance=%s",
-        session_id, user_id, request.mode, request.duration_hours,
+        session_id, user_id, request.strategy, request.mode, request.duration_hours,
         request.target_profit, request.max_loss, risk_label,
         request.leverage, request.markets, balance,
     )
