@@ -474,13 +474,14 @@ SL @ 77,000"></textarea>
 
         <div class="step-label"><span class="step-num">2</span> Duration</div>
         <div class="chip-row" id="durationChips">
-          <button class="chip" data-hours="4"   onclick="autoSetDuration(4)">4h</button>
-          <button class="chip" data-hours="12"  onclick="autoSetDuration(12)">12h</button>
-          <button class="chip active" data-hours="24" onclick="autoSetDuration(24)">24h</button>
-          <button class="chip" data-hours="72"  onclick="autoSetDuration(72)">3d</button>
-          <button class="chip" data-hours="168" onclick="autoSetDuration(168)">7d</button>
+          <button class="chip" data-hours="24"   onclick="autoSetDuration(24)">24h</button>
+          <button class="chip" data-hours="72"   onclick="autoSetDuration(72)">3d</button>
+          <button class="chip active" data-hours="168" onclick="autoSetDuration(168)">7d</button>
+          <button class="chip" data-hours="720"  onclick="autoSetDuration(720)">1mo</button>
+          <button class="chip" data-hours="4320" onclick="autoSetDuration(4320)">6mo</button>
+          <button class="chip" data-hours="8760" onclick="autoSetDuration(8760)">1yr</button>
         </div>
-        <input id="sessDuration" inputmode="decimal" value="24" placeholder="24"
+        <input id="sessDuration" inputmode="decimal" value="168" placeholder="168"
                oninput="autoSyncDurationChips()">
         <p class="hint">Hours the session will run.</p>
 
@@ -494,16 +495,35 @@ SL @ 77,000"></textarea>
         <p class="hint">Session ends if the account loses this much.</p>
 
         <div class="step-label"><span class="step-num">4</span> Risk per trade</div>
-        <div class="dual">
-          <input id="sessRisk" inputmode="decimal" value="1.00" placeholder="1.00">
-          <select id="sessRiskUnit" onchange="autoRiskUnitChanged()">
-            <option value="pct">% of balance</option>
-            <option value="usdt">USDT fixed</option>
-          </select>
+        <div class="session-mode" style="grid-template-columns:1fr 1fr">
+          <button id="riskAuto" class="active" onclick="autoSetRiskMode('auto')">🤖 Auto (recommended)</button>
+          <button id="riskManual" onclick="autoSetRiskMode('manual')">✏️ Custom</button>
         </div>
-        <p class="hint" id="riskHint">
-          1% of current balance. Auto-scales as the account grows or shrinks.
-        </p>
+
+        <div id="riskAutoPanel">
+          <div class="info-row" style="padding:14px;display:block">
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.3px">Your balance tier</div>
+            <div id="riskAutoTier" style="font-size:18px;font-weight:700;margin-top:4px">Loading…</div>
+            <div id="riskAutoDetails" style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6">—</div>
+          </div>
+          <p class="hint">
+            The bot reads your current balance and picks a safe risk profile.
+            You can still switch to Custom if you want to override it.
+          </p>
+        </div>
+
+        <div id="riskManualPanel" class="hidden">
+          <div class="dual">
+            <input id="sessRisk" inputmode="decimal" value="1.00" placeholder="1.00">
+            <select id="sessRiskUnit" onchange="autoRiskUnitChanged()">
+              <option value="pct">% of balance</option>
+              <option value="usdt">USDT fixed</option>
+            </select>
+          </div>
+          <p class="hint" id="riskHint">
+            1% of current balance. Auto-scales as the account grows or shrinks.
+          </p>
+        </div>
 
         <div class="step-label"><span class="step-num">5</span> Safety floor</div>
         <div class="chip-row" id="floorChips">
@@ -1295,7 +1315,6 @@ function ensureFeed() {
   refreshPortfolio();
   setInterval(updateFeedAge, 400);
 
-  // Poll portfolio only when a tab that displays it is visible.
   setInterval(() => {
     const futuresVisible = document.getElementById('futures')?.classList.contains('active');
     const activityVisible = document.getElementById('activity')?.classList.contains('active');
@@ -1959,8 +1978,10 @@ const autoState = {
   session: null,
   marketsMode: 'auto',
   selectedMarkets: new Set(),
-  durationHours: 24,
+  durationHours: 168,
   floorPct: 80,
+  riskMode: 'auto',
+  autoRecommend: null,
   statusTimer: null,
   historyLoaded: false,
 };
@@ -1980,6 +2001,9 @@ function autoInit() {
   }
   if (!autoState.historyLoaded) autoRefreshHistory();
   autoRenderSelectedMarkets();
+  if (autoState.riskMode === 'auto' && !autoState.autoRecommend) {
+    autoLoadRecommendation();
+  }
 }
 
 function autoSetDuration(hours) {
@@ -2000,6 +2024,40 @@ function autoSetFloor(pct) {
   autoState.floorPct = pct;
   document.querySelectorAll('#floorChips .chip').forEach(b =>
     b.classList.toggle('active', +b.dataset.floor === pct));
+}
+
+async function autoSetRiskMode(mode) {
+  autoState.riskMode = mode;
+  document.getElementById('riskAuto').classList.toggle('active', mode === 'auto');
+  document.getElementById('riskManual').classList.toggle('active', mode === 'manual');
+  document.getElementById('riskAutoPanel').classList.toggle('hidden', mode !== 'auto');
+  document.getElementById('riskManualPanel').classList.toggle('hidden', mode !== 'manual');
+  if (mode === 'auto') {
+    await autoLoadRecommendation();
+  }
+}
+
+async function autoLoadRecommendation() {
+  const tierEl = document.getElementById('riskAutoTier');
+  const detailsEl = document.getElementById('riskAutoDetails');
+  if (!tierEl) return;
+  tierEl.textContent = 'Loading…';
+  detailsEl.textContent = '—';
+  try {
+    const r = await api('/api/auto/recommend');
+    autoState.autoRecommend = r;
+    const balance = parseFloat(r.balance || '0');
+    const riskAmt = balance * parseFloat(r.risk_per_trade_pct) / 100;
+    tierEl.textContent = r.tier_label;
+    detailsEl.innerHTML =
+      `Risk per trade: <b>${r.risk_per_trade_pct}%</b> (≈$${riskAmt.toFixed(2)})<br>` +
+      `Max concurrent positions: <b>${r.max_concurrent}</b><br>` +
+      `Daily loss cap: <b>${r.max_daily_loss_pct}%</b><br>` +
+      `Safety floor: <b>${r.safety_floor_pct}%</b> of starting balance`;
+  } catch (e) {
+    tierEl.textContent = 'Could not read balance';
+    detailsEl.textContent = e.message;
+  }
 }
 
 function autoRiskUnitChanged() {
@@ -2109,32 +2167,45 @@ async function autoStartSession() {
   const duration = parseFloat(document.getElementById('sessDuration').value);
   const target = parseFloat(document.getElementById('sessTarget').value);
   const maxLoss = parseFloat(document.getElementById('sessMaxLoss').value);
-  const riskInput = parseFloat(document.getElementById('sessRisk').value);
-  const riskUnit = document.getElementById('sessRiskUnit').value;
   const leverage = parseInt(document.getElementById('sessLeverage').value);
 
   if (!(duration > 0)) return toast('Enter a duration in hours', true);
   if (!(target > 0))   return toast('Enter a target profit', true);
   if (!(maxLoss > 0))  return toast('Enter a max loss', true);
-  if (!(riskInput > 0)) return toast('Enter a risk amount', true);
   if (!(leverage >= 1 && leverage <= 100)) return toast('Leverage 1–100', true);
   if (autoState.marketsMode === 'custom' && autoState.selectedMarkets.size === 0) {
     return toast('Pick at least one market', true);
+  }
+
+  let riskPct, riskUsdt, riskUnit;
+  if (autoState.riskMode === 'auto') {
+    await autoLoadRecommendation();
+    if (!autoState.autoRecommend) {
+      return toast('Could not load auto risk profile', true);
+    }
+    riskPct = parseFloat(autoState.autoRecommend.risk_per_trade_pct);
+    riskUsdt = 0;
+    riskUnit = 'pct';
+  } else {
+    const riskInput = parseFloat(document.getElementById('sessRisk').value);
+    riskUnit = document.getElementById('sessRiskUnit').value;
+    if (!(riskInput > 0)) return toast('Enter a risk amount', true);
+    riskPct = riskUnit === 'pct' ? riskInput : 0;
+    riskUsdt = riskUnit === 'usdt' ? riskInput : 0;
   }
 
   const markets = autoState.marketsMode === 'custom'
     ? Array.from(autoState.selectedMarkets).join(',')
     : 'auto';
 
-  // Send BOTH risk fields. Backend uses whichever matches risk_unit.
   const payload = {
     mode: 'day_trading',
     strategy: 'daily_breakout',
     duration_hours: duration,
     target_profit: target,
     max_loss: maxLoss,
-    risk_per_trade_pct: riskUnit === 'pct' ? riskInput : 0,
-    risk_per_trade_usdt: riskUnit === 'usdt' ? riskInput : 0,
+    risk_per_trade_pct: riskPct,
+    risk_per_trade_usdt: riskUsdt,
     risk_unit: riskUnit,
     safety_floor_pct: autoState.floorPct,
     leverage: leverage,
