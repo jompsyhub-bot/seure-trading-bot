@@ -35,6 +35,30 @@ from .sessions import (
     should_end_session,
 )
 
+# ---------------------------------------------------------------------------
+# Logging configuration
+# ---------------------------------------------------------------------------
+# Uvicorn only configures ITS OWN loggers (uvicorn, uvicorn.access,
+# uvicorn.error). It never calls logging.basicConfig() on the root logger,
+# so every log.info(...) call in this application is silently dropped
+# unless we set up the root logger ourselves.
+#
+# force=True tears down any handlers uvicorn may have installed so our
+# format and level win. Without it, basicConfig is a no-op if anything has
+# already touched the root logger.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    force=True,
+)
+# Uvicorn's access log duplicates every request as a raw line and drowns
+# out the application logs. Quiet it so we can find trading activity.
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+# httpx INFO lines include the full Telegram bot URL, which contains the
+# bot token. Keep it quiet in production.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 settings = Settings.from_env()
 database = Database(settings.database_path, settings.database_url)
 database.initialize()
@@ -79,6 +103,9 @@ async def lifespan(app: FastAPI):
     app.state.notifier = notifier
     app.state.futures_subscribers = {}
     app.state.futures_price_preferences = {}
+    log.info("Application startup — mode=%s, automation=%s",
+             settings.trading_mode,
+             "okx-demo" if settings.encryption_key else "disabled")
     ticker_task = asyncio.create_task(monitor_okx_public_prices(), name="okx-demo-public-tickers")
     if settings.encryption_key:
         worker = AutoTradingWorker(
@@ -358,7 +385,8 @@ async def monitor_okx_public_prices() -> None:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.warning("OKX Demo public ticker feed unavailable: %s", exc)
+                log.warning("OKX Demo public ticker feed unavailable: %s: %s",
+                            type(exc).__name__, exc)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30)
             finally:
@@ -430,7 +458,8 @@ async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> 
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            log.warning("OKX Demo private feed unavailable for user %s: %s", user_id, exc)
+            log.warning("OKX Demo private feed unavailable for user %s: %s: %s",
+                        user_id, type(exc).__name__, exc)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
         finally:
@@ -1306,6 +1335,14 @@ async def auto_start(request: StartSessionRequest,
         else f"{request.risk_per_trade_usdt} USDT fixed"
     )
 
+    log.info(
+        "Session %s STARTED by user %s: mode=%s duration=%sh "
+        "target=+%s max_loss=-%s risk=%s lev=%sx markets=%s balance=%s",
+        session_id, user_id, request.mode, request.duration_hours,
+        request.target_profit, request.max_loss, risk_label,
+        request.leverage, request.markets, balance,
+    )
+
     try:
         await api.state.notifier.send(
             user_id,
@@ -1401,6 +1438,14 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
     ac_sign = "+" if account_change >= 0 else "-"
 
     _portfolio_cache.pop(user_id, None)
+
+    log.info(
+        "Session %s STOPPED by user %s: pnl=%s (%d trades, W %d / L %d) "
+        "account_change=%s balance=%s",
+        session.id, user_id, session_pnl,
+        session.trades_count, session.wins_count, session.losses_count,
+        account_change, balance,
+    )
 
     try:
         await api.state.notifier.send(
