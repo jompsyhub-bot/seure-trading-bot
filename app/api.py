@@ -34,6 +34,7 @@ from .sessions import (
     compute_risk_amount,
     should_end_session,
 )
+from .risk import classify, rules_for
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -1463,6 +1464,45 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
         pass
 
     return {"stopped": True, "session": _session_to_dict(updated)}
+
+
+@api.get("/api/auto/recommend")
+async def auto_recommend(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Return the auto-risk recommendation for the user's current balance.
+
+    Reads the live balance, classifies it into a tier, and returns the
+    risk profile the bot would use. The UI shows this when the user
+    selects 'Auto' mode so they know exactly what they're about to run.
+    """
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+
+    client = await okx_demo_client_for_cached(user_id)
+    try:
+        balance = await client.account_balance()
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"Could not read balance: {exc}") from None
+
+    tier = classify(balance)
+    rules = rules_for(balance)
+    tier_labels = {
+        "micro":    "Micro ($5 – $50)",
+        "small":    "Small ($50 – $500)",
+        "standard": "Standard ($500 – $5,000)",
+        "large":    "Large ($5,000+)",
+    }
+
+    return {
+        "balance": str(balance),
+        "tier": tier.value,
+        "tier_label": tier_labels.get(tier.value, "Unknown"),
+        "risk_per_trade_pct": str(rules.default_risk_pct),
+        "max_concurrent": rules.max_concurrent,
+        "max_daily_loss_pct": str(rules.max_daily_loss_pct),
+        "concentration_cap_pct": str(rules.concentration_cap_pct),
+        "max_total_exposure_pct": str(rules.max_total_exposure_pct),
+        "safety_floor_pct": "80",
+    }
 
 
 @api.get("/api/auto/status")
