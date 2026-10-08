@@ -64,6 +64,10 @@ _okx_client_cache: dict = {}
 OKX_CLIENT_CACHE_TTL = 300.0
 _okx_client_lock = asyncio.Lock()
 
+# Users with a background reconciliation currently in flight. Prevents
+# every portfolio request from spawning its own sync task.
+_portfolio_sync_in_flight: set[int] = set()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -246,6 +250,12 @@ def okx_demo_client_for(user_id: int) -> OKXDemoClient:
 
 
 async def okx_demo_client_for_cached(user_id: int) -> OKXDemoClient:
+    """Return a cached OKX client, or create one.
+
+    The stale client is closed BEFORE a new one is created. Skipping that
+    step leaks the aiohttp session, and uvloop eventually reports
+    "Fatal error on SSL protocol" during garbage collection.
+    """
     now = time.monotonic()
     cached = _okx_client_cache.get(user_id)
     if cached and (now - cached[0]) < OKX_CLIENT_CACHE_TTL:
@@ -254,18 +264,34 @@ async def okx_demo_client_for_cached(user_id: int) -> OKXDemoClient:
         cached = _okx_client_cache.get(user_id)
         if cached and (time.monotonic() - cached[0]) < OKX_CLIENT_CACHE_TTL:
             return cached[1]
+        # Close the stale client first so its session can drain cleanly.
+        if cached:
+            try:
+                await cached[1].close()
+            except Exception:
+                pass
         client = okx_demo_client_for(user_id)
         _okx_client_cache[user_id] = (time.monotonic(), client)
         return client
 
 
 def invalidate_okx_client(user_id: int) -> None:
+    """Drop a cached OKX client and close it in the background."""
     old = _okx_client_cache.pop(user_id, None)
-    if old:
+    if not old:
+        return
+
+    async def _safe_close():
         try:
-            asyncio.create_task(old[1].close())
+            await old[1].close()
         except Exception:
             pass
+
+    try:
+        asyncio.get_running_loop().create_task(_safe_close())
+    except RuntimeError:
+        # No running loop (e.g. called from a sync context) — nothing to close.
+        pass
 
 
 async def publish_futures_event(user_id: int, event_type: str) -> None:
@@ -755,14 +781,33 @@ async def sync_okx_order_history(user_id: int, *, parallel: bool = True) -> None
 
 
 async def _fetch_portfolio(user_id: int) -> dict:
+    """Return the user's portfolio snapshot.
+
+    Reconciliation runs fire-and-forget so this endpoint responds in a few
+    hundred milliseconds instead of blocking on OKX for up to 15 seconds.
+    The next call picks up the reconciled data.
+    """
     client = await okx_demo_client_for_cached(user_id)
-    try:
-        await asyncio.wait_for(sync_okx_order_history(user_id), timeout=15.0)
-    except asyncio.TimeoutError:
-        log.warning("Portfolio sync timed out for %s — using cached positions", user_id)
-    except Exception as exc:
-        log.warning("Portfolio sync failed for %s — %s: %s",
-                    user_id, type(exc).__name__, exc)
+
+    # Fire-and-forget reconciliation, guarded against concurrent runs for
+    # the same user.
+    if user_id not in _portfolio_sync_in_flight:
+        _portfolio_sync_in_flight.add(user_id)
+
+        async def _bg_sync():
+            try:
+                await asyncio.wait_for(
+                    sync_okx_order_history(user_id), timeout=20.0,
+                )
+            except asyncio.TimeoutError:
+                log.warning("Background portfolio sync timed out for %s", user_id)
+            except Exception as exc:
+                log.warning("Background portfolio sync failed for %s — %s: %s",
+                            user_id, type(exc).__name__, exc)
+            finally:
+                _portfolio_sync_in_flight.discard(user_id)
+
+        asyncio.create_task(_bg_sync())
 
     positions = await client.swap_positions()
     active = [{
@@ -790,7 +835,8 @@ async def _refresh_portfolio_background(user_id: int) -> None:
         response = await _fetch_portfolio(user_id)
         _portfolio_cache[user_id] = (time.monotonic(), response)
     except Exception as exc:
-        log.debug("Background portfolio refresh failed for %s: %s", user_id, exc)
+        log.debug("Background portfolio refresh failed for %s: %s: %s",
+                  user_id, type(exc).__name__, exc)
 
 
 @api.get("/api/portfolio")
@@ -1292,7 +1338,9 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
 
         try:
             live = await client.swap_positions()
-        except ExchangeError:
+        except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+            log.warning("Manual stop: swap_positions failed: %s: %s",
+                        type(exc).__name__, exc)
             live = []
         live_map = {(p.get("instId"), p.get("posSide") or "net"): p for p in live}
 
@@ -1328,7 +1376,8 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
                 database.reconcile_exchange_order(close_key, status, fill, filled, pnl)
                 session_manager.mark_position_closed(tp.client_order_id, pnl)
             except Exception as exc:
-                log.warning("Manual stop close failed for %s: %s", tp.inst_id, exc)
+                log.warning("Manual stop close failed for %s: %s: %s",
+                            tp.inst_id, type(exc).__name__, exc)
 
         await asyncio.sleep(1.5)
         try:
@@ -1384,8 +1433,9 @@ async def auto_status(x_telegram_init_data: str | None = Header(default=None)) -
         balance = await client.account_balance()
         session_manager.update_balance(session.id, balance)
         session = session_manager.get_by_id(session.id)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("auto_status balance refresh failed for %s: %s: %s",
+                  user_id, type(exc).__name__, exc)
 
     return {"active": True, "session": _session_to_dict(session)}
 
