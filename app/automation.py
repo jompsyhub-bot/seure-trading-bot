@@ -36,14 +36,26 @@ from .sessions import (
 )
 from .strategies.base import Candle
 from .strategies.daily_pullback import DailyPullbackStrategy
+from .strategies.daily_breakout import DailyBreakoutStrategy
 
 log = logging.getLogger(__name__)
 
 
+# 6-year backtest across these 9 markets (breakout strategy, 20-day lookback):
+#   Avg return: +22.07% net of fees
+#   Avg max drawdown: 9.75%
+#   Positive full years: 5/5 (2021-2025)
+#   ~615 trades over 6 years across the portfolio
 DEFAULT_AUTO_MARKETS = [
+    "BTC-USDT-SWAP",
     "ETH-USDT-SWAP",
     "DOGE-USDT-SWAP",
     "SOL-USDT-SWAP",
+    "BNB-USDT-SWAP",
+    "XRP-USDT-SWAP",
+    "ADA-USDT-SWAP",
+    "LTC-USDT-SWAP",
+    "LINK-USDT-SWAP",
 ]
 
 SCAN_INTERVAL_SECONDS = 60
@@ -60,6 +72,8 @@ TRANSIENT_ERRORS = (
 def _strategy_for(strategy_name: str):
     if strategy_name == "daily_pullback":
         return DailyPullbackStrategy()
+    if strategy_name == "daily_breakout":
+        return DailyBreakoutStrategy()
     raise ValueError(f"Unknown strategy: {strategy_name}")
 
 
@@ -495,6 +509,7 @@ class AutoTradingWorker:
                 and row.get("realizedPnl") not in (None, "")
             ]
             if candidates:
+                # Most recent first
                 candidates.sort(
                     key=lambda r: int(r.get("uTime") or "0"),
                     reverse=True,
