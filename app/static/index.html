@@ -468,9 +468,9 @@ SL @ 77,000"></textarea>
 
         <div class="step-label"><span class="step-num">1</span> Strategy</div>
         <div class="session-mode">
-          <button id="modeDay" class="active" disabled>📊 Daily pullback</button>
+          <button id="modeDay" class="active" disabled>📊 Daily breakout</button>
         </div>
-        <p class="hint">Buys pullbacks in daily uptrends, sells rallies in daily downtrends. 4h entries, 1D trend filter.</p>
+        <p class="hint">Buys 20-day breakouts in daily uptrends with volume confirmation. Long-only, 4h entries, 1D trend filter.</p>
 
         <div class="step-label"><span class="step-num">2</span> Duration</div>
         <div class="chip-row" id="durationChips">
@@ -523,7 +523,7 @@ SL @ 77,000"></textarea>
           <button id="marketsCustom" onclick="autoSetMarketsMode('custom')">✏️ My picks</button>
         </div>
         <div id="marketsDefaultHint" class="hint">
-          Default: ETH, DOGE, SOL. Validated for this strategy on real OKX data.
+          Default: BTC, ETH, DOGE, SOL, BNB, XRP, ADA, LTC, LINK. Validated for this strategy on 6 years of data.
         </div>
         <div id="marketsCustomWrap" class="hidden">
           <p class="hint" style="margin-top:8px">Selected: <b id="selectedMarketCount">0</b> / 10</p>
@@ -2129,7 +2129,7 @@ async function autoStartSession() {
   // Send BOTH risk fields. Backend uses whichever matches risk_unit.
   const payload = {
     mode: 'day_trading',
-    strategy: 'daily_pullback',
+    strategy: 'daily_breakout',
     duration_hours: duration,
     target_profit: target,
     max_loss: maxLoss,
@@ -2230,7 +2230,7 @@ function autoRenderLiveSession(s) {
       <div class="session-header">
         <div class="session-status">
           <span class="session-pulse"></span>
-          <span>Daily pullback · ACTIVE</span>
+          <span>Daily breakout · ACTIVE</span>
         </div>
         <span class="session-history-date">${h}h ${m}m left</span>
       </div>
