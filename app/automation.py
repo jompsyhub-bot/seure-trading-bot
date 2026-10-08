@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from decimal import Decimal, ROUND_DOWN
 from typing import Optional
 
+import aiohttp
+
 from .exchange import ExchangeError, OKXDemoClient, OrderRejected
 from .models import OrderIntent, OrderResult, Side
 from .position_manager import Action as PMAction
@@ -45,6 +47,14 @@ DEFAULT_AUTO_MARKETS = [
 ]
 
 SCAN_INTERVAL_SECONDS = 60
+
+# Network errors that are safe to swallow per tick — the next scan will retry.
+TRANSIENT_ERRORS = (
+    ExchangeError,
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
+    RuntimeError,
+)
 
 
 def _strategy_for(strategy_name: str):
@@ -80,11 +90,13 @@ class AutoTradingWorker:
         try:
             self.session_manager.ensure_schema()
         except Exception as exc:
-            log.warning("worker ensure_schema failed: %s", exc)
+            log.warning("worker ensure_schema failed: %s: %s",
+                        type(exc).__name__, exc)
         try:
             await self._startup_repair()
         except Exception as exc:
-            log.warning("Startup repair failed: %s", exc)
+            log.warning("Startup repair failed: %s: %s",
+                        type(exc).__name__, exc)
         while self.running:
             try:
                 sessions = self.session_manager.list_all_active()
@@ -94,9 +106,11 @@ class AutoTradingWorker:
                         try:
                             await self._process_session(session)
                         except Exception as exc:
-                            log.warning("Session %s tick failed: %s", session.id, exc)
+                            log.warning("Session %s tick failed: %s: %s",
+                                        session.id, type(exc).__name__, exc)
             except Exception as exc:
-                log.warning("AutoTradingWorker tick failed: %s", exc)
+                log.warning("AutoTradingWorker tick failed: %s: %s",
+                            type(exc).__name__, exc)
             await asyncio.sleep(SCAN_INTERVAL_SECONDS)
 
     # --------------------------------------------------------------
@@ -108,7 +122,8 @@ class AutoTradingWorker:
         try:
             stuck = self.session_manager.list_sessions_with_open_positions()
         except Exception as exc:
-            log.warning("Could not list stuck sessions: %s", exc)
+            log.warning("Could not list stuck sessions: %s: %s",
+                        type(exc).__name__, exc)
             return
         if not stuck:
             log.info("No stuck sessions found.")
@@ -118,8 +133,8 @@ class AutoTradingWorker:
             try:
                 await self._repair_one_session(session_id, user_id)
             except Exception as exc:
-                log.warning("Startup repair failed for session %s: %s",
-                            session_id, exc)
+                log.warning("Startup repair failed for session %s: %s: %s",
+                            session_id, type(exc).__name__, exc)
         log.info("Startup repair complete.")
 
     async def _repair_one_session(self, session_id: int, user_id: int) -> None:
@@ -174,8 +189,9 @@ class AutoTradingWorker:
 
             try:
                 positions = await client.swap_positions()
-            except ExchangeError as exc:
-                log.info("Session %s: positions unavailable (%s)", session.id, exc)
+            except TRANSIENT_ERRORS as exc:
+                log.info("Session %s: positions unavailable (%s: %s)",
+                         session.id, type(exc).__name__, exc)
                 return
 
             open_inst_ids = {p.get("instId") for p in positions}
@@ -235,9 +251,9 @@ class AutoTradingWorker:
 
                 try:
                     signal = await self._evaluate_market(client, strategy, market)
-                except Exception as exc:
-                    log.debug("Session %s: evaluate %s failed — %s",
-                              session.id, market, exc)
+                except TRANSIENT_ERRORS as exc:
+                    log.debug("Session %s: evaluate %s failed — %s: %s",
+                              session.id, market, type(exc).__name__, exc)
                     continue
 
                 if signal is None:
@@ -284,7 +300,8 @@ class AutoTradingWorker:
         try:
             tracked = self.session_manager.list_open_positions(session.id)
         except Exception as exc:
-            log.warning("Session %s: list positions failed — %s", session.id, exc)
+            log.warning("Session %s: list positions failed — %s: %s",
+                        session.id, type(exc).__name__, exc)
             return
         if not tracked:
             return
@@ -293,7 +310,7 @@ class AutoTradingWorker:
         async def fetch_candles(tp: TrackedPosition):
             try:
                 return await client.candles(tp.inst_id, "4H", 30)
-            except ExchangeError:
+            except TRANSIENT_ERRORS:
                 return None
 
         candle_results = await asyncio.gather(
@@ -365,9 +382,10 @@ class AutoTradingWorker:
                     log.info("Session %s: %s [%s] SL -> %s (%s)",
                              session.id, tp.inst_id, side,
                              action.new_sl, action.reason)
-                except Exception as exc:
-                    log.warning("Session %s: amend SL failed for %s — %s",
-                                session.id, tp.inst_id, exc)
+                except TRANSIENT_ERRORS as exc:
+                    log.warning("Session %s: amend SL failed for %s — %s: %s",
+                                session.id, tp.inst_id,
+                                type(exc).__name__, exc)
 
             elif action.action == PMAction.CLOSE:
                 log.info("Session %s: closing %s [%s] — %s",
@@ -378,7 +396,7 @@ class AutoTradingWorker:
                                       tp: TrackedPosition) -> None:
         try:
             live = await client.swap_positions()
-        except ExchangeError:
+        except TRANSIENT_ERRORS:
             live = []
         match = next(
             (p for p in live
@@ -414,14 +432,15 @@ class AutoTradingWorker:
             filled = Decimal((detail or {}).get("accFillSz") or "0")
             pnl = Decimal((detail or {}).get("pnl") or "0")
 
-            # Three-way classification: win / loss / unknown
+            # Three-way classification: win / loss / unknown.
+            # A PnL of exactly 0 is NOT a loss — it is a scratch trade.
             is_win: Optional[bool]
             if pnl > 0:
                 is_win = True
             elif pnl < 0:
                 is_win = False
             else:
-                is_win = None  # exactly zero — not a loss
+                is_win = None
 
             self.database.reconcile_exchange_order(close_key, status, fill, filled, pnl)
             newly_closed = self.session_manager.mark_position_closed(tp.client_order_id, pnl)
@@ -436,7 +455,8 @@ class AutoTradingWorker:
                     new_balance=bal,
                 )
         except Exception as exc:
-            log.warning("Session %s: close %s failed — %s", session.id, tp.inst_id, exc)
+            log.warning("Session %s: close %s failed — %s: %s",
+                        session.id, tp.inst_id, type(exc).__name__, exc)
 
     @staticmethod
     def _atr(candles, period=14) -> Decimal:
@@ -475,7 +495,6 @@ class AutoTradingWorker:
                 and row.get("realizedPnl") not in (None, "")
             ]
             if candidates:
-                # Most recent first
                 candidates.sort(
                     key=lambda r: int(r.get("uTime") or "0"),
                     reverse=True,
@@ -523,7 +542,9 @@ class AutoTradingWorker:
 
         try:
             live = await client.swap_positions()
-        except ExchangeError:
+        except TRANSIENT_ERRORS as exc:
+            log.warning("Session %s: reconcile swap_positions failed — %s: %s",
+                        session.id, type(exc).__name__, exc)
             return
         live_keys = {(p.get("instId"), p.get("posSide") or "net") for p in live}
 
@@ -590,8 +611,9 @@ class AutoTradingWorker:
 
         try:
             instrument = await client.swap_instrument(market)
-        except ExchangeError as exc:
-            log.info("Session %s: instrument lookup failed — %s", session.id, exc)
+        except TRANSIENT_ERRORS as exc:
+            log.info("Session %s: instrument lookup failed — %s: %s",
+                     session.id, type(exc).__name__, exc)
             return False
 
         try:
@@ -660,8 +682,9 @@ class AutoTradingWorker:
 
         try:
             account = await client.account_config()
-        except ExchangeError as exc:
-            log.info("Session %s: account config failed — %s", session.id, exc)
+        except TRANSIENT_ERRORS as exc:
+            log.info("Session %s: account config failed — %s: %s",
+                     session.id, type(exc).__name__, exc)
             return False
 
         if account.get("posMode") == "long_short_mode":
@@ -720,7 +743,8 @@ class AutoTradingWorker:
                     algo_clordid=algo_clordid,
                 )
             except Exception as exc:
-                log.warning("Session %s: could not track position — %s", session.id, exc)
+                log.warning("Session %s: could not track position — %s: %s",
+                            session.id, type(exc).__name__, exc)
 
         except OrderRejected as exc:
             self.database.cancel_reservation(client_order_id)
@@ -729,7 +753,8 @@ class AutoTradingWorker:
         except Exception as exc:
             if not submission_started:
                 self.database.cancel_reservation(client_order_id)
-            log.warning("Session %s: submission failed — %s", session.id, exc)
+            log.warning("Session %s: submission failed — %s: %s",
+                        session.id, type(exc).__name__, exc)
             return False
 
         try:
