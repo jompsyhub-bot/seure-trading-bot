@@ -208,7 +208,7 @@ class ClosePositionRequest(BaseModel):
 class StartSessionRequest(BaseModel):
     mode: Literal["day_trading"] = "day_trading"
     strategy: str = Field(default="daily_breakout", min_length=3, max_length=32)
-    duration_hours: float = Field(gt=0, le=24 * 30)
+    duration_hours: float = Field(gt=0, le=24 * 366)   # ← change this line
     target_profit: Decimal = Field(gt=0)
     max_loss: Decimal = Field(gt=0)
     risk_per_trade_pct: Decimal = Field(ge=0, le=10)
