@@ -1485,6 +1485,7 @@ async def auto_recommend(x_telegram_init_data: str | None = Header(default=None)
 
     tier = classify(balance)
     rules = rules_for(balance)
+
     tier_labels = {
         "micro":    "Micro ($5 – $50)",
         "small":    "Small ($50 – $500)",
@@ -1492,11 +1493,21 @@ async def auto_recommend(x_telegram_init_data: str | None = Header(default=None)
         "large":    "Large ($5,000+)",
     }
 
+    # Recommended risk % per tier. These are the values the bot uses
+    # when running in Auto mode. Users who want higher can switch to
+    # Custom — but 5% is the hard ceiling regardless.
+    recommended_risk = {
+        "micro":    "2.0",
+        "small":    "1.5",
+        "standard": "1.0",
+        "large":    "0.75",
+    }
+
     return {
         "balance": str(balance),
         "tier": tier.value,
         "tier_label": tier_labels.get(tier.value, "Unknown"),
-        "risk_per_trade_pct": str(rules.default_risk_pct),
+        "risk_per_trade_pct": recommended_risk.get(tier.value, "1.0"),
         "max_concurrent": rules.max_concurrent,
         "max_daily_loss_pct": str(rules.max_daily_loss_pct),
         "concentration_cap_pct": str(rules.concentration_cap_pct),
