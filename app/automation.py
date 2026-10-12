@@ -5,6 +5,12 @@ Wires together:
   * app.position_manager — breakeven, trailing, time stop
   * app.exchange         — OKX Demo REST + WS
   * app.sessions         — persistent session and position state
+
+Supports running 1 or 2 strategies in a single session:
+  * session.config.strategy is a comma-separated string
+  * Strategies are tried in order (leftmost = highest priority)
+  * On any market, the first strategy that produces a valid entry wins
+  * Only one position per market at a time — no strategy collisions
 """
 from __future__ import annotations
 
@@ -69,12 +75,20 @@ TRANSIENT_ERRORS = (
 )
 
 
-def _strategy_for(strategy_name: str):
-    if strategy_name == "daily_pullback":
-        return DailyPullbackStrategy()
-    if strategy_name == "daily_breakout":
-        return DailyBreakoutStrategy()
-    raise ValueError(f"Unknown strategy: {strategy_name}")
+def _strategies_for(strategy_field: str):
+    """Parse a comma-separated strategy field into an ordered list of
+    (name, instance) tuples. Order is preserved — leftmost is highest priority.
+    """
+    names = [s.strip() for s in (strategy_field or "").split(",") if s.strip()]
+    out = []
+    for name in names:
+        if name == "daily_breakout":
+            out.append((name, DailyBreakoutStrategy()))
+        elif name == "daily_pullback":
+            out.append((name, DailyPullbackStrategy()))
+        else:
+            log.warning("Unknown strategy %r in session config", name)
+    return out
 
 
 def _candle_from_exchange(row: dict) -> Candle:
@@ -213,7 +227,15 @@ class AutoTradingWorker:
             if not markets:
                 return
 
-            strategy = _strategy_for(session.config.strategy)
+            strategies = _strategies_for(session.config.strategy)
+            if not strategies:
+                log.warning(
+                    "Session %s: no valid strategies configured (%r)",
+                    session.id, session.config.strategy,
+                )
+                return
+
+            strategy_names = ",".join(name for name, _ in strategies)
 
             long_signals = 0
             short_signals = 0
@@ -221,7 +243,6 @@ class AutoTradingWorker:
             skips = 0
             skip_reasons: list[str] = []
 
-            # Tier cap for this account size — enforced per-scan, not per-market.
             tier_max_concurrent = rules_for(balance).max_concurrent
             placed_this_scan = 0
 
@@ -229,7 +250,6 @@ class AutoTradingWorker:
                 if market in open_inst_ids:
                     continue
 
-                # Count includes positions we placed earlier in THIS scan.
                 current_open = len(positions) + placed_this_scan
                 if current_open >= tier_max_concurrent:
                     log.info(
@@ -239,7 +259,6 @@ class AutoTradingWorker:
                     )
                     break
 
-                # Re-read exposure so newly placed positions are counted.
                 current_exposure = self.session_manager.session_open_exposure(session.id)
 
                 decision = evaluate_entry(
@@ -263,40 +282,61 @@ class AutoTradingWorker:
                     skip_reasons.append(f"{market}: risk ({decision.reason})")
                     break
 
-                try:
-                    signal = await self._evaluate_market(client, strategy, market)
-                except TRANSIENT_ERRORS as exc:
-                    log.debug("Session %s: evaluate %s failed — %s: %s",
-                              session.id, market, type(exc).__name__, exc)
-                    continue
+                # --- Try each strategy in priority order ---
+                primary_signal = None   # for skip reason display
+                entry_signal = None
+                entry_strategy_name = None
 
-                if signal is None:
+                for strat_name, strat_obj in strategies:
+                    try:
+                        sig = await self._evaluate_market(client, strat_obj, market)
+                    except TRANSIENT_ERRORS as exc:
+                        log.debug("Session %s: evaluate %s with %s failed — %s: %s",
+                                  session.id, market, strat_name,
+                                  type(exc).__name__, exc)
+                        continue
+
+                    if sig is None:
+                        continue
+
+                    if primary_signal is None:
+                        primary_signal = sig
+
+                    if sig.is_entry and sig.is_valid():
+                        entry_signal = sig
+                        entry_strategy_name = strat_name
+                        break
+
+                if entry_signal is None:
                     skips += 1
-                    skip_reasons.append(f"{market}: no signal")
+                    if primary_signal is not None:
+                        skip_reasons.append(f"{market}: {primary_signal.reason}")
+                    else:
+                        skip_reasons.append(f"{market}: no signal")
                     continue
 
-                if not signal.is_entry or not signal.is_valid():
-                    skips += 1
-                    skip_reasons.append(f"{market}: {signal.reason}")
-                    continue
-
-                if signal.action == "long":
+                if entry_signal.action == "long":
                     long_signals += 1
                 else:
                     short_signals += 1
 
                 placed = await self._place_entry(
-                    client, session, signal, balance, decision.risk_amount
+                    client, session, entry_signal, balance, decision.risk_amount
                 )
                 if placed:
                     entries_placed += 1
                     placed_this_scan += 1
+                    log.info(
+                        "Session %s: entry on %s via %s (%s)",
+                        session.id, market, entry_strategy_name,
+                        entry_signal.action,
+                    )
 
             log.info(
-                "Session %s: scan done — markets=%d long_signals=%d "
-                "short_signals=%d entries=%d skips=%d",
-                session.id, len(markets), long_signals, short_signals,
-                entries_placed, skips,
+                "Session %s: scan done — strategies=%s markets=%d "
+                "long_signals=%d short_signals=%d entries=%d skips=%d",
+                session.id, strategy_names, len(markets),
+                long_signals, short_signals, entries_placed, skips,
             )
             if skip_reasons:
                 log.info("Session %s: skip detail — %s",
@@ -320,7 +360,6 @@ class AutoTradingWorker:
         if not tracked:
             return
 
-        # Parallel candle fetch — one round-trip worth of latency, not N.
         async def fetch_candles(tp: TrackedPosition):
             try:
                 return await client.candles(tp.inst_id, "4H", 30)
@@ -343,13 +382,10 @@ class AutoTradingWorker:
             last_close = Decimal(str(last["close"]))
             last_ts = int(last["timestamp"])
 
-            # Direction is authoritative now — never guess from pos_side.
             side = tp.direction
             if side not in ("long", "short"):
                 continue
 
-            # Original TP: use the value we stored at entry. Only reconstruct
-            # if for some reason it's missing (older rows).
             if tp.take_profit is not None:
                 original_tp = tp.take_profit
             else:
@@ -446,8 +482,6 @@ class AutoTradingWorker:
             filled = Decimal((detail or {}).get("accFillSz") or "0")
             pnl = Decimal((detail or {}).get("pnl") or "0")
 
-            # Three-way classification: win / loss / unknown.
-            # A PnL of exactly 0 is NOT a loss — it is a scratch trade.
             is_win: Optional[bool]
             if pnl > 0:
                 is_win = True
@@ -489,18 +523,6 @@ class AutoTradingWorker:
     # --------------------------------------------------------------
 
     async def _fetch_position_pnl(self, client, tp: TrackedPosition):
-        """Find the realized PnL for a closed position.
-
-        Priority:
-          1. positions-history — the only place OKX exposes realizedPnl
-             for closed positions (including user-initiated manual closes).
-          2. close order detail — fallback if the position history isn't
-             populated yet, or the entry order's `pnl` field unexpectedly
-             carries a value.
-
-        Returns (pnl_or_None, okx_state_or_None).
-        """
-        # 1. positions-history — most reliable source for realized PnL
         try:
             history = await client.positions_history(tp.inst_id, limit=20)
             candidates = [
@@ -509,7 +531,6 @@ class AutoTradingWorker:
                 and row.get("realizedPnl") not in (None, "")
             ]
             if candidates:
-                # Most recent first
                 candidates.sort(
                     key=lambda r: int(r.get("uTime") or "0"),
                     reverse=True,
@@ -519,7 +540,6 @@ class AutoTradingWorker:
         except Exception:
             pass
 
-        # 2. Entry order detail — fallback
         if tp.order_id:
             try:
                 detail = await client.order_detail(tp.inst_id, tp.order_id)
@@ -580,15 +600,12 @@ class AutoTradingWorker:
             except Exception:
                 bal = session.current_balance
 
-            # Three-way classification: win / loss / unknown.
-            # A PnL of exactly 0 is NOT a loss — it is a scratch trade.
             is_win: Optional[bool] = None
             if pnl is not None:
                 if pnl > 0:
                     is_win = True
                 elif pnl < 0:
                     is_win = False
-                # pnl == 0 → leave as None (unknown), never a loss
 
             self.session_manager.record_trade_result(session.id, is_win, bal)
             log.info("Session %s: reconciled %s %s (pnl=%s, win=%s)",
