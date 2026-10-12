@@ -207,8 +207,12 @@ class ClosePositionRequest(BaseModel):
 
 class StartSessionRequest(BaseModel):
     mode: Literal["day_trading"] = "day_trading"
-    strategy: str = Field(default="daily_breakout", min_length=3, max_length=32)
-    duration_hours: float = Field(gt=0, le=24 * 366)   # ← change this line
+    # Comma-separated list of strategies. Examples:
+    #   "daily_breakout"
+    #   "daily_pullback"
+    #   "daily_breakout,daily_pullback"   (priority = left-to-right)
+    strategy: str = Field(default="daily_breakout", min_length=3, max_length=64)
+    duration_hours: float = Field(gt=0, le=24 * 366)   # up to ~1 year
     target_profit: Decimal = Field(gt=0)
     max_loss: Decimal = Field(gt=0)
     risk_per_trade_pct: Decimal = Field(ge=0, le=10)
@@ -1313,6 +1317,17 @@ async def auto_start(request: StartSessionRequest,
         raise HTTPException(400, "Percentage risk must be greater than zero.")
     if request.risk_unit == "usdt" and request.risk_per_trade_usdt <= 0:
         raise HTTPException(400, "USDT risk must be greater than zero.")
+
+        # Validate strategy list — must contain at least one known strategy name.
+    valid_strategies = {"daily_breakout", "daily_pullback"}
+    requested = [s.strip() for s in (request.strategy or "").split(",") if s.strip()]
+    if not requested:
+        raise HTTPException(400, "Pick at least one strategy.")
+    unknown = [s for s in requested if s not in valid_strategies]
+    if unknown:
+        raise HTTPException(400, f"Unknown strategy: {', '.join(unknown)}")
+    if len(requested) > 2:
+        raise HTTPException(400, "At most 2 strategies per session.")
 
     config = SessionConfig(
         mode=request.mode,
