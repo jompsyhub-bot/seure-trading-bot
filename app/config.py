@@ -65,6 +65,18 @@ class Settings:
                 raise RuntimeError("Live mode requires ALLOW_LIVE_TRADING=true")
             if not all([settings.bybit_api_key, settings.bybit_api_secret, settings.live_confirmation_code]):
                 raise RuntimeError("Live mode requires Bybit credentials and LIVE_CONFIRMATION_CODE")
+
+        # Global live-trading guard:
+        # If ALLOW_LIVE_TRADING is on but no confirmation code is set, refuse
+        # to boot. This prevents ever shipping a live environment without a
+        # required gate for users to prove intent.
+        if settings.allow_live_trading and not settings.live_confirmation_code:
+            raise RuntimeError(
+                "ALLOW_LIVE_TRADING=true requires LIVE_CONFIRMATION_CODE to be set. "
+                "Set a high-entropy confirmation phrase in your environment, or set "
+                "ALLOW_LIVE_TRADING=false to keep live trading disabled."
+            )
+
         if not Decimal("1") <= settings.max_demo_margin_pct <= Decimal("100"):
             raise RuntimeError("MAX_DEMO_MARGIN_PCT must be between 1 and 100")
         return settings
