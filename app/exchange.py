@@ -27,29 +27,68 @@ class OrderRejected(ExchangeError):
     pass
 
 
-class OKXDemoClient:
-    """OKX Demo futures adapter, including authenticated private updates."""
+# ---------------------------------------------------------------------------
+# OKX client — base class shared by demo and live
+# ---------------------------------------------------------------------------
+
+class OKXClient:
+    """OKX REST + WebSocket adapter.
+
+    The only difference between demo and live is:
+      * the `x-simulated-trading` header ("1" for demo, "0" for live)
+      * the WebSocket host (wspap.okx.com for demo, ws.okx.com for live)
+
+    Both are driven by `self.live`, which the two subclasses set at init
+    time. Every other behavior — signing, endpoints, payloads — is
+    identical between the two environments.
+    """
 
     base_url = "https://www.okx.com"
-    demo_private_ws_url = "wss://wspap.okx.com:8443/ws/v5/private"
-    demo_public_ws_url = "wss://wspap.okx.com:8443/ws/v5/public"
 
-    def __init__(self, api_key: str, api_secret: str, passphrase: str):
+    # WebSocket hosts. Demo uses wspap.okx.com; live uses ws.okx.com.
+    _DEMO_WS_HOST = "wss://wspap.okx.com:8443"
+    _LIVE_WS_HOST = "wss://ws.okx.com:8443"
+
+    def __init__(self, api_key: str, api_secret: str, passphrase: str, *, live: bool):
         self.api_key = api_key
         self.api_secret = api_secret
         self.passphrase = passphrase
+        self.live = live
         self.session: aiohttp.ClientSession | None = None
+        if live:
+            log.warning(
+                "OKXLiveClient initialized — this client places REAL orders. "
+                "api_key prefix=%s",
+                api_key[:6] if api_key else "<empty>",
+            )
+
+    # -- WS URLs --
+
+    def _private_ws_url(self) -> str:
+        host = self._LIVE_WS_HOST if self.live else self._DEMO_WS_HOST
+        return f"{host}/ws/v5/private"
+
+    def _public_ws_url(self) -> str:
+        host = self._LIVE_WS_HOST if self.live else self._DEMO_WS_HOST
+        return f"{host}/ws/v5/public"
+
+    # -- HTTP session --
 
     async def _session(self) -> aiohttp.ClientSession:
         if self.session is None:
             connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=15))
+            self.session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=15),
+            )
         return self.session
 
     async def close(self) -> None:
         if self.session:
             await self.session.close()
             self.session = None
+
+    # -- WebSockets --
 
     async def private_events(self):
         timestamp = str(int(time.time()))
@@ -59,7 +98,7 @@ class OKXDemoClient:
         ).decode()
         session = await self._session()
         async with session.ws_connect(
-            self.demo_private_ws_url, heartbeat=20, receive_timeout=45
+            self._private_ws_url(), heartbeat=20, receive_timeout=45
         ) as socket:
             await socket.send_json({"op": "login", "args": [{
                 "apiKey": self.api_key,
@@ -79,7 +118,7 @@ class OKXDemoClient:
                         continue
                     if payload.get("event") == "login":
                         if payload.get("code") != "0":
-                            raise ExchangeError(payload.get("msg", "OKX Demo WebSocket login failed"))
+                            raise ExchangeError(payload.get("msg", "OKX WebSocket login failed"))
                         authenticated = True
                         await socket.send_json({"id": uuid.uuid4().hex[:24], "op": "subscribe", "args": [
                             {"channel": "positions", "instType": "ANY", "extraParams": '{"updateInterval":"0"}'},
@@ -87,16 +126,20 @@ class OKXDemoClient:
                         ]})
                         continue
                     if payload.get("event") == "error":
-                        raise ExchangeError(payload.get("msg", "OKX Demo WebSocket subscription failed"))
+                        raise ExchangeError(payload.get("msg", "OKX WebSocket subscription failed"))
                     if authenticated and payload.get("arg"):
                         yield payload
-                elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
-                    raise ExchangeError("OKX Demo WebSocket disconnected")
+                elif message.type in {
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.ERROR,
+                }:
+                    raise ExchangeError("OKX WebSocket disconnected")
 
     async def public_ticker_events(self, instruments: set[str]):
         session = await self._session()
         async with session.ws_connect(
-            self.demo_public_ws_url, heartbeat=15, receive_timeout=30,
+            self._public_ws_url(), heartbeat=15, receive_timeout=30,
         ) as socket:
             subscribed_channel = "bbo-tbt"
             await socket.send_json({"op": "subscribe", "args": [
@@ -121,18 +164,18 @@ class OKXDemoClient:
                     if event == "error":
                         if subscribed_channel == "bbo-tbt":
                             msg = payload.get("msg", "")
-                            log.warning("OKX Demo rejected bbo-tbt, falling back to tickers: %s", msg)
+                            log.warning("OKX rejected bbo-tbt, falling back to tickers: %s", msg)
                             await socket.send_json({"op": "subscribe", "args": [
                                 {"channel": "tickers", "instId": instrument}
                                 for instrument in sorted(instruments)
                             ]})
                             subscribed_channel = "tickers"
                             continue
-                        raise ExchangeError(payload.get("msg", "OKX Demo ticker subscription failed"))
+                        raise ExchangeError(payload.get("msg", "OKX ticker subscription failed"))
 
                     if event == "subscribe":
                         log.info(
-                            "OKX Demo public feed subscribed: channel=%s inst=%s",
+                            "OKX public feed subscribed: channel=%s inst=%s",
                             payload.get("arg", {}).get("channel"),
                             payload.get("arg", {}).get("instId"),
                         )
@@ -167,38 +210,58 @@ class OKXDemoClient:
                     now = time.monotonic()
                     if now - last_log >= 30:
                         log.info(
-                            "OKX Demo public feed stats: channel=%s ticks_last_30s=%d",
+                            "OKX public feed stats: channel=%s ticks_last_30s=%d",
                             subscribed_channel, tick_count,
                         )
                         last_log = now
                         tick_count = 0
 
-                elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
-                    raise ExchangeError("OKX Demo public ticker feed disconnected")
+                elif message.type in {
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.ERROR,
+                }:
+                    raise ExchangeError("OKX public ticker feed disconnected")
+
+    # -- Auth headers --
 
     def _headers(self, method: str, request_path: str, body: str = "") -> dict[str, str]:
         timestamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         prehash = f"{timestamp}{method.upper()}{request_path}{body}"
-        signature = base64.b64encode(hmac.new(self.api_secret.encode(), prehash.encode(), hashlib.sha256).digest()).decode()
+        signature = base64.b64encode(
+            hmac.new(self.api_secret.encode(), prehash.encode(), hashlib.sha256).digest()
+        ).decode()
         return {
             "OK-ACCESS-KEY": self.api_key,
             "OK-ACCESS-SIGN": signature,
             "OK-ACCESS-TIMESTAMP": timestamp,
             "OK-ACCESS-PASSPHRASE": self.passphrase,
-            "x-simulated-trading": "1",
+            # The ONLY difference between demo and live requests.
+            "x-simulated-trading": "0" if self.live else "1",
             "Content-Type": "application/json",
         }
+
+    # -- Private REST endpoints --
 
     async def account_config(self) -> dict:
         request_path = "/api/v5/account/config"
         session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+        async with session.get(
+            f"{self.base_url}{request_path}",
+            headers=self._headers("GET", request_path),
+        ) as response:
             try:
                 data = await response.json(content_type=None)
             except (ValueError, UnicodeDecodeError):
-                raise ExchangeError(f"OKX returned a non-API response (HTTP {response.status})") from None
+                raise ExchangeError(
+                    f"OKX returned a non-API response (HTTP {response.status})"
+                ) from None
         if not isinstance(data, dict) or data.get("code") != "0" or not data.get("data"):
-            message = data.get("msg", "OKX Demo API validation failed") if isinstance(data, dict) else "OKX Demo API validation failed"
+            message = (
+                data.get("msg", "OKX API validation failed")
+                if isinstance(data, dict)
+                else "OKX API validation failed"
+            )
             raise ExchangeError(message)
         return data["data"][0]
 
@@ -208,7 +271,11 @@ class OKXDemoClient:
         request_path = "/api/v5/account/set-position-mode"
         body = json.dumps({"posMode": position_mode}, separators=(",", ":"))
         session = await self._session()
-        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
+        async with session.post(
+            f"{self.base_url}{request_path}",
+            data=body,
+            headers=self._headers("POST", request_path, body),
+        ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0":
             raise ExchangeError(data.get("msg", "OKX rejected the position mode change"))
@@ -216,26 +283,74 @@ class OKXDemoClient:
 
     async def set_leverage(self, inst_id: str, leverage: Decimal, position_side: str) -> None:
         request_path = "/api/v5/account/set-leverage"
-        body = json.dumps({"instId": inst_id, "lever": str(leverage), "mgnMode": "isolated", "posSide": position_side}, separators=(",", ":"))
+        body = json.dumps(
+            {"instId": inst_id, "lever": str(leverage), "mgnMode": "isolated", "posSide": position_side},
+            separators=(",", ":"),
+        )
         session = await self._session()
-        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
+        async with session.post(
+            f"{self.base_url}{request_path}",
+            data=body,
+            headers=self._headers("POST", request_path, body),
+        ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0":
             raise ExchangeError(data.get("msg", "OKX rejected the leverage setting"))
 
-    async def place_market_swap(self, *, inst_id: str, side: str, position_side: str, contracts: Decimal, client_order_id: str, take_profit: Decimal, stop_loss: Decimal) -> dict:
+    async def place_market_swap(
+        self,
+        *,
+        inst_id: str,
+        side: str,
+        position_side: str,
+        contracts: Decimal,
+        client_order_id: str,
+        take_profit: Decimal,
+        stop_loss: Decimal,
+    ) -> dict:
         request_path = "/api/v5/trade/order"
-        payload = {"instId": inst_id, "tdMode": "isolated", "side": side, "posSide": position_side, "ordType": "market", "sz": str(contracts), "clOrdId": client_order_id, "attachAlgoOrds": [{"attachAlgoClOrdId": f"tp{client_order_id}"[:32], "tpTriggerPx": str(take_profit), "tpTriggerPxType": "mark", "tpOrdPx": "-1", "slTriggerPx": str(stop_loss), "slTriggerPxType": "mark", "slOrdPx": "-1"}]}
+        payload = {
+            "instId": inst_id,
+            "tdMode": "isolated",
+            "side": side,
+            "posSide": position_side,
+            "ordType": "market",
+            "sz": str(contracts),
+            "clOrdId": client_order_id,
+            "attachAlgoOrds": [{
+                "attachAlgoClOrdId": f"tp{client_order_id}"[:32],
+                "tpTriggerPx": str(take_profit),
+                "tpTriggerPxType": "mark",
+                "tpOrdPx": "-1",
+                "slTriggerPx": str(stop_loss),
+                "slTriggerPxType": "mark",
+                "slOrdPx": "-1",
+            }],
+        }
         body = json.dumps(payload, separators=(",", ":"))
         session = await self._session()
-        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
+        async with session.post(
+            f"{self.base_url}{request_path}",
+            data=body,
+            headers=self._headers("POST", request_path, body),
+        ) as response:
             data = await self._response_json(response)
         item = data.get("data", [{}])[0]
         if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
-            raise OrderRejected(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo order")
+            raise OrderRejected(
+                item.get("sMsg") or data.get("msg") or "OKX rejected the order"
+            )
         return item
 
-    async def close_market_swap(self, *, inst_id: str, side: str, position_side: str, contracts: Decimal, client_order_id: str) -> dict:
+    async def close_market_swap(
+        self,
+        *,
+        inst_id: str,
+        side: str,
+        position_side: str,
+        contracts: Decimal,
+        client_order_id: str,
+    ) -> dict:
         if side not in {"buy", "sell"}:
             raise ValueError("A close order must use buy or sell")
         if position_side not in {"net", "long", "short"}:
@@ -243,13 +358,31 @@ class OKXDemoClient:
         if contracts <= 0:
             raise ValueError("Close size must be greater than zero")
         request_path = "/api/v5/trade/order"
-        body = json.dumps({"instId": inst_id, "tdMode": "isolated", "side": side, "posSide": position_side, "ordType": "market", "sz": str(contracts), "reduceOnly": True, "clOrdId": client_order_id}, separators=(",", ":"))
+        body = json.dumps(
+            {
+                "instId": inst_id,
+                "tdMode": "isolated",
+                "side": side,
+                "posSide": position_side,
+                "ordType": "market",
+                "sz": str(contracts),
+                "reduceOnly": True,
+                "clOrdId": client_order_id,
+            },
+            separators=(",", ":"),
+        )
         session = await self._session()
-        async with session.post(f"{self.base_url}{request_path}", data=body, headers=self._headers("POST", request_path, body)) as response:
+        async with session.post(
+            f"{self.base_url}{request_path}",
+            data=body,
+            headers=self._headers("POST", request_path, body),
+        ) as response:
             data = await self._response_json(response)
         item = data.get("data", [{}])[0]
         if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
-            raise OrderRejected(item.get("sMsg") or data.get("msg") or "OKX rejected the Demo close order")
+            raise OrderRejected(
+                item.get("sMsg") or data.get("msg") or "OKX rejected the close order"
+            )
         return item
 
     async def positions_history(self, inst_id: str, limit: int = 20) -> list[dict]:
@@ -273,20 +406,24 @@ class OKXDemoClient:
             raise ExchangeError(data.get("msg", "Could not retrieve OKX position history"))
         return data.get("data", [])
 
-    async def amend_algo_sl(self, *, inst_id: str, algo_clordid: str,
-                            new_sl_trigger: Decimal) -> dict:
+    async def amend_algo_sl(
+        self, *, inst_id: str, algo_clordid: str, new_sl_trigger: Decimal
+    ) -> dict:
         """Move the stop-loss leg of an attached algo order to a new trigger.
 
         `algo_clordid` is the attachAlgoClOrdId we set at entry
         (format: "tp{original_clordid}").
         """
         request_path = "/api/v5/trade/amend-algos"
-        body = json.dumps({
-            "instId": inst_id,
-            "algoClOrdId": algo_clordid,
-            "newSlTriggerPx": str(new_sl_trigger),
-            "newSlOrdPx": "-1",
-        }, separators=(",", ":"))
+        body = json.dumps(
+            {
+                "instId": inst_id,
+                "algoClOrdId": algo_clordid,
+                "newSlTriggerPx": str(new_sl_trigger),
+                "newSlOrdPx": "-1",
+            },
+            separators=(",", ":"),
+        )
         session = await self._session()
         async with session.post(
             f"{self.base_url}{request_path}",
@@ -297,15 +434,17 @@ class OKXDemoClient:
         item = data.get("data", [{}])[0]
         if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
             raise OrderRejected(
-                item.get("sMsg") or data.get("msg") or
-                "OKX rejected the SL amend"
+                item.get("sMsg") or data.get("msg") or "OKX rejected the SL amend"
             )
         return item
 
     async def order_detail(self, inst_id: str, order_id: str) -> dict | None:
         request_path = f"/api/v5/trade/order?instId={inst_id}&ordId={order_id}"
         session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+        async with session.get(
+            f"{self.base_url}{request_path}",
+            headers=self._headers("GET", request_path),
+        ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0":
             raise ExchangeError(data.get("msg", "Could not reconcile OKX order"))
@@ -315,7 +454,10 @@ class OKXDemoClient:
         """Fetch an order by our clOrdId (fallback when ordId is unknown)."""
         request_path = f"/api/v5/trade/order?instId={inst_id}&clOrdId={client_order_id}"
         session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+        async with session.get(
+            f"{self.base_url}{request_path}",
+            headers=self._headers("GET", request_path),
+        ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0":
             raise ExchangeError(data.get("msg", "Could not reconcile OKX order by clOrdId"))
@@ -324,10 +466,13 @@ class OKXDemoClient:
     async def swap_positions(self) -> list[dict]:
         request_path = "/api/v5/account/positions?instType=SWAP"
         session = await self._session()
-        async with session.get(f"{self.base_url}{request_path}", headers=self._headers("GET", request_path)) as response:
+        async with session.get(
+            f"{self.base_url}{request_path}",
+            headers=self._headers("GET", request_path),
+        ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0":
-            raise ExchangeError(data.get("msg", "Could not retrieve OKX Demo positions"))
+            raise ExchangeError(data.get("msg", "Could not retrieve OKX positions"))
         return [row for row in data.get("data", []) if Decimal(row.get("pos") or "0") != 0]
 
     async def account_balance(self) -> Decimal:
@@ -338,8 +483,8 @@ class OKXDemoClient:
 
           * `availEq` includes cross-currency collateral in multi-currency
             margin mode, which massively inflates the number when the
-            account holds BTC/ETH test balances. That is what caused the
-            false +$98,856 target hit in session #23.
+            account holds BTC/ETH test balances. That caused a false
+            +$98,856 target hit in session #23.
           * `availEq` also drops by the margin amount when a position
             opens, which falsely triggered the session's max-loss check.
           * `totalEq` mixes all currencies together, so it has the same
@@ -357,7 +502,7 @@ class OKXDemoClient:
         ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0" or not data.get("data"):
-            raise ExchangeError(data.get("msg", "Could not retrieve OKX Demo balance"))
+            raise ExchangeError(data.get("msg", "Could not retrieve OKX balance"))
         details = data["data"][0].get("details", [])
         usdt = next((item for item in details if item.get("ccy") == "USDT"), None)
         if not usdt:
@@ -365,25 +510,27 @@ class OKXDemoClient:
         eq = usdt.get("eq") or usdt.get("cashBal") or "0"
         return Decimal(str(eq))
 
+    # -- Public REST endpoints (no auth, same for demo and live) --
+
     async def swap_instrument(self, inst_id: str) -> dict:
         session = await self._session()
         async with session.get(
             f"{self.base_url}/api/v5/public/instruments",
             params={"instType": "SWAP", "instId": inst_id},
-            headers={"x-simulated-trading": "1"},
+            headers={"x-simulated-trading": "0" if self.live else "1"},
         ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0" or not data.get("data"):
-            raise ExchangeError(data.get("msg", f"No live OKX perpetual instrument found for {inst_id}"))
+            raise ExchangeError(data.get("msg", f"No OKX perpetual instrument found for {inst_id}"))
         return data["data"][0]
 
     async def list_swap_instruments(self) -> list[dict]:
-        """Return SWAP instruments available on OKX Demo Trading."""
+        """Return SWAP instruments available on the current environment."""
         session = await self._session()
         async with session.get(
             f"{self.base_url}/api/v5/public/instruments",
             params={"instType": "SWAP"},
-            headers={"x-simulated-trading": "1"},
+            headers={"x-simulated-trading": "0" if self.live else "1"},
         ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0" or not isinstance(data.get("data"), list):
@@ -392,7 +539,10 @@ class OKXDemoClient:
 
     async def last_price(self, inst_id: str) -> Decimal:
         session = await self._session()
-        async with session.get(f"{self.base_url}/api/v5/market/ticker", params={"instId": inst_id}) as response:
+        async with session.get(
+            f"{self.base_url}/api/v5/market/ticker",
+            params={"instId": inst_id},
+        ) as response:
             data = await self._response_json(response)
         if data.get("code") != "0" or not data.get("data"):
             raise ExchangeError(data.get("msg", f"No OKX market price available for {inst_id}"))
@@ -428,18 +578,51 @@ class OKXDemoClient:
         try:
             data = await response.json(content_type=None)
         except (ValueError, UnicodeDecodeError):
-            raise ExchangeError(f"OKX returned a non-API response (HTTP {response.status})") from None
+            raise ExchangeError(
+                f"OKX returned a non-API response (HTTP {response.status})"
+            ) from None
         if not isinstance(data, dict):
-            raise ExchangeError(f"OKX returned an unexpected response (HTTP {response.status})")
+            raise ExchangeError(
+                f"OKX returned an unexpected response (HTTP {response.status})"
+            )
         return data
 
+
+# ---------------------------------------------------------------------------
+# Thin subclasses — the ONLY difference is the `live` flag
+# ---------------------------------------------------------------------------
+
+class OKXDemoClient(OKXClient):
+    """OKX Demo Trading client. Routes every request to demo."""
+
+    def __init__(self, api_key: str, api_secret: str, passphrase: str):
+        super().__init__(api_key, api_secret, passphrase, live=False)
+
+
+class OKXLiveClient(OKXClient):
+    """OKX Live Trading client. Routes every request to the real account.
+
+    WARNING: orders placed through this client use real funds.
+    """
+
+    def __init__(self, api_key: str, api_secret: str, passphrase: str):
+        super().__init__(api_key, api_secret, passphrase, live=True)
+
+
+# ---------------------------------------------------------------------------
+# Bybit (legacy, unchanged)
+# ---------------------------------------------------------------------------
 
 class BybitClient:
     """Minimal V5 client: credentials stay in process memory and auth uses headers."""
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True, environment: str | None = None):
         self.api_key, self.api_secret = api_key, api_secret
         environment = environment or ("testnet" if testnet else "mainnet")
-        urls = {"testnet": "https://api-testnet.bybit.com", "demo": "https://api-demo.bybit.com", "mainnet": "https://api.bybit.com"}
+        urls = {
+            "testnet": "https://api-testnet.bybit.com",
+            "demo": "https://api-demo.bybit.com",
+            "mainnet": "https://api.bybit.com",
+        }
         if environment not in urls:
             raise ValueError("Unsupported Bybit environment")
         self.environment = environment
@@ -449,7 +632,10 @@ class BybitClient:
     async def _session(self) -> aiohttp.ClientSession:
         if self.session is None:
             connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=15))
+            self.session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=15),
+            )
         return self.session
 
     async def close(self) -> None:
@@ -461,7 +647,13 @@ class BybitClient:
         timestamp, window = str(int(time.time() * 1000)), "5000"
         payload = f"{timestamp}{self.api_key}{window}{body}"
         signature = hmac.new(self.api_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        return {"X-BAPI-API-KEY": self.api_key, "X-BAPI-TIMESTAMP": timestamp, "X-BAPI-RECV-WINDOW": window, "X-BAPI-SIGN": signature, "Content-Type": "application/json"}
+        return {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-RECV-WINDOW": window,
+            "X-BAPI-SIGN": signature,
+            "Content-Type": "application/json",
+        }
 
     async def _json(self, response: aiohttp.ClientResponse) -> dict:
         try:
@@ -477,7 +669,10 @@ class BybitClient:
 
     async def ticker(self, symbol: str) -> Decimal:
         session = await self._session()
-        async with session.get(f"{self.base_url}/v5/market/tickers", params={"category": "spot", "symbol": symbol}) as response:
+        async with session.get(
+            f"{self.base_url}/v5/market/tickers",
+            params={"category": "spot", "symbol": symbol},
+        ) as response:
             data = await self._json(response)
         items = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not items:
@@ -486,7 +681,10 @@ class BybitClient:
 
     async def instrument(self, symbol: str) -> dict:
         session = await self._session()
-        async with session.get(f"{self.base_url}/v5/market/instruments-info", params={"category": "spot", "symbol": symbol}) as response:
+        async with session.get(
+            f"{self.base_url}/v5/market/instruments-info",
+            params={"category": "spot", "symbol": symbol},
+        ) as response:
             data = await self._json(response)
         items = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not items:
@@ -495,26 +693,53 @@ class BybitClient:
 
     async def linear_instrument(self, symbol: str) -> dict:
         session = await self._session()
-        async with session.get(f"{self.base_url}/v5/market/instruments-info", params={"category": "linear", "symbol": symbol}) as response:
+        async with session.get(
+            f"{self.base_url}/v5/market/instruments-info",
+            params={"category": "linear", "symbol": symbol},
+        ) as response:
             data = await self._json(response)
         items = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not items:
             raise ExchangeError(f"No linear futures instrument found for {symbol}")
         return items[0]
 
-    async def place_market_order(self, intent: OrderIntent, stop_loss: Decimal | None = None, take_profit: Decimal | None = None) -> OrderResult:
+    async def place_market_order(
+        self,
+        intent: OrderIntent,
+        stop_loss: Decimal | None = None,
+        take_profit: Decimal | None = None,
+    ) -> OrderResult:
         info = await self.instrument(intent.symbol)
         price = await self.ticker(intent.symbol)
         lot = info["lotSizeFilter"]
-        qty = (intent.notional_usdt / price).quantize(Decimal(lot["basePrecision"]), rounding=ROUND_DOWN)
+        qty = (intent.notional_usdt / price).quantize(
+            Decimal(lot["basePrecision"]), rounding=ROUND_DOWN
+        )
         if qty <= 0 or qty < Decimal(lot["minOrderQty"]):
             raise ExchangeError("Order is below Bybit minimum quantity")
-        payload = {"category": "spot", "symbol": intent.symbol, "side": intent.side.value, "orderType": "Market", "qty": str(qty), "marketUnit": "baseCoin", "orderLinkId": intent.idempotency_key}
+        payload = {
+            "category": "spot",
+            "symbol": intent.symbol,
+            "side": intent.side.value,
+            "orderType": "Market",
+            "qty": str(qty),
+            "marketUnit": "baseCoin",
+            "orderLinkId": intent.idempotency_key,
+        }
         if stop_loss is not None and take_profit is not None:
-            payload.update({"stopLoss": str(stop_loss), "takeProfit": str(take_profit), "tpOrderType": "Market", "slOrderType": "Market"})
+            payload.update({
+                "stopLoss": str(stop_loss),
+                "takeProfit": str(take_profit),
+                "tpOrderType": "Market",
+                "slOrderType": "Market",
+            })
         body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         session = await self._session()
-        async with session.post(f"{self.base_url}/v5/order/create", data=body, headers=self._headers(body)) as response:
+        async with session.post(
+            f"{self.base_url}/v5/order/create",
+            data=body,
+            headers=self._headers(body),
+        ) as response:
             data = await self._json(response)
         if data.get("retCode") != 0:
             raise ExchangeError(data.get("retMsg", "Bybit rejected order"))
@@ -523,18 +748,29 @@ class BybitClient:
     async def order_status(self, order_id: str) -> OrderResult:
         query = urlencode(sorted({"category": "spot", "orderId": order_id}.items()))
         session = await self._session()
-        async with session.get(f"{self.base_url}/v5/order/realtime?{query}", headers=self._headers(query)) as response:
+        async with session.get(
+            f"{self.base_url}/v5/order/realtime?{query}",
+            headers=self._headers(query),
+        ) as response:
             data = await self._json(response)
         orders = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not orders:
             raise ExchangeError(f"Could not reconcile order {order_id}")
         order = orders[0]
-        return OrderResult(order_id, order["orderStatus"].upper(), Decimal(order.get("avgPrice") or "0"), Decimal(order.get("cumExecQty") or "0"))
+        return OrderResult(
+            order_id,
+            order["orderStatus"].upper(),
+            Decimal(order.get("avgPrice") or "0"),
+            Decimal(order.get("cumExecQty") or "0"),
+        )
 
     async def api_key_info(self) -> dict:
         session = await self._session()
         query = ""
-        async with session.get(f"{self.base_url}/v5/user/query-api", headers=self._headers(query)) as response:
+        async with session.get(
+            f"{self.base_url}/v5/user/query-api",
+            headers=self._headers(query),
+        ) as response:
             data = await self._json(response)
         if data.get("retCode") != 0:
             raise ExchangeError(data.get("retMsg", "Bybit API key validation failed"))
@@ -542,7 +778,10 @@ class BybitClient:
 
     async def rsi_14(self, symbol: str, interval: str = "15") -> Decimal:
         session = await self._session()
-        async with session.get(f"{self.base_url}/v5/market/kline", params={"category": "spot", "symbol": symbol, "interval": interval, "limit": "30"}) as response:
+        async with session.get(
+            f"{self.base_url}/v5/market/kline",
+            params={"category": "spot", "symbol": symbol, "interval": interval, "limit": "30"},
+        ) as response:
             data = await self._json(response)
         rows = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or len(rows) < 15:
