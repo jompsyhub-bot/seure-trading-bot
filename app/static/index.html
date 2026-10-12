@@ -118,6 +118,8 @@ th{color:var(--muted);font-weight:500;font-size:12px}
 .chip.mini-chip.loss{background:rgba(255,137,151,0.10);color:#ff8997}
 .warning{background:rgba(243,196,108,0.08);border:1px solid rgba(243,196,108,0.35);
   color:var(--warn);padding:10px 12px;border-radius:9px;font-size:13px;margin:8px 0;line-height:1.45}
+.warning.danger{background:rgba(255,137,151,0.08);border-color:rgba(255,137,151,0.45);color:#ffc7d4}
+.warning.info{background:rgba(98,140,255,0.08);border-color:rgba(98,140,255,0.35);color:var(--accent-soft)}
 .info-row{display:flex;justify-content:space-between;align-items:center;
   padding:10px 12px;background:rgba(98,140,255,0.06);border-radius:9px;margin:10px 0;font-size:14px}
 .hint{color:var(--muted);font-size:12px;margin:4px 0 8px;line-height:1.4}
@@ -311,6 +313,33 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .market-chip .x:active{opacity:1}
 .token-result.picked{background:rgba(77,221,172,0.15);color:var(--good)}
 .token-result.picked .token-result-meta{color:var(--good)}
+
+/* --- Strategy cards --- */
+.strategy-card{background:var(--field);border:2px solid var(--border);
+  border-radius:12px;padding:14px;margin:8px 0;cursor:pointer;transition:all .15s}
+.strategy-card.selected{border-color:var(--accent);background:rgba(98,140,255,0.10)}
+.strategy-card.selected.safe{border-color:var(--good);background:rgba(77,221,172,0.08)}
+.strategy-card.selected.risky{border-color:var(--warn);background:rgba(243,196,108,0.08)}
+.strategy-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.strategy-check{width:22px;height:22px;border-radius:6px;background:transparent;
+  border:2px solid var(--border);display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;font-size:14px;font-weight:800;color:transparent;transition:all .15s}
+.strategy-card.selected .strategy-check{background:var(--accent);border-color:var(--accent);color:#fff}
+.strategy-card.selected.safe .strategy-check{background:var(--good);border-color:var(--good);color:#0b1020}
+.strategy-card.selected.risky .strategy-check{background:var(--warn);border-color:var(--warn);color:#0b1020}
+.strategy-title{font-weight:700;font-size:15px;flex:1}
+.risk-badge{font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;
+  text-transform:uppercase;letter-spacing:0.4px}
+.risk-badge.safe{background:rgba(77,221,172,0.15);color:var(--good)}
+.risk-badge.medium{background:rgba(243,196,108,0.15);color:var(--warn)}
+.risk-badge.high{background:rgba(255,137,151,0.15);color:#ff8997}
+.strategy-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;
+  font-size:11px;color:var(--muted);margin-top:6px}
+.strategy-stats div{text-align:center;padding:5px 4px;background:rgba(0,0,0,0.18);border-radius:6px}
+.strategy-stats b{display:block;font-size:13px;color:var(--text);font-weight:700;margin-top:2px}
+.strategy-stats b.good{color:var(--good)}
+.strategy-stats b.loss{color:#ff8997}
+.strategy-desc{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4}
 </style>
 </head>
 <body>
@@ -467,10 +496,40 @@ SL @ 77,000"></textarea>
         </div>
 
         <div class="step-label"><span class="step-num">1</span> Strategy</div>
-        <div class="session-mode">
-          <button id="modeDay" class="active" disabled>📊 Daily breakout</button>
+
+        <div class="strategy-card safe selected" id="stratBreakout" onclick="autoToggleStrategy('daily_breakout')">
+          <div class="strategy-head">
+            <div class="strategy-check">✓</div>
+            <div class="strategy-title">📈 Daily breakout</div>
+            <span class="risk-badge safe">Recommended</span>
+          </div>
+          <div class="strategy-stats">
+            <div>Trades / year<b>~12</b></div>
+            <div>6-yr return<b class="good">+22%</b></div>
+            <div>Max drawdown<b>9.8%</b></div>
+          </div>
+          <div class="strategy-desc">Long-only. Buys 20-day breakouts in daily uptrends with volume confirmation. Low frequency, high conviction.</div>
         </div>
-        <p class="hint">Buys 20-day breakouts in daily uptrends with volume confirmation. Long-only, 4h entries, 1D trend filter.</p>
+
+        <div class="strategy-card risky" id="stratPullback" onclick="autoToggleStrategy('daily_pullback')">
+          <div class="strategy-head">
+            <div class="strategy-check">✓</div>
+            <div class="strategy-title">📉 Daily pullback</div>
+            <span class="risk-badge high">Higher risk</span>
+          </div>
+          <div class="strategy-stats">
+            <div>Trades / year<b>~55</b></div>
+            <div>6-yr return<b class="loss">−2%</b></div>
+            <div>Max drawdown<b>~15%</b></div>
+          </div>
+          <div class="strategy-desc">Long + short. Trades pullbacks to 4h EMA20 in the daily trend direction. More active, but lost money over 6 years of backtesting.</div>
+        </div>
+
+        <div id="strategyWarningWrap"></div>
+
+        <p class="hint" id="strategyPriorityHint">
+          When both are selected, <b>Daily breakout</b> has priority — it takes the first valid entry on each market.
+        </p>
 
         <div class="step-label"><span class="step-num">2</span> Duration</div>
         <div class="chip-row" id="durationChips">
@@ -543,7 +602,7 @@ SL @ 77,000"></textarea>
           <button id="marketsCustom" onclick="autoSetMarketsMode('custom')">✏️ My picks</button>
         </div>
         <div id="marketsDefaultHint" class="hint">
-          Default: BTC, ETH, DOGE, SOL, BNB, XRP, ADA, LTC, LINK. Validated for this strategy on 6 years of data.
+          Default: BTC, ETH, DOGE, SOL, BNB, XRP, ADA, LTC, LINK. Validated on 6 years of data.
         </div>
         <div id="marketsCustomWrap" class="hidden">
           <p class="hint" style="margin-top:8px">Selected: <b id="selectedMarketCount">0</b> / 10</p>
@@ -810,7 +869,22 @@ async function api(path, options = {}) {
   let data;
   try { data = text ? JSON.parse(text) : {}; }
   catch { data = { detail: `Server error ${res.status}` }; }
-  if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
+  if (!res.ok) {
+    let detail = data.detail;
+    // FastAPI returns validation errors as an array of {loc, msg, type}.
+    // Stringify them into something readable so we don't show "[object Object]".
+    if (Array.isArray(detail)) {
+      detail = detail
+        .map(e => {
+          const loc = Array.isArray(e?.loc) ? e.loc.join('.') : '';
+          return loc ? `${loc}: ${e.msg || ''}` : (e?.msg || JSON.stringify(e));
+        })
+        .join(' · ');
+    } else if (detail && typeof detail === 'object') {
+      detail = JSON.stringify(detail);
+    }
+    throw new Error(detail || `Request failed (${res.status})`);
+  }
   return data;
 }
 
@@ -1982,6 +2056,7 @@ const autoState = {
   floorPct: 80,
   riskMode: 'auto',
   autoRecommend: null,
+  strategies: new Set(['daily_breakout']),   // default: breakout only
   statusTimer: null,
   historyLoaded: false,
 };
@@ -2001,9 +2076,73 @@ function autoInit() {
   }
   if (!autoState.historyLoaded) autoRefreshHistory();
   autoRenderSelectedMarkets();
+  autoRenderStrategySelection();
   if (autoState.riskMode === 'auto' && !autoState.autoRecommend) {
     autoLoadRecommendation();
   }
+}
+
+function autoToggleStrategy(name) {
+  if (autoState.strategies.has(name)) {
+    if (autoState.strategies.size === 1) {
+      toast('Pick at least one strategy', true);
+      return;
+    }
+    autoState.strategies.delete(name);
+  } else {
+    if (autoState.strategies.size >= 2) {
+      toast('At most 2 strategies per session', true);
+      return;
+    }
+    autoState.strategies.add(name);
+  }
+  autoRenderStrategySelection();
+}
+
+function autoRenderStrategySelection() {
+  const breakoutEl = document.getElementById('stratBreakout');
+  const pullbackEl = document.getElementById('stratPullback');
+  if (!breakoutEl || !pullbackEl) return;
+
+  breakoutEl.classList.toggle('selected', autoState.strategies.has('daily_breakout'));
+  pullbackEl.classList.toggle('selected', autoState.strategies.has('daily_pullback'));
+
+  // Warning banners
+  const warnWrap = document.getElementById('strategyWarningWrap');
+  const hasBreakout = autoState.strategies.has('daily_breakout');
+  const hasPullback = autoState.strategies.has('daily_pullback');
+
+  let html = '';
+  if (hasPullback && !hasBreakout) {
+    html = `
+      <div class="warning danger">
+        ⚠️ <b>Daily pullback lost money over 6 years of backtesting.</b>
+        Its edge didn't survive trading fees on 9 markets. It's more active and trades
+        both directions, but the backtest showed a −2% average return with ~15% max drawdown.
+        Only enable it if you're testing it or willing to accept the risk.
+      </div>`;
+  } else if (hasBreakout && hasPullback) {
+    html = `
+      <div class="warning info">
+        ℹ️ Running both strategies together. <b>Daily breakout takes priority</b> — when
+        both would fire on the same market, breakout wins and pullback is skipped for that scan.
+        Total risk is the same as running one (one position per market max).
+      </div>`;
+  }
+  warnWrap.innerHTML = html;
+
+  const prioHint = document.getElementById('strategyPriorityHint');
+  if (hasBreakout && hasPullback) {
+    prioHint.style.display = 'block';
+  } else {
+    prioHint.style.display = 'none';
+  }
+}
+
+function autoGetStrategyString() {
+  // Preserve priority order: breakout first, then pullback.
+  const order = ['daily_breakout', 'daily_pullback'];
+  return order.filter(s => autoState.strategies.has(s)).join(',');
 }
 
 function autoSetDuration(hours) {
@@ -2173,8 +2312,19 @@ async function autoStartSession() {
   if (!(target > 0))   return toast('Enter a target profit', true);
   if (!(maxLoss > 0))  return toast('Enter a max loss', true);
   if (!(leverage >= 1 && leverage <= 100)) return toast('Leverage 1–100', true);
+  if (autoState.strategies.size === 0) return toast('Pick at least one strategy', true);
   if (autoState.marketsMode === 'custom' && autoState.selectedMarkets.size === 0) {
     return toast('Pick at least one market', true);
+  }
+
+  // Final safety gate: warn before launching pullback-only session.
+  if (autoState.strategies.size === 1 && autoState.strategies.has('daily_pullback')) {
+    const ok = confirm(
+      "⚠️ WARNING — Daily pullback lost money over 6 years of backtesting.\n\n" +
+      "It has a −2% average return with ~15% max drawdown across 9 markets.\n\n" +
+      "Only continue if you're testing it or accept the risk.\n\nStart session anyway?"
+    );
+    if (!ok) return;
   }
 
   let riskPct, riskUsdt, riskUnit;
@@ -2200,7 +2350,7 @@ async function autoStartSession() {
 
   const payload = {
     mode: 'day_trading',
-    strategy: 'daily_breakout',
+    strategy: autoGetStrategyString(),
     duration_hours: duration,
     target_profit: target,
     max_loss: maxLoss,
@@ -2260,6 +2410,18 @@ function autoTierFromBalance(balance) {
   return { label: 'Large', note: 'up to 5% risk · max 3 positions' };
 }
 
+function strategyLabel(strategyField) {
+  const names = String(strategyField || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (names.length === 0) return 'Unknown';
+  if (names.length === 1) {
+    if (names[0] === 'daily_breakout') return 'Daily breakout';
+    if (names[0] === 'daily_pullback') return 'Daily pullback';
+    return names[0];
+  }
+  // Both
+  return 'Both strategies';
+}
+
 function autoRenderLiveSession(s) {
   document.getElementById('autoNoSession').classList.add('hidden');
   const wrap = document.getElementById('autoHasSession');
@@ -2279,6 +2441,8 @@ function autoRenderLiveSession(s) {
   const spSign = sessionPnl >= 0 ? '+' : '-';
 
   const tier = autoTierFromBalance(s.starting_balance);
+  const stratLabel = strategyLabel(s.strategy);
+  const hasPullback = String(s.strategy || '').includes('daily_pullback');
 
   const userRisk = parseFloat(s.risk_per_trade_pct);
   const effectiveRisk = Math.min(userRisk, 5).toFixed(2);
@@ -2301,7 +2465,7 @@ function autoRenderLiveSession(s) {
       <div class="session-header">
         <div class="session-status">
           <span class="session-pulse"></span>
-          <span>Daily breakout · ACTIVE</span>
+          <span>${escapeHtml(stratLabel)} · ACTIVE</span>
         </div>
         <span class="session-history-date">${h}h ${m}m left</span>
       </div>
@@ -2313,6 +2477,7 @@ function autoRenderLiveSession(s) {
         <span class="tag" style="border-color:rgba(98,140,255,0.3)">
           Risk ${effectiveRisk}%${riskWasCapped ? ' (capped from ' + userRisk.toFixed(2) + '%)' : ''}
         </span>
+        ${hasPullback ? '<span class="tag" style="border-color:rgba(243,196,108,0.5);color:var(--warn)">⚠️ Includes pullback</span>' : ''}
       </div>
 
       <div class="session-pnl ${pnlClass}">${pnlSign}$${Math.abs(pnl).toFixed(2)}</div>
@@ -2374,10 +2539,11 @@ async function autoRefreshHistory() {
         error: '⚠️ Error',
       }[s.end_reason] || s.end_reason || 'Ended';
       const date = (s.started_at || '').slice(0, 16).replace('T', ' ');
+      const stratLabel = strategyLabel(s.strategy);
       return `
         <div class="session-history">
           <div class="session-history-row">
-            <span><b>Session P&L</b> · ${s.trades_count} trades (W${s.wins_count}/L${s.losses_count})</span>
+            <span><b>${escapeHtml(stratLabel)}</b> · ${s.trades_count} trades (W${s.wins_count}/L${s.losses_count})</span>
             <span class="session-history-pnl ${cls}">${sign}$${Math.abs(pnl).toFixed(2)}</span>
           </div>
           <div class="session-history-row">
