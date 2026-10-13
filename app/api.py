@@ -110,6 +110,7 @@ async def lifespan(app: FastAPI):
             database=database,
             vault=CredentialVault(settings.encryption_key),
             notifier=notifier,
+            settings=settings,
         )
         task = asyncio.create_task(worker.run(), name="auto-trading-worker")
         position_task = asyncio.create_task(monitor_okx_private_events(notifier), name="okx-private-event-supervisor")
