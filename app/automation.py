@@ -773,6 +773,7 @@ class AutoTradingWorker:
                     order_id=order_id,
                     initial_sl=sl,
                     algo_clordid=algo_clordid,
+                    notional=notional,
                 )
             except Exception as exc:
                 log.warning("Session %s: could not track position — %s: %s",
