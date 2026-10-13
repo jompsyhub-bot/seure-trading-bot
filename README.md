@@ -92,8 +92,6 @@ through does the session begin.
 ### 5. Session runs
 
 The worker trades the user's live account the same way it trades demo.
-Log lines are tagged `[LIVE]` so you can distinguish them from demo at
-a glance.
 
 ### 6. User stops the session
 
