@@ -18,9 +18,16 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .database import Database
-from .exchange import BybitClient, ExchangeError, OKXDemoClient, OrderRejected
+from .exchange import (
+    BybitClient,
+    ExchangeError,
+    OKXClient,
+    OKXDemoClient,
+    OKXLiveClient,
+    OrderRejected,
+)
 from .models import OrderIntent, OrderResult, Side
-from .security import CredentialVault
+from .security import CredentialVault, secure_equals
 from .web_auth import TelegramAuthError, validate_init_data
 from .automation import AutoTradingWorker
 from .notifications import TelegramNotifier
@@ -34,29 +41,17 @@ from .sessions import (
     compute_risk_amount,
     should_end_session,
 )
-from .risk import classify, rules_for
+from .risk import classify, rules_for, MIN_ACCOUNT_BALANCE
 
 # ---------------------------------------------------------------------------
 # Logging configuration
 # ---------------------------------------------------------------------------
-# Uvicorn only configures ITS OWN loggers (uvicorn, uvicorn.access,
-# uvicorn.error). It never calls logging.basicConfig() on the root logger,
-# so every log.info(...) call in this application is silently dropped
-# unless we set up the root logger ourselves.
-#
-# force=True tears down any handlers uvicorn may have installed so our
-# format and level win. Without it, basicConfig is a no-op if anything has
-# already touched the root logger.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     force=True,
 )
-# Uvicorn's access log duplicates every request as a raw line and drowns
-# out the application logs. Quiet it so we can find trading activity.
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-# httpx INFO lines include the full Telegram bot URL, which contains the
-# bot token. Keep it quiet in production.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -89,8 +84,6 @@ _okx_client_cache: dict = {}
 OKX_CLIENT_CACHE_TTL = 300.0
 _okx_client_lock = asyncio.Lock()
 
-# Users with a background reconciliation currently in flight. Prevents
-# every portfolio request from spawning its own sync task.
 _portfolio_sync_in_flight: set[int] = set()
 
 
@@ -104,9 +97,12 @@ async def lifespan(app: FastAPI):
     app.state.notifier = notifier
     app.state.futures_subscribers = {}
     app.state.futures_price_preferences = {}
-    log.info("Application startup — mode=%s, automation=%s",
-             settings.trading_mode,
-             "okx-demo" if settings.encryption_key else "disabled")
+    log.info(
+        "Application startup — mode=%s, automation=%s, live_trading=%s",
+        settings.trading_mode,
+        "okx-demo" if settings.encryption_key else "disabled",
+        "ENABLED" if settings.allow_live_trading else "disabled",
+    )
     ticker_task = asyncio.create_task(monitor_okx_public_prices(), name="okx-demo-public-tickers")
     if settings.encryption_key:
         worker = AutoTradingWorker(
@@ -146,10 +142,19 @@ async def lifespan(app: FastAPI):
 api = FastAPI(title="Safe Trading Bot API", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
-class OKXDemoConnectionRequest(BaseModel):
+class OKXConnectionRequest(BaseModel):
+    """Credentials for connecting an OKX account.
+
+    For demo connections only `api_key`, `api_secret`, and `passphrase`
+    are needed. For live connections, the client must also provide the
+    `confirmation_code` matching `LIVE_CONFIRMATION_CODE` in the server
+    environment.
+    """
     api_key: str = Field(min_length=8, max_length=256)
     api_secret: str = Field(min_length=16, max_length=512)
     passphrase: str = Field(min_length=8, max_length=256)
+    environment: Literal["demo", "live"] = "demo"
+    confirmation_code: str | None = None
 
 
 class PaperSettingsRequest(BaseModel):
@@ -212,7 +217,7 @@ class StartSessionRequest(BaseModel):
     #   "daily_pullback"
     #   "daily_breakout,daily_pullback"   (priority = left-to-right)
     strategy: str = Field(default="daily_breakout", min_length=3, max_length=64)
-    duration_hours: float = Field(gt=0, le=24 * 366)   # up to ~1 year
+    duration_hours: float = Field(gt=0, le=24 * 366)
     target_profit: Decimal = Field(gt=0)
     max_loss: Decimal = Field(gt=0)
     risk_per_trade_pct: Decimal = Field(ge=0, le=10)
@@ -267,21 +272,54 @@ def telegram_user(init_data: str | None) -> dict:
         raise HTTPException(401, "Invalid Telegram authorization") from None
 
 
-def okx_demo_client_for(user_id: int) -> OKXDemoClient:
+# ---------------------------------------------------------------------------
+# Client factory — routes to demo or live based on the stored connection
+# ---------------------------------------------------------------------------
+
+def okx_client_for(user_id: int) -> OKXClient:
+    """Return an OKX client for this user.
+
+    Reads the stored connection's `environment` field and returns
+    OKXDemoClient or OKXLiveClient accordingly. Live connections are
+    refused at this layer when the server has live trading disabled.
+    """
     credentials = database.exchange_credentials(user_id)
-    if not credentials or credentials.get("provider") != "okx" or credentials.get("environment") != "demo":
-        raise HTTPException(400, "Connect an OKX Demo account first.")
-    if not settings.encryption_key or not credentials.get("encrypted_passphrase"):
-        raise HTTPException(503, "OKX Demo credentials are incomplete. Reconnect the account.")
+    if not credentials or credentials.get("provider") != "okx":
+        raise HTTPException(400, "Connect an OKX account first.")
+
+    environment = credentials.get("environment") or "demo"
+
+    if not settings.encryption_key:
+        raise HTTPException(503, "Credential vault is not configured.")
+    if not credentials.get("encrypted_api_key") or not credentials.get("encrypted_api_secret"):
+        raise HTTPException(503, "OKX credentials are incomplete. Reconnect the account.")
+
     vault = CredentialVault(settings.encryption_key)
-    return OKXDemoClient(
-        vault.decrypt(credentials["encrypted_api_key"]),
-        vault.decrypt(credentials["encrypted_api_secret"]),
-        vault.decrypt(credentials["encrypted_passphrase"]),
-    )
+    api_key = vault.decrypt(credentials["encrypted_api_key"])
+    api_secret = vault.decrypt(credentials["encrypted_api_secret"])
+
+    if environment == "live":
+        # Guard 1: server must permit live trading.
+        if not settings.allow_live_trading:
+            raise HTTPException(
+                503,
+                "Live trading is disabled on this server. "
+                "Contact the operator to enable it.",
+            )
+        # Guard 2: live requires a passphrase (OKX always requires one).
+        if not credentials.get("encrypted_passphrase"):
+            raise HTTPException(503, "Live credentials are incomplete. Reconnect the account.")
+        passphrase = vault.decrypt(credentials["encrypted_passphrase"])
+        return OKXLiveClient(api_key, api_secret, passphrase)
+
+    # Default: demo
+    if not credentials.get("encrypted_passphrase"):
+        raise HTTPException(503, "Demo credentials are incomplete. Reconnect the account.")
+    passphrase = vault.decrypt(credentials["encrypted_passphrase"])
+    return OKXDemoClient(api_key, api_secret, passphrase)
 
 
-async def okx_demo_client_for_cached(user_id: int) -> OKXDemoClient:
+async def okx_client_for_cached(user_id: int) -> OKXClient:
     """Return a cached OKX client, or create one.
 
     The stale client is closed BEFORE a new one is created. Skipping that
@@ -301,7 +339,7 @@ async def okx_demo_client_for_cached(user_id: int) -> OKXDemoClient:
                 await cached[1].close()
             except Exception:
                 pass
-        client = okx_demo_client_for(user_id)
+        client = okx_client_for(user_id)
         _okx_client_cache[user_id] = (time.monotonic(), client)
         return client
 
@@ -418,7 +456,7 @@ async def notify_position_closed(user_id: int, notifier: TelegramNotifier,
     _portfolio_cache.pop(user_id, None)
     await notifier.send(
         user_id,
-        f"🔔 OKX Demo position closed\n{instrument} · {side}\n"
+        f"🔔 OKX position closed\n{instrument} · {side}\n"
         "The exchange pushed this update immediately. It may have been a TP, SL, or a manual close; "
         "the ticket is reconciling the final P&L now.",
     )
@@ -429,9 +467,9 @@ async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> 
     known_positions: set[tuple[str, str]] = set()
     delay = 1
     while True:
-        client: OKXDemoClient | None = None
+        client: OKXClient | None = None
         try:
-            client = okx_demo_client_for(user_id)
+            client = okx_client_for(user_id)
             async for event in client.private_events():
                 delay = 1
                 channel = event.get("arg", {}).get("channel")
@@ -462,8 +500,13 @@ async def monitor_okx_private_user(user_id: int, notifier: TelegramNotifier) -> 
                         await publish_futures_event(user_id, "portfolio_changed")
         except asyncio.CancelledError:
             raise
+        except HTTPException:
+            # User has no usable connection (disconnected, or live disabled).
+            # Back off and try again later.
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
         except Exception as exc:
-            log.warning("OKX Demo private feed unavailable for user %s: %s: %s",
+            log.warning("OKX private feed unavailable for user %s: %s: %s",
                         user_id, type(exc).__name__, exc)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30)
@@ -480,7 +523,7 @@ async def monitor_okx_private_events(notifier: TelegramNotifier) -> None:
             for user_id in users - tasks.keys():
                 tasks[user_id] = asyncio.create_task(
                     monitor_okx_private_user(user_id, notifier),
-                    name=f"okx-demo-private-{user_id}",
+                    name=f"okx-private-{user_id}",
                 )
             for user_id in set(tasks) - users:
                 tasks.pop(user_id).cancel()
@@ -535,8 +578,6 @@ async def futures_updates(websocket: WebSocket) -> None:
         user = validate_init_data(auth_payload.get("init_data") or "", settings.telegram_token)
         user_id = int(user["id"])
     except WebSocketDisconnect:
-        # Client connected and disconnected without completing auth.
-        # Expected during page navigation and stale tab cleanup.
         return
     except (asyncio.TimeoutError, TelegramAuthError, KeyError, ValueError, json.JSONDecodeError):
         try:
@@ -577,7 +618,12 @@ async def futures_updates(websocket: WebSocket) -> None:
 
 @api.get("/health")
 async def health() -> dict:
-    return {"ok": True, "mode": settings.trading_mode, "automation_environment": "demo-only"}
+    return {
+        "ok": True,
+        "mode": settings.trading_mode,
+        "automation_environment": "okx",
+        "live_trading_enabled": bool(settings.allow_live_trading),
+    }
 
 
 @api.get("/health/okx")
@@ -585,8 +631,8 @@ async def okx_connectivity() -> dict:
     url = "https://www.okx.com/api/v5/public/instruments"
     try:
         timeout = aiohttp.ClientTimeout(total=12)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, params={"instType": "SWAP", "instId": "BTC-USDT-SWAP"}) as response:
+        async with aiohttp.ClientSession(timeout=timeout) as connector:
+            async with connector.get(url, params={"instType": "SWAP", "instId": "BTC-USDT-SWAP"}) as response:
                 if response.status != 200:
                     raise HTTPException(502, f"OKX returned HTTP {response.status}")
                 data = await response.json(content_type=None)
@@ -611,6 +657,7 @@ async def dashboard(x_telegram_init_data: str | None = Header(default=None)) -> 
     user = telegram_user(x_telegram_init_data)
     result = database.dashboard(int(user["id"]))
     result["automation"] = database.automation_profile(int(user["id"]))
+    result["live_trading_enabled"] = bool(settings.allow_live_trading)
     return result
 
 
@@ -619,7 +666,7 @@ async def exchange_instruments(x_telegram_init_data: str | None = Header(default
     user = telegram_user(x_telegram_init_data)
     provider = database.connection_provider(int(user["id"]))
     if provider != "okx":
-        raise HTTPException(400, "Connect an OKX Demo account first.")
+        raise HTTPException(400, "Connect an OKX account first.")
 
     now = time.monotonic()
     if _instruments_cache["data"] is not None and (now - _instruments_cache["ts"]) < INSTRUMENTS_CACHE_TTL:
@@ -660,13 +707,72 @@ async def exchange_instruments(x_telegram_init_data: str | None = Header(default
         await client.close()
 
 
+@api.get("/api/okx/environment")
+async def okx_environment(x_telegram_init_data: str | None = Header(default=None)) -> dict:
+    """Return the user's current OKX environment and server capabilities.
+
+    The UI uses this to decide whether to show the demo/live toggle, and
+    whether the "Live" option should be enabled or disabled.
+    """
+    user = telegram_user(x_telegram_init_data)
+    environment = database.connection_environment(int(user["id"]))
+    return {
+        "environment": environment,  # None if not connected
+        "live_trading_enabled_on_server": bool(settings.allow_live_trading),
+        "min_account_balance": str(MIN_ACCOUNT_BALANCE),
+    }
+
+
 @api.post("/api/okx/connect")
-async def connect_okx_demo(request: OKXDemoConnectionRequest,
-                           x_telegram_init_data: str | None = Header(default=None)) -> dict:
+async def connect_okx(
+    request: OKXConnectionRequest,
+    x_telegram_init_data: str | None = Header(default=None),
+) -> dict:
+    """Connect an OKX demo or live account.
+
+    For live connections the request must include `confirmation_code`
+    matching the server's `LIVE_CONFIRMATION_CODE` environment variable.
+    Live connections are also refused when `ALLOW_LIVE_TRADING=false`.
+    """
     user = telegram_user(x_telegram_init_data)
     if not settings.encryption_key:
         raise HTTPException(503, "Credential vault is not configured")
-    client = OKXDemoClient(request.api_key, request.api_secret, request.passphrase)
+
+    environment = request.environment
+
+    if environment == "live":
+        # Guard: server must permit live trading.
+        if not settings.allow_live_trading:
+            raise HTTPException(
+                503,
+                "Live trading is disabled on this server. "
+                "The operator must enable it before live connections are accepted.",
+            )
+        # Guard: server must have a confirmation code configured.
+        if not settings.live_confirmation_code:
+            raise HTTPException(
+                503,
+                "Live trading is misconfigured on this server (no confirmation code). "
+                "Contact the operator.",
+            )
+        # Guard: user must supply the correct confirmation code.
+        if not request.confirmation_code or not secure_equals(
+            request.confirmation_code, settings.live_confirmation_code
+        ):
+            raise HTTPException(400, "Incorrect live confirmation code.")
+
+    # Validate the credentials against OKX by calling /account/config.
+    # This request carries the correct x-simulated-trading header for
+    # whichever environment the user selected.
+    if environment == "live":
+        client: OKXClient = OKXLiveClient(
+            request.api_key, request.api_secret, request.passphrase
+        )
+    else:
+        client = OKXDemoClient(
+            request.api_key, request.api_secret, request.passphrase
+        )
+
     try:
         account = await client.account_config()
         vault = CredentialVault(settings.encryption_key)
@@ -676,14 +782,19 @@ async def connect_okx_demo(request: OKXDemoConnectionRequest,
             vault.encrypt(request.api_secret),
             vault.encrypt(request.passphrase),
             account,
+            environment=environment,
         )
         _instruments_cache["data"] = None
         _instruments_cache["ts"] = 0.0
         _portfolio_cache.pop(int(user["id"]), None)
         invalidate_okx_client(int(user["id"]))
-        return {"connected": True, "provider": "okx", "environment": "demo"}
+        return {
+            "connected": True,
+            "provider": "okx",
+            "environment": environment,
+        }
     except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
-        raise HTTPException(400, f"OKX Demo connection rejected: {exc}") from None
+        raise HTTPException(400, f"OKX connection rejected: {exc}") from None
     finally:
         await client.close()
 
@@ -712,8 +823,7 @@ async def automation_settings(request: AutomationProfileRequest,
     if request.enabled and (dash.get("environment") != "demo" or dash.get("provider") != "bybit"):
         raise HTTPException(
             400,
-            "OKX execution is not enabled yet. Automation remains paused until the OKX "
-            "futures execution adapter is tested.",
+            "OKX execution is not enabled through this endpoint. Use the auto-trading sessions tab.",
         )
     try:
         database.save_automation_profile(
@@ -733,8 +843,7 @@ async def automation_settings(request: AutomationProfileRequest,
         int(user["id"]),
         f"🧪 Demo automation {state}\nStrategy: {request.strategy}\n"
         f"Symbol: {request.symbol}\nMax order: {request.max_order_notional} USDT\n"
-        f"Max trades/day: {request.max_trades_per_day}\n"
-        f"Use STOP ALL AUTOMATION in the dashboard to disable future scans.",
+        f"Max trades/day: {request.max_trades_per_day}",
     )
     return database.automation_profile(int(user["id"]))
 
@@ -745,8 +854,8 @@ async def kill_switch(x_telegram_init_data: str | None = Header(default=None)) -
     database.set_kill_switch(int(user["id"]))
     await api.state.notifier.send(
         int(user["id"]),
-        "🛑 Demo automation stopped. No future scans will submit orders. "
-        "Review open orders in Bybit Demo Trading separately.",
+        "🛑 Automation stopped. No future scans will submit orders. "
+        "Review already-open orders at your exchange separately.",
     )
     return {"enabled": False, "message": "Automation stopped"}
 
@@ -761,7 +870,7 @@ async def disconnect_exchange(x_telegram_init_data: str | None = Header(default=
     invalidate_okx_client(int(user["id"]))
     await api.state.notifier.send(
         int(user["id"]),
-        "🔒 Exchange Demo connection removed and automation stopped.",
+        "🔒 OKX connection removed and automation stopped.",
     )
     return {"connected": False}
 
@@ -777,7 +886,7 @@ async def sync_okx_order_history(user_id: int, *, parallel: bool = True) -> None
     if database.connection_provider(user_id) != "okx":
         return
     try:
-        client = await okx_demo_client_for_cached(user_id)
+        client = await okx_client_for_cached(user_id)
     except HTTPException:
         return
     rows = list(database.orders_for_sync(user_id))
@@ -821,12 +930,9 @@ async def _fetch_portfolio(user_id: int) -> dict:
 
     Reconciliation runs fire-and-forget so this endpoint responds in a few
     hundred milliseconds instead of blocking on OKX for up to 15 seconds.
-    The next call picks up the reconciled data.
     """
-    client = await okx_demo_client_for_cached(user_id)
+    client = await okx_client_for_cached(user_id)
 
-    # Fire-and-forget reconciliation, guarded against concurrent runs for
-    # the same user.
     if user_id not in _portfolio_sync_in_flight:
         _portfolio_sync_in_flight.add(user_id)
 
@@ -860,7 +966,7 @@ async def _fetch_portfolio(user_id: int) -> dict:
     } for row in positions]
     return {
         "exchange": "okx",
-        "environment": "demo",
+        "environment": database.connection_environment(user_id) or "demo",
         "active_positions": active,
         "bot_trade_history": database.history(user_id),
     }
@@ -920,8 +1026,8 @@ async def leverage_options(request: LeverageRequest,
     user = telegram_user(x_telegram_init_data)
     environment = database.connection_environment(int(user["id"]))
     provider = database.connection_provider(int(user["id"]))
-    if environment != "demo" or provider != "okx":
-        raise HTTPException(400, "Connect an OKX Demo account before checking futures rules.")
+    if provider != "okx":
+        raise HTTPException(400, "Connect an OKX account before checking futures rules.")
     inst_id = resolve_okx_swap_inst_id(request.symbol)
     client = OKXDemoClient("", "", "")
     try:
@@ -949,7 +1055,7 @@ async def futures_preview(request: FuturesPreviewRequest,
                           x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
-    client = await okx_demo_client_for_cached(user_id)
+    client = await okx_client_for_cached(user_id)
     inst_id = resolve_okx_swap_inst_id(request.symbol)
     try:
         instrument, price, available_balance = await asyncio.gather(
@@ -979,12 +1085,12 @@ async def futures_preview(request: FuturesPreviewRequest,
                 400,
                 f"Balance safety check: about {initial_margin:.2f} USDT margin is needed. "
                 f"This ticket permits up to {permitted_margin:.2f} USDT "
-                f"({settings.max_demo_margin_pct}% of your {available_balance:.2f} USDT Demo balance).",
+                f"({settings.max_demo_margin_pct}% of your {available_balance:.2f} USDT balance).",
             )
         return {
             "preview_only": True,
             "exchange": "okx",
-            "environment": "demo",
+            "environment": database.connection_environment(user_id) or "demo",
             "instrument": inst_id,
             "side": request.side,
             "mark_price": str(price),
@@ -1015,19 +1121,19 @@ async def futures_preview(request: FuturesPreviewRequest,
 @api.get("/api/futures/account")
 async def futures_account(x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
-    client = await okx_demo_client_for_cached(int(user["id"]))
+    client = await okx_client_for_cached(int(user["id"]))
     try:
         account = await client.account_config()
         levels = {"1": "Spot", "2": "Futures", "3": "Multi-currency margin", "4": "Portfolio margin"}
         return {
             "exchange": "okx",
-            "environment": "demo",
+            "environment": database.connection_environment(int(user["id"])) or "demo",
             "account_mode": levels.get(account.get("acctLv"), "Unknown"),
             "account_mode_code": account.get("acctLv"),
             "position_mode": account.get("posMode"),
             "can_change_position_mode": account.get("acctLv") != "4",
             "note": (
-                "Account mode is controlled in OKX Demo's website/app. "
+                "Account mode is controlled in OKX's website/app. "
                 "Position mode changes require no open positions or pending orders."
             ),
         }
@@ -1039,7 +1145,7 @@ async def futures_account(x_telegram_init_data: str | None = Header(default=None
 async def set_futures_position_mode(request: PositionModeRequest,
                                     x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
-    client = await okx_demo_client_for_cached(int(user["id"]))
+    client = await okx_client_for_cached(int(user["id"]))
     try:
         account = await client.account_config()
         if account.get("acctLv") == "4" and request.position_mode != "net_mode":
@@ -1047,7 +1153,7 @@ async def set_futures_position_mode(request: PositionModeRequest,
         changed = await client.set_position_mode(request.position_mode)
         return {
             "position_mode": changed.get("posMode", request.position_mode),
-            "message": "OKX Demo position mode updated. No order was placed.",
+            "message": "OKX position mode updated. No order was placed.",
         }
     except HTTPException:
         raise
@@ -1060,7 +1166,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
                                    x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
-    client = await okx_demo_client_for_cached(user_id)
+    client = await okx_client_for_cached(user_id)
     inst_id = resolve_okx_swap_inst_id(request.symbol)
     try:
         account, instrument, price, available_balance = await asyncio.gather(
@@ -1072,8 +1178,8 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
         if account.get("acctLv") not in {"2", "3", "4"}:
             raise HTTPException(
                 400,
-                "OKX Demo account is in Spot mode. In OKX Demo Trading, switch Account mode "
-                "to Futures mode or Multi-currency margin mode before submitting a perpetual order.",
+                "OKX account is in Spot mode. Switch Account mode to Futures or "
+                "Multi-currency margin mode before submitting a perpetual order.",
             )
         leverage = Decimal(request.leverage)
         if leverage > Decimal(instrument.get("lever") or "1"):
@@ -1112,7 +1218,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
                     "accepted": True, "replayed": True,
                     "order_id": existing.order_id, "status": existing.status,
                 }
-            raise HTTPException(409, "This Demo order is already being processed. Do not submit it again.")
+            raise HTTPException(409, "This order is already being processed. Do not submit it again.")
         submission_started = False
         try:
             await client.set_leverage(inst_id, leverage, position_side)
@@ -1124,7 +1230,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
             )
             order_id = accepted.get("ordId")
             if not order_id:
-                raise ExchangeError("OKX accepted the request without an order ID; check Demo order history before retrying.")
+                raise ExchangeError("OKX accepted the request without an order ID; check order history before retrying.")
             detail = await client.order_detail(inst_id, order_id)
             status = (detail or {}).get("state", "live").upper()
             filled_price = Decimal((detail or {}).get("avgPx") or str(price))
@@ -1143,7 +1249,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
         _portfolio_cache.pop(user_id, None)
         await api.state.notifier.send(
             user_id,
-            f"🧪 OKX Demo order accepted\n{request.side.upper()} {inst_id}\n"
+            f"🧪 OKX order accepted\n{request.side.upper()} {inst_id}\n"
             f"Leverage: {leverage}× · Contracts: {contracts}\nOrder: {order_id}\n"
             f"Status: {status}\nTP: {request.take_profit} · SL: {request.stop_loss}",
         )
@@ -1151,7 +1257,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
             "accepted": True,
             "replayed": False,
             "exchange": "okx",
-            "environment": "demo",
+            "environment": database.connection_environment(user_id) or "demo",
             "order_id": order_id,
             "status": status,
             "contracts": str(contracts),
@@ -1159,19 +1265,19 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
             "take_profit": str(request.take_profit),
             "stop_loss": str(request.stop_loss),
             "message": (
-                "Demo order accepted and reconciled. Check the OKX Demo Trading "
-                "order/position screen as the source of truth."
+                "Order accepted and reconciled. Check OKX's order/position screen "
+                "as the source of truth."
             ),
         }
     except HTTPException as exc:
         log.info(
-            "OKX Demo order rejected: instrument=%s status=%s reason=%s",
+            "OKX order rejected: instrument=%s status=%s reason=%s",
             inst_id, exc.status_code, exc.detail,
         )
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
-        log.warning("OKX Demo order exchange rejection: instrument=%s reason=%s", inst_id, exc)
-        raise HTTPException(400, f"OKX Demo order was not placed: {exc}") from None
+        log.warning("OKX order exchange rejection: instrument=%s reason=%s", inst_id, exc)
+        raise HTTPException(400, f"OKX order was not placed: {exc}") from None
 
 
 @api.post("/api/futures/close-position")
@@ -1179,7 +1285,7 @@ async def close_futures_demo_position(request: ClosePositionRequest,
                                       x_telegram_init_data: str | None = Header(default=None)) -> dict:
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
-    client = await okx_demo_client_for_cached(user_id)
+    client = await okx_client_for_cached(user_id)
     close_key = f"close{uuid.uuid4().hex[:23]}"
     try:
         positions = await client.swap_positions()
@@ -1217,7 +1323,7 @@ async def close_futures_demo_position(request: ClosePositionRequest,
             )
             order_id = accepted.get("ordId")
             if not order_id:
-                raise ExchangeError("OKX accepted the close request without an order ID. Check OKX Demo before retrying.")
+                raise ExchangeError("OKX accepted the close request without an order ID. Check OKX before retrying.")
             detail = await client.order_detail(request.instrument, order_id)
             status = (detail or {}).get("state", "live").upper()
             price = Decimal((detail or {}).get("avgPx") or (detail or {}).get("fillPx") or position.get("markPx") or "0")
@@ -1235,10 +1341,9 @@ async def close_futures_demo_position(request: ClosePositionRequest,
         _portfolio_cache.pop(user_id, None)
         await api.state.notifier.send(
             user_id,
-            f"🧪 OKX Demo close accepted\n{request.instrument} · {request.position_side}\n"
+            f"🧪 OKX close accepted\n{request.instrument} · {request.position_side}\n"
             f"Order: {order_id}\nStatus: {status}\n"
-            f"Realized P&L reported by order: {pnl} USDT\n"
-            f"Check OKX Demo as the source of truth.",
+            f"Realized P&L reported by order: {pnl} USDT",
         )
         return {
             "closed": True,
@@ -1255,7 +1360,7 @@ async def close_futures_demo_position(request: ClosePositionRequest,
     except HTTPException:
         raise
     except (ExchangeError, aiohttp.ClientError, TimeoutError, InvalidOperation, ValueError) as exc:
-        raise HTTPException(400, f"OKX Demo position was not closed: {exc}") from None
+        raise HTTPException(400, f"OKX position was not closed: {exc}") from None
 
 
 def _session_to_dict(s: "SessionState") -> dict:
@@ -1269,6 +1374,7 @@ def _session_to_dict(s: "SessionState") -> dict:
         "mode": s.config.mode,
         "strategy": s.config.strategy,
         "markets": s.config.markets,
+        "environment": s.config.environment,
         "started_at": s.started_at.isoformat(),
         "ends_at": s.ends_at.isoformat(),
         "seconds_remaining": s.seconds_remaining,
@@ -1304,21 +1410,40 @@ async def auto_start(request: StartSessionRequest,
     if existing:
         raise HTTPException(409, "A session is already running. Stop it first.")
 
-    client = await okx_demo_client_for_cached(user_id)
+    # Determine which environment we're trading on. This comes from the
+    # user's stored connection, not the request — the request cannot
+    # switch environments on the fly.
+    environment = database.connection_environment(user_id)
+    provider = database.connection_provider(user_id)
+    if provider != "okx" or environment is None:
+        raise HTTPException(400, "Connect an OKX account first.")
+
+    if environment == "live" and not settings.allow_live_trading:
+        raise HTTPException(
+            503,
+            "Live trading is disabled on this server. Contact the operator.",
+        )
+
+    client = await okx_client_for_cached(user_id)
     try:
         balance = await client.account_balance()
     except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
-        raise HTTPException(502, f"Could not read Demo balance: {exc}") from None
+        raise HTTPException(502, f"Could not read account balance: {exc}") from None
 
-    if balance <= 0:
-        raise HTTPException(400, "Demo balance is zero. Fund the account first.")
+    # Minimum balance gate: $5. Applies to both demo and live.
+    if balance < MIN_ACCOUNT_BALANCE:
+        raise HTTPException(
+            400,
+            f"Balance ${balance:.2f} is below the ${MIN_ACCOUNT_BALANCE} minimum. "
+            f"Fund the account before starting a session.",
+        )
 
     if request.risk_unit == "pct" and request.risk_per_trade_pct <= 0:
         raise HTTPException(400, "Percentage risk must be greater than zero.")
     if request.risk_unit == "usdt" and request.risk_per_trade_usdt <= 0:
         raise HTTPException(400, "USDT risk must be greater than zero.")
 
-        # Validate strategy list — must contain at least one known strategy name.
+    # Validate strategy list — must contain at least one known strategy name.
     valid_strategies = {"daily_breakout", "daily_pullback"}
     requested = [s.strip() for s in (request.strategy or "").split(",") if s.strip()]
     if not requested:
@@ -1341,6 +1466,7 @@ async def auto_start(request: StartSessionRequest,
         safety_floor_pct=request.safety_floor_pct,
         leverage=request.leverage,
         markets=request.markets,
+        environment=environment,
     )
     session_id = session_manager.create_session(user_id, config, balance)
     session = session_manager.get_by_id(session_id)
@@ -1352,18 +1478,21 @@ async def auto_start(request: StartSessionRequest,
     )
 
     log.info(
-        "Session %s STARTED by user %s: strategy=%s mode=%s duration=%sh "
+        "Session %s STARTED by user %s: env=%s strategy=%s mode=%s duration=%sh "
         "target=+%s max_loss=-%s risk=%s lev=%sx markets=%s balance=%s",
-        session_id, user_id, request.strategy, request.mode, request.duration_hours,
-        request.target_profit, request.max_loss, risk_label,
-        request.leverage, request.markets, balance,
+        session_id, user_id, environment, request.strategy, request.mode,
+        request.duration_hours, request.target_profit, request.max_loss,
+        risk_label, request.leverage, request.markets, balance,
     )
 
+    env_label = "LIVE" if environment == "live" else "DEMO"
     try:
         await api.state.notifier.send(
             user_id,
             f"🚀 Auto trading started — session #{session_id}\n"
+            f"Environment: {env_label}\n"
             f"Mode: {request.mode}\nDuration: {request.duration_hours}h\n"
+            f"Strategies: {request.strategy}\n"
             f"Target: +{request.target_profit} USDT · Max loss: -{request.max_loss} USDT\n"
             f"Risk/trade: {risk_label}\n"
             f"Starting balance: {balance:.2f} USDT",
@@ -1383,7 +1512,7 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
     if not session:
         raise HTTPException(404, "No active session.")
 
-    client = await okx_demo_client_for_cached(user_id)
+    client = await okx_client_for_cached(user_id)
     try:
         try:
             tracked = session_manager.list_open_positions(session.id)
@@ -1456,17 +1585,18 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
     _portfolio_cache.pop(user_id, None)
 
     log.info(
-        "Session %s STOPPED by user %s: pnl=%s (%d trades, W %d / L %d) "
+        "Session %s STOPPED by user %s: env=%s pnl=%s (%d trades, W %d / L %d) "
         "account_change=%s balance=%s",
-        session.id, user_id, session_pnl,
+        session.id, user_id, session.config.environment, session_pnl,
         session.trades_count, session.wins_count, session.losses_count,
         account_change, balance,
     )
 
+    env_label = "LIVE" if session.config.environment == "live" else "DEMO"
     try:
         await api.state.notifier.send(
             user_id,
-            f"⏹️ Auto trading stopped — session #{session.id}\n\n"
+            f"⏹️ Auto trading stopped — session #{session.id} ({env_label})\n\n"
             f"🤖 Session P&L:  {sp_sign}${abs(session_pnl):.2f} USDT\n"
             f"   ({session.trades_count} session trades: "
             f"W {session.wins_count} / L {session.losses_count})\n\n"
@@ -1483,16 +1613,11 @@ async def auto_stop(x_telegram_init_data: str | None = Header(default=None)) -> 
 
 @api.get("/api/auto/recommend")
 async def auto_recommend(x_telegram_init_data: str | None = Header(default=None)) -> dict:
-    """Return the auto-risk recommendation for the user's current balance.
-
-    Reads the live balance, classifies it into a tier, and returns the
-    risk profile the bot would use. The UI shows this when the user
-    selects 'Auto' mode so they know exactly what they're about to run.
-    """
+    """Return the auto-risk recommendation for the user's current balance."""
     user = telegram_user(x_telegram_init_data)
     user_id = int(user["id"])
 
-    client = await okx_demo_client_for_cached(user_id)
+    client = await okx_client_for_cached(user_id)
     try:
         balance = await client.account_balance()
     except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
@@ -1500,7 +1625,6 @@ async def auto_recommend(x_telegram_init_data: str | None = Header(default=None)
 
     tier = classify(balance)
     rules = rules_for(balance)
-
     tier_labels = {
         "micro":    "Micro ($5 – $50)",
         "small":    "Small ($50 – $500)",
@@ -1508,9 +1632,6 @@ async def auto_recommend(x_telegram_init_data: str | None = Header(default=None)
         "large":    "Large ($5,000+)",
     }
 
-    # Recommended risk % per tier. These are the values the bot uses
-    # when running in Auto mode. Users who want higher can switch to
-    # Custom — but 5% is the hard ceiling regardless.
     recommended_risk = {
         "micro":    "2.0",
         "small":    "1.5",
@@ -1528,6 +1649,8 @@ async def auto_recommend(x_telegram_init_data: str | None = Header(default=None)
         "concentration_cap_pct": str(rules.concentration_cap_pct),
         "max_total_exposure_pct": str(rules.max_total_exposure_pct),
         "safety_floor_pct": "80",
+        "min_account_balance": str(MIN_ACCOUNT_BALANCE),
+        "below_minimum": balance < MIN_ACCOUNT_BALANCE,
     }
 
 
@@ -1541,13 +1664,11 @@ async def auto_status(x_telegram_init_data: str | None = Header(default=None)) -
         return {"active": False, "session": None}
 
     try:
-        client = await okx_demo_client_for_cached(user_id)
+        client = await okx_client_for_cached(user_id)
         balance = await client.account_balance()
         session_manager.update_balance(session.id, balance)
         session = session_manager.get_by_id(session.id)
     except asyncio.CancelledError:
-        # Request was aborted — the frontend navigated away or hit refresh.
-        # Not an error; return the cached session state we already have.
         return {"active": True, "session": _session_to_dict(session)}
     except Exception as exc:
         log.debug("auto_status balance refresh failed for %s: %s: %s",
