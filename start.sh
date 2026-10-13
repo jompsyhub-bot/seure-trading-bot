@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Set this false only while bringing up a replacement service. It avoids a
-# second Telegram getUpdates poller during a hosting-region migration.
-if [ "${RUN_TELEGRAM_POLLER:-true}" = "true" ]; then
-  #python -m app.main &
-  BOT_PID=$!
-  cleanup() {
-    kill "$BOT_PID" 2>/dev/null || true
-  }
-  trap cleanup EXIT INT TERM
-fi
-
+# The legacy Telegram bot at app/main.py was replaced by the Mini App.
+# All user interaction now flows through the FastAPI app below, which
+# serves the WebApp and runs the auto-trading worker in the background.
 exec python -m uvicorn app.api:api --host 0.0.0.0 --port "${PORT:-10000}"
