@@ -102,29 +102,3 @@ positions at market, reconciles P&L, and ends the session.
 
 ---
 
-## Environment variables
-
-| Variable | Required | Purpose |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token (from BotFather) |
-| `ADMIN_USER_ID` | Yes | Your Telegram user ID |
-| `MINI_APP_URL` | Yes | Public HTTPS URL of this app |
-| `DATABASE_URL` | Prod | Supabase/Postgres connection string |
-| `DATABASE_PATH` | Dev | SQLite file path (fallback when no DATABASE_URL) |
-| `CREDENTIAL_ENCRYPTION_KEY` | Yes | Fernet key to encrypt user API credentials at rest |
-| `ALLOW_LIVE_TRADING` | For live | Master kill switch. Default `false`. |
-| `LIVE_CONFIRMATION_CODE` | For live | Phrase users must type to connect live |
-| `TRADING_MODE` | No | `paper` (default) or `live` — legacy, not used by Mini App |
-| `MAX_DEMO_MARGIN_PCT` | No | Cap on margin as % of balance for manual orders |
-| `RUN_TELEGRAM_POLLER` | No | Legacy flag (unused) |
-
-**Never commit `.env`.** Use `.env.example` as a template.
-
-Generate a Fernet key:
-
-```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-
-### 1. Operator enables live trading
-
-Two environment variables on the server must be set:
