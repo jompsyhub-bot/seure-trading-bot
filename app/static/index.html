@@ -23,6 +23,7 @@ header{display:flex;justify-content:space-between;align-items:center;gap:12px}
 header b{font-size:16px;letter-spacing:.2px}
 .tag{font-size:11px;color:var(--accent-soft);border:1px solid var(--border);
   border-radius:999px;padding:4px 9px;white-space:nowrap}
+.tag.danger{color:#ffc7d4;border-color:rgba(255,137,151,0.5);background:rgba(255,137,151,0.08)}
 h1{font-size:24px;margin:10px 0 6px}
 h2{font-size:17px;margin:0 0 8px}
 h3{font-size:15px;margin:14px 0 6px}
@@ -277,10 +278,13 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .session-live{padding:18px;border-radius:14px;
   background:linear-gradient(135deg,rgba(98,140,255,0.14),rgba(98,140,255,0.04));
   border:1px solid rgba(98,140,255,0.35);margin:14px 0}
+.session-live.live{background:linear-gradient(135deg,rgba(199,81,97,0.18),rgba(199,81,97,0.04));
+  border-color:rgba(255,137,151,0.5)}
 .session-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .session-status{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
 .session-pulse{width:10px;height:10px;border-radius:50%;background:var(--good);
   animation:pulse 1.8s ease-in-out infinite;flex-shrink:0}
+.session-pulse.live{background:#ff8997}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.35}}
 .session-pnl{font-size:34px;font-weight:800;text-align:center;line-height:1.05;margin:14px 0 4px}
 .session-target{font-size:12px;text-align:center;color:var(--muted);margin-bottom:14px}
@@ -340,31 +344,85 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .strategy-stats b.good{color:var(--good)}
 .strategy-stats b.loss{color:#ff8997}
 .strategy-desc{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4}
+
+/* --- Environment toggle (demo/live) --- */
+.env-toggle{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.env-btn{background:var(--field);color:var(--muted);border:2px solid transparent;
+  padding:14px;font-size:15px;font-weight:700;border-radius:10px;
+  cursor:pointer;transition:all .15s;margin:0;display:flex;
+  align-items:center;justify-content:center;gap:8px}
+.env-btn.demo.active{background:rgba(77,221,172,0.12);color:var(--good);border-color:var(--good)}
+.env-btn.live.active{background:rgba(255,137,151,0.12);color:#ff8997;border-color:#ff8997}
+.env-btn:disabled{opacity:0.4;cursor:not-allowed}
+.env-badge{display:inline-block;font-size:10px;font-weight:700;padding:3px 8px;
+  border-radius:999px;text-transform:uppercase;letter-spacing:0.4px;vertical-align:middle;
+  margin-left:6px}
+.env-badge.demo{background:rgba(77,221,172,0.15);color:var(--good)}
+.env-badge.live{background:rgba(255,137,151,0.15);color:#ff8997}
+.accept-row{display:flex;align-items:flex-start;gap:10px;padding:10px;
+  background:rgba(255,137,151,0.05);border:1px solid rgba(255,137,151,0.25);
+  border-radius:9px;margin:8px 0;font-size:13px;line-height:1.4;cursor:pointer}
+.accept-row input[type="checkbox"]{width:22px;height:22px;flex-shrink:0;margin-top:1px;
+  accent-color:var(--danger);cursor:pointer}
+.accept-row span{color:#ffc7d4}
 </style>
 </head>
 <body>
 <main>
 <header>
   <b>↗ Relay Trade</b>
-  <span class="tag">DEMO ONLY</span>
+  <span class="tag" id="headerModeTag">DEMO ONLY</span>
 </header>
 
 <section id="account" class="view active">
   <h1>Connect your account</h1>
-  <p class="muted">Link an OKX Demo API key to get started.</p>
+  <p class="muted">Link an OKX account to get started. Demo for testing, Live for real money.</p>
 
   <div id="connectForm" class="card">
-    <p class="notice">
+    <div class="step-label"><span class="step-num">1</span> Choose environment</div>
+    <div class="env-toggle">
+      <button id="envDemo" class="env-btn demo active" onclick="connectSetEnv('demo')">
+        🧪 Demo
+      </button>
+      <button id="envLive" class="env-btn live" onclick="connectSetEnv('live')">
+        ⚠️ Live
+      </button>
+    </div>
+    <div id="envLiveNote" class="hidden">
+      <div class="warning danger">
+        ⚠️ <b>Live trading uses real money.</b> Every order placed through this
+        account is a real trade on OKX. There is no simulation. If you are not
+        ready to lose the money you deposit, use Demo instead.
+      </div>
+      <div class="warning info" id="liveServerStatus">Checking server settings…</div>
+    </div>
+
+    <div class="step-label"><span class="step-num">2</span> API credentials</div>
+    <p class="notice" id="keyInstructions">
       Create a <b>Demo Trading</b> API key in OKX. Use <b>trade permissions only</b>.
       Never use a real-money key.
     </p>
     <label for="key">API key</label>
-    <input id="key" placeholder="OKX Demo API key" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <input id="key" placeholder="OKX API key" autocomplete="off" autocapitalize="off" spellcheck="false">
     <label for="secret">API secret</label>
-    <input id="secret" type="password" placeholder="OKX Demo API secret" autocomplete="off">
+    <input id="secret" type="password" placeholder="OKX API secret" autocomplete="off">
     <label for="passphrase">Passphrase</label>
     <input id="passphrase" type="password" placeholder="OKX API passphrase" autocomplete="off">
-    <button id="connectBtn" onclick="connect()">Validate &amp; connect</button>
+
+    <div id="liveConfirmWrap" class="hidden">
+      <div class="step-label"><span class="step-num">3</span> Live confirmation</div>
+      <label for="confirmCode">Confirmation code</label>
+      <input id="confirmCode" placeholder="Type the confirmation code" autocomplete="off"
+             autocapitalize="off" spellcheck="false">
+      <p class="hint">The operator of this bot provides the code. It's a last check
+        that you really mean to trade real money.</p>
+      <label class="accept-row">
+        <input type="checkbox" id="acceptRisk">
+        <span>I understand that live orders use real funds and I accept the risk of loss.</span>
+      </label>
+    </div>
+
+    <button id="connectBtn" onclick="connect()" style="margin-top:14px">Validate &amp; connect</button>
   </div>
 
   <div id="accountInfo" class="card hidden">
@@ -467,7 +525,7 @@ SL @ 77,000"></textarea>
 
     <div id="manualResult" class="card hidden"></div>
     <div id="manualPlaceWrap" class="hidden" style="margin:14px 0">
-      <button class="stop" onclick="futManualPlace()">Confirm &amp; place Demo order</button>
+      <button class="stop" onclick="futManualPlace()">Confirm &amp; place order</button>
     </div>
   </div>
 
@@ -480,6 +538,10 @@ SL @ 77,000"></textarea>
           The bot trades on your behalf while you're away. It stops automatically
           when your target, max loss, safety floor, or time limit is reached.
         </p>
+
+        <div id="sessionEnvBanner" class="warning info">
+          Session environment will appear here.
+        </div>
 
         <div class="card" style="background:rgba(98,140,255,0.06);border-color:rgba(98,140,255,0.25);padding:12px;margin:10px 0">
           <div style="font-size:12px;font-weight:600;color:var(--accent-soft);margin-bottom:6px">
@@ -644,7 +706,7 @@ SL @ 77,000"></textarea>
 
 <section id="futures" class="view">
   <h1>Futures</h1>
-  <p class="muted">Trade OKX Demo perpetuals with leverage. Demo money only — no real funds.</p>
+  <p class="muted">Trade OKX perpetuals with leverage. Live or demo depending on your connection.</p>
 
   <div class="card feed">
     <div class="feed-left">
@@ -663,7 +725,7 @@ SL @ 77,000"></textarea>
 
   <div class="card account-bar">
     <span id="accountIcon">⚪</span>
-    <span id="accountText" class="muted">Checking OKX Demo account…</span>
+    <span id="accountText" class="muted">Checking OKX account…</span>
     <button class="mini-ghost" onclick="futAccount()">Recheck</button>
   </div>
 
@@ -682,9 +744,9 @@ SL @ 77,000"></textarea>
   </details>
 
   <div class="card">
-    <h2>Place a Demo trade</h2>
+    <h2>Place a trade</h2>
     <p class="muted" style="font-size:13px;margin-top:0">
-      Nothing is submitted until you tap <b>Place Demo order</b> at the bottom.
+      Nothing is submitted until you tap <b>Place order</b> at the bottom.
     </p>
 
     <div class="step-label"><span class="step-num">1</span> Direction</div>
@@ -714,7 +776,7 @@ SL @ 77,000"></textarea>
     <input type="hidden" id="side" value="long">
 
     <div class="step-label"><span class="step-num">2</span> Size &amp; leverage</div>
-    <label>Margin · how much of your Demo balance to commit</label>
+    <label>Margin · how much of your balance to commit</label>
     <div class="chip-row">
       <button class="chip" data-margin="1"  onclick="futSetMargin(1)">$1</button>
       <button class="chip" data-margin="5"  onclick="futSetMargin(5)">$5</button>
@@ -789,22 +851,22 @@ SL @ 77,000"></textarea>
     <button class="ghost" onclick="futPreview()">Show order summary</button>
 
     <div id="protection" class="hidden" style="margin-top:10px">
-      <button class="stop" onclick="futPlace()">Place Demo order</button>
+      <button class="stop" onclick="futPlace()">Place order</button>
     </div>
   </div>
 
   <div id="futResult" class="card hidden"></div>
 
   <div class="card">
-    <h2>Your Demo positions</h2>
-    <p class="muted" style="font-size:13px;margin-top:0">Live from OKX Demo · refreshes every 3 seconds.</p>
+    <h2>Your positions</h2>
+    <p class="muted" style="font-size:13px;margin-top:0">Live from OKX · refreshes every 3 seconds.</p>
     <div id="portfolioOutput" class="muted">Loading…</div>
   </div>
 </section>
 
 <section id="activity" class="view">
   <h1>Activity</h1>
-  <p class="muted">Live positions and order history from OKX Demo.</p>
+  <p class="muted">Live positions and order history from OKX.</p>
 
   <div class="act-summary">
     <div class="card">
@@ -831,7 +893,7 @@ SL @ 77,000"></textarea>
   <div class="card">
     <h2>Order history</h2>
     <p class="muted" style="font-size:12px;margin:6px 0 12px">
-      All bot-originated Demo orders, most recent first.
+      All bot-originated orders, most recent first.
     </p>
     <div id="activityHistory" class="muted">Loading…</div>
   </div>
@@ -853,7 +915,12 @@ const tg = window.Telegram?.WebApp;
 tg?.ready?.();
 tg?.expand?.();
 
-const state = { connected: false };
+const state = {
+  connected: false,
+  environment: null,      // "demo" | "live" | null
+  liveAvailable: false,   // server-side flag
+  connectEnv: 'demo',     // which env the connect form is currently set to
+};
 
 const headers = () => ({
   'Content-Type': 'application/json',
@@ -871,8 +938,6 @@ async function api(path, options = {}) {
   catch { data = { detail: `Server error ${res.status}` }; }
   if (!res.ok) {
     let detail = data.detail;
-    // FastAPI returns validation errors as an array of {loc, msg, type}.
-    // Stringify them into something readable so we don't show "[object Object]".
     if (Array.isArray(detail)) {
       detail = detail
         .map(e => {
@@ -901,6 +966,137 @@ function escapeHtml(s) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   })[c]);
 }
+
+/* ---------- Environment toggle on the connect form ---------- */
+
+function connectSetEnv(env) {
+  state.connectEnv = env;
+  document.getElementById('envDemo').classList.toggle('active', env === 'demo');
+  document.getElementById('envLive').classList.toggle('active', env === 'live');
+  document.getElementById('envLiveNote').classList.toggle('hidden', env !== 'live');
+  document.getElementById('liveConfirmWrap').classList.toggle('hidden', env !== 'live');
+
+  // Update instruction text and placeholders
+  const instructions = document.getElementById('keyInstructions');
+  const keyInput = document.getElementById('key');
+  const secretInput = document.getElementById('secret');
+  const passInput = document.getElementById('passphrase');
+
+  if (env === 'live') {
+    instructions.innerHTML =
+      'Create a <b>Live Trading</b> API key in OKX. Use a <b>trade-only</b> key — ' +
+      '<b>no withdrawal permissions</b>. The bot never needs withdrawal access, and ' +
+      'OKX will refuse withdrawals with a trade-only key even if the credentials leaked.';
+    keyInput.placeholder = 'OKX Live API key';
+    secretInput.placeholder = 'OKX Live API secret';
+    passInput.placeholder = 'OKX Live passphrase';
+    // If the server has live disabled, warn immediately
+    if (!state.liveAvailable) {
+      document.getElementById('liveServerStatus').innerHTML =
+        '⚠️ <b>Live trading is disabled on this server.</b> You can still ' +
+        'prepare credentials, but the connect request will be refused. ' +
+        'Contact the operator to enable live trading.';
+      document.getElementById('liveServerStatus').classList.remove('info');
+      document.getElementById('liveServerStatus').classList.add('danger');
+    } else {
+      document.getElementById('liveServerStatus').innerHTML =
+        '✅ Live trading is enabled on this server. The confirmation code is ' +
+        'required below.';
+      document.getElementById('liveServerStatus').classList.remove('danger');
+      document.getElementById('liveServerStatus').classList.add('info');
+    }
+  } else {
+    instructions.innerHTML =
+      'Create a <b>Demo Trading</b> API key in OKX. Use <b>trade permissions only</b>. ' +
+      'Never use a real-money key.';
+    keyInput.placeholder = 'OKX Demo API key';
+    secretInput.placeholder = 'OKX Demo API secret';
+    passInput.placeholder = 'OKX Demo passphrase';
+  }
+}
+
+async function loadEnvironment() {
+  try {
+    const env = await api('/api/okx/environment');
+    state.liveAvailable = !!env.live_trading_enabled_on_server;
+    // If already connected, the environment field is set
+    if (env.environment) {
+      state.environment = env.environment;
+    }
+  } catch (e) {
+    // Non-fatal — endpoint may not exist on older deploys
+    console.warn('Could not load environment info:', e.message);
+  }
+  // Sync the visual state
+  connectSetEnv(state.connectEnv);
+}
+
+/* ---------- Connect ---------- */
+
+async function connect() {
+  const key    = document.getElementById('key').value.trim();
+  const secret = document.getElementById('secret').value.trim();
+  const pass   = document.getElementById('passphrase').value.trim();
+  const env    = state.connectEnv;
+
+  if (!key || !secret || !pass) return toast('Fill in all three credential fields', true);
+
+  let confirmation_code = null;
+  if (env === 'live') {
+    if (!state.liveAvailable) {
+      return toast('Live trading is disabled on this server.', true);
+    }
+    confirmation_code = (document.getElementById('confirmCode').value || '').trim();
+    if (!confirmation_code) return toast('Enter the live confirmation code', true);
+    if (!document.getElementById('acceptRisk').checked) {
+      return toast('Tick the acceptance checkbox to continue', true);
+    }
+  }
+
+  const btn = document.getElementById('connectBtn');
+  btn.disabled = true;
+  btn.textContent = env === 'live' ? 'Connecting live…' : 'Validating…';
+  try {
+    await api('/api/okx/connect', {
+      method: 'POST',
+      body: JSON.stringify({
+        api_key: key,
+        api_secret: secret,
+        passphrase: pass,
+        environment: env,
+        confirmation_code,
+      }),
+    });
+    document.getElementById('secret').value = '';
+    document.getElementById('passphrase').value = '';
+    document.getElementById('confirmCode').value = '';
+    document.getElementById('acceptRisk').checked = false;
+    instrumentsCache = null;
+    state.environment = env;
+    await load();
+    toast(env === 'live' ? 'Live account connected' : 'Demo account connected');
+    go('overview', document.querySelector('.nav button[data-view="overview"]'));
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Validate & connect';
+  }
+}
+
+async function disconnect() {
+  if (!confirm('Disconnect this account?')) return;
+  try {
+    await api('/api/exchange/connection', { method: 'DELETE' });
+    instrumentsCache = null;
+    state.environment = null;
+    await load();
+    toast('Account disconnected');
+    go('account', document.querySelector('.nav button[data-view="account"]'));
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------- Utilities ---------- */
 
 let instrumentsCache = null;
 
@@ -1021,37 +1217,63 @@ function go(id, btn) {
     b.classList.toggle('active', b === btn || b.dataset.view === id));
   if (id === 'futures') futInit();
   if (id === 'activity') activityInit();
+  if (id === 'automate') autoInit();
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function updateHeaderModeTag() {
+  const el = document.getElementById('headerModeTag');
+  if (!el) return;
+  if (state.environment === 'live') {
+    el.textContent = 'LIVE TRADING';
+    el.classList.add('danger');
+  } else if (state.environment === 'demo') {
+    el.textContent = 'DEMO ONLY';
+    el.classList.remove('danger');
+  } else {
+    el.textContent = 'NOT CONNECTED';
+    el.classList.remove('danger');
+  }
 }
 
 function render(d) {
   state.connected = !!d.connected;
+  // Environment comes back from dashboard now
+  if (d.environment) state.environment = d.environment;
+
   document.getElementById('connectForm').classList.toggle('hidden', state.connected);
   document.getElementById('accountInfo').classList.toggle('hidden', !state.connected);
   if (state.connected) {
     const provider = (d.provider || 'okx').toUpperCase();
     const env = (d.environment || 'demo').toUpperCase();
     document.getElementById('accountProvider').textContent = `${provider} · ${env}`;
-    document.getElementById('accountEnv').textContent = env;
+    const envEl = document.getElementById('accountEnv');
+    envEl.textContent = env;
+    envEl.style.color = env === 'LIVE' ? '#ff8997' : '#4dddac';
   }
   document.getElementById('welcome').textContent =
     d.name ? `Welcome, ${d.name}` : 'Your trading space';
   document.getElementById('summary').textContent = state.connected
-    ? `Your ${(d.provider || 'okx').toUpperCase()} ${d.environment || 'demo'} account is connected.`
-    : 'Connect an OKX Demo account to get started.';
+    ? `Your ${(d.provider || 'okx').toUpperCase()} ${(d.environment || 'demo').toUpperCase()} account is connected.`
+    : 'Connect an OKX account to get started.';
   const conn = document.getElementById('conn');
+  const env = (d.environment || 'demo').toUpperCase();
   conn.textContent = state.connected
-    ? `${(d.provider || 'okx').toUpperCase()} ${(d.environment || 'demo').toUpperCase()}`
+    ? `${(d.provider || 'okx').toUpperCase()} ${env}`
     : 'NOT CONNECTED';
-  conn.className = `metric ${state.connected ? 'good' : 'warn'}`;
+  conn.className = `metric ${state.connected ? (env === 'LIVE' ? 'loss' : 'good') : 'warn'}`;
   const autoEl = document.getElementById('auto');
   const autoOn = !!d.automation?.enabled;
   autoEl.textContent = autoOn ? 'ACTIVE' : 'PAUSED';
   autoEl.className = `metric ${autoOn ? 'good' : 'warn'}`;
+
+  updateHeaderModeTag();
+  autoRenderSessionEnvBanner();
 }
 
 async function load() {
   try {
+    await loadEnvironment();
     const d = await api('/api/dashboard');
     render(d);
     if (!state.connected) {
@@ -1065,44 +1287,6 @@ async function load() {
   }
 }
 
-async function connect() {
-  const key    = document.getElementById('key').value.trim();
-  const secret = document.getElementById('secret').value.trim();
-  const pass   = document.getElementById('passphrase').value.trim();
-  if (!key || !secret || !pass) return toast('Fill in all three fields', true);
-  const btn = document.getElementById('connectBtn');
-  btn.disabled = true;
-  btn.textContent = 'Validating…';
-  try {
-    await api('/api/okx/connect', {
-      method: 'POST',
-      body: JSON.stringify({ api_key: key, api_secret: secret, passphrase: pass })
-    });
-    document.getElementById('secret').value = '';
-    document.getElementById('passphrase').value = '';
-    instrumentsCache = null;
-    await load();
-    toast('Account connected');
-    go('overview', document.querySelector('.nav button[data-view="overview"]'));
-  } catch (e) {
-    toast(e.message, true);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Validate & connect';
-  }
-}
-
-async function disconnect() {
-  if (!confirm('Disconnect this account?')) return;
-  try {
-    await api('/api/exchange/connection', { method: 'DELETE' });
-    instrumentsCache = null;
-    await load();
-    toast('Account disconnected');
-    go('account', document.querySelector('.nav button[data-view="account"]'));
-  } catch (e) { toast(e.message, true); }
-}
-
 async function kill() {
   try {
     await api('/api/automation/kill-switch', { method: 'POST' });
@@ -1110,6 +1294,8 @@ async function kill() {
     toast('Automation stopped');
   } catch (e) { toast(e.message, true); }
 }
+
+/* ---------- Manual signal parsing (unchanged) ---------- */
 
 let futParsedPreview = null;
 
@@ -1341,10 +1527,12 @@ function renderManualPreview(v, d) {
 async function futManualPlace() {
   if (!futParsedPreview) return toast('Preview the trade first', true);
   const v = futParsedPreview;
+  const envLabel = state.environment === 'live' ? 'LIVE (REAL MONEY)' : 'DEMO';
   if (!confirm(
-    `Place ONE OKX DEMO ${v.side.toUpperCase()} order?\n\n` +
+    `Place ONE OKX ${envLabel} ${v.side.toUpperCase()} order?\n\n` +
     `${v.symbol} · ${v.leverage}× · margin $${v.margin}\n` +
-    `TP $${v.tp.toFixed(2)} · SL $${v.sl.toFixed(2)}\n\nThis uses Demo money only.`
+    `TP $${v.tp.toFixed(2)} · SL $${v.sl.toFixed(2)}\n\n` +
+    (state.environment === 'live' ? 'This uses real funds.' : 'This uses demo money only.')
   )) return;
   if (!futOrderKey) futOrderKey = crypto.randomUUID().replaceAll('-', '').slice(0, 28);
   try {
@@ -1358,16 +1546,18 @@ async function futManualPlace() {
     });
     futOrderKey = '';
     document.getElementById('manualResult').innerHTML = `
-      <h2>✅ Demo order accepted</h2>
+      <h2>✅ Order accepted</h2>
       <p>Order ID: <b>${d.order_id}</b></p>
       <p>Status: <b>${d.status}</b></p>
       <p class="muted" style="font-size:13px">A confirmation was sent to your Telegram chat. Open <b>Activity</b> to track it.</p>
     `;
     document.getElementById('manualPlaceWrap').classList.add('hidden');
-    toast('Demo order accepted');
+    toast('Order accepted');
     refreshPortfolio();
   } catch (e) { toast(e.message, true); }
 }
+
+/* ---------- Futures tab ---------- */
 
 let feedReady = false;
 let futSocket = null, futKeepalive = null, futRetry = null;
@@ -1541,16 +1731,17 @@ async function futAccount() {
   const text = fut$('accountText');
   if (!icon) return;
   icon.textContent = '⏳';
-  text.textContent = 'Checking OKX Demo account…';
+  text.textContent = 'Checking OKX account…';
   try {
     const d = await api('/api/futures/account');
+    const env = (d.environment || 'demo').toUpperCase();
     const modeName = d.account_mode || 'Unknown';
     const posMode = d.position_mode === 'long_short_mode' ? 'Long/Short' : 'Net';
     const ready = d.account_mode_code !== '1';
-    icon.textContent = ready ? '✅' : '⚠️';
+    icon.textContent = ready ? (env === 'LIVE' ? '🔴' : '✅') : '⚠️';
     text.textContent = ready
-      ? `${modeName} · ${posMode} mode · Ready`
-      : `${modeName} — switch to Futures mode in OKX Demo before trading`;
+      ? `${env} · ${modeName} · ${posMode} mode · Ready`
+      : `${env} · ${modeName} — switch to Futures mode in OKX before trading`;
     fut$('positionMode').value = d.position_mode || 'net_mode';
   } catch (e) {
     icon.textContent = '⚠️';
@@ -1560,7 +1751,7 @@ async function futAccount() {
 
 async function futSetMode() {
   const mode = fut$('positionMode').value;
-  if (!confirm(`Change Demo position mode to ${mode}?`)) return;
+  if (!confirm(`Change position mode to ${mode}?`)) return;
   try {
     const r = await api('/api/futures/position-mode', {
       method: 'POST',
@@ -1826,7 +2017,7 @@ async function futPreview() {
     const marginPct = (margin / available * 100).toFixed(1);
     res.innerHTML = `
       <h2>Order summary</h2>
-      <p class="muted" style="font-size:13px;margin-top:0">Nothing has been placed yet. Review, then scroll down to <b>Place Demo order</b>.</p>
+      <p class="muted" style="font-size:13px;margin-top:0">Nothing has been placed yet. Review, then scroll down to <b>Place order</b>.</p>
       <table class="summary-table">
         <tr><td class="muted">Market</td><td><b>${escapeHtml(displaySymbol)}</b></td></tr>
         <tr><td class="muted">Direction</td><td><b class="${side === 'long' ? 'good' : 'loss'}">${side === 'long' ? '↑ Long' : '↓ Short'}</b></td></tr>
@@ -1856,10 +2047,12 @@ async function futPlace() {
   const symbol = fut$('futSymbol').value;
   const margin = fut$('margin').value;
   const leverage = parseInt(fut$('levSlider').value);
+  const envLabel = state.environment === 'live' ? 'LIVE (REAL MONEY)' : 'DEMO';
   if (!confirm(
-    `Place ONE OKX DEMO ${side.toUpperCase()} order?\n\n` +
+    `Place ONE OKX ${envLabel} ${side.toUpperCase()} order?\n\n` +
     `${symbol} · ${leverage}× · margin $${margin}\n` +
-    `TP $${tp.toFixed(2)} · SL $${sl.toFixed(2)}\n\nThis uses Demo money only.`
+    `TP $${tp.toFixed(2)} · SL $${sl.toFixed(2)}\n\n` +
+    (state.environment === 'live' ? 'This uses real funds.' : 'This uses demo money only.')
   )) return;
   try {
     const d = await api('/api/futures/demo-order', {
@@ -1871,20 +2064,21 @@ async function futPlace() {
       })
     });
     fut$('futResult').innerHTML = `
-      <h2>✅ Demo order accepted</h2>
+      <h2>✅ Order accepted</h2>
       <p>Order ID: <b>${d.order_id}</b></p>
       <p>Status: <b>${d.status}</b></p>
-      <p class="muted" style="font-size:13px">Check OKX Demo Trading to see it live. A confirmation was also sent to your Telegram chat.</p>
+      <p class="muted" style="font-size:13px">Check OKX to see it live. A confirmation was also sent to your Telegram chat.</p>
     `;
     futOrderKey = '';
     refreshPortfolio();
-    toast('Demo order accepted');
+    toast('Order accepted');
   } catch (e) { toast(e.message, true); }
 }
 
 async function futClosePosition(inst, side) {
   const pretty = String(inst).replace('-USDT-SWAP', '').replace('-SWAP', '');
-  if (!confirm(`Close the entire ${side.toUpperCase()} position for ${pretty} at market?\n\nOKX DEMO only. This cannot be undone.`)) return;
+  const envLabel = state.environment === 'live' ? 'LIVE (REAL MONEY)' : 'DEMO';
+  if (!confirm(`Close the entire ${side.toUpperCase()} position for ${pretty} at market?\n\nOKX ${envLabel}. This cannot be undone.`)) return;
   try {
     const d = await api('/api/futures/close-position', {
       method: 'POST',
@@ -1951,7 +2145,7 @@ function renderFuturesPositions(positions, historyRows) {
           <td><button class="mini" onclick="futClosePosition('${x.instrument}','${x.side}')">Close</button></td>
         </tr>`).join('')}
       </table>`
-    : '<div class="empty">No open Demo positions.</div>';
+    : '<div class="empty">No open positions.</div>';
   const hist = historyRows.length
     ? `<table>
         <tr><th>Trade</th><th>Status</th><th>Realized P&amp;L</th></tr>
@@ -2048,6 +2242,8 @@ function renderActivityHistory(rows) {
   }).join('');
 }
 
+/* ---------- Auto trading tab ---------- */
+
 const autoState = {
   session: null,
   marketsMode: 'auto',
@@ -2056,7 +2252,7 @@ const autoState = {
   floorPct: 80,
   riskMode: 'auto',
   autoRecommend: null,
-  strategies: new Set(['daily_breakout']),   // default: breakout only
+  strategies: new Set(['daily_breakout']),
   statusTimer: null,
   historyLoaded: false,
 };
@@ -2077,8 +2273,29 @@ function autoInit() {
   if (!autoState.historyLoaded) autoRefreshHistory();
   autoRenderSelectedMarkets();
   autoRenderStrategySelection();
+  autoRenderSessionEnvBanner();
   if (autoState.riskMode === 'auto' && !autoState.autoRecommend) {
     autoLoadRecommendation();
+  }
+}
+
+function autoRenderSessionEnvBanner() {
+  const el = document.getElementById('sessionEnvBanner');
+  if (!el) return;
+  if (!state.connected) {
+    el.className = 'warning info';
+    el.textContent = 'Connect an OKX account to start a session.';
+    return;
+  }
+  if (state.environment === 'live') {
+    el.className = 'warning danger';
+    el.innerHTML =
+      '⚠️ This session will trade on <b>LIVE</b>. Every order uses real funds. ' +
+      'If you are not sure, disconnect and reconnect in Demo mode.';
+  } else {
+    el.className = 'warning info';
+    el.innerHTML =
+      '🧪 This session will trade on <b>DEMO</b>. No real money is at risk.';
   }
 }
 
@@ -2107,7 +2324,6 @@ function autoRenderStrategySelection() {
   breakoutEl.classList.toggle('selected', autoState.strategies.has('daily_breakout'));
   pullbackEl.classList.toggle('selected', autoState.strategies.has('daily_pullback'));
 
-  // Warning banners
   const warnWrap = document.getElementById('strategyWarningWrap');
   const hasBreakout = autoState.strategies.has('daily_breakout');
   const hasPullback = autoState.strategies.has('daily_pullback');
@@ -2124,8 +2340,11 @@ function autoRenderStrategySelection() {
   } else if (hasBreakout && hasPullback) {
     html = `
       <div class="warning info">
-        ℹ️ Running both strategies together. <b>Daily breakout takes priority</b> — when
-        both would fire on the same market, breakout wins and pullback is skipped for that scan.
+        ℹ️ Running both strategies together. <b>Daily breakout takes priority</b>,
+        but it fires ~12× per year per market vs pullback's ~55× — so most
+        actual entries will come from pullback. If you want to compare them
+        properly, run them in separate sessions.
+        <br><br>
         Total risk is the same as running one (one position per market max).
       </div>`;
   }
@@ -2140,7 +2359,6 @@ function autoRenderStrategySelection() {
 }
 
 function autoGetStrategyString() {
-  // Preserve priority order: breakout first, then pullback.
   const order = ['daily_breakout', 'daily_pullback'];
   return order.filter(s => autoState.strategies.has(s)).join(',');
 }
@@ -2188,11 +2406,17 @@ async function autoLoadRecommendation() {
     const balance = parseFloat(r.balance || '0');
     const riskAmt = balance * parseFloat(r.risk_per_trade_pct) / 100;
     tierEl.textContent = r.tier_label;
-    detailsEl.innerHTML =
-      `Risk per trade: <b>${r.risk_per_trade_pct}%</b> (≈$${riskAmt.toFixed(2)})<br>` +
-      `Max concurrent positions: <b>${r.max_concurrent}</b><br>` +
-      `Daily loss cap: <b>${r.max_daily_loss_pct}%</b><br>` +
-      `Safety floor: <b>${r.safety_floor_pct}%</b> of starting balance`;
+    if (r.below_minimum) {
+      detailsEl.innerHTML =
+        `<span class="loss">Balance $${balance.toFixed(2)} is below the ` +
+        `$${r.min_account_balance} minimum. Fund the account before starting a session.</span>`;
+    } else {
+      detailsEl.innerHTML =
+        `Risk per trade: <b>${r.risk_per_trade_pct}%</b> (≈$${riskAmt.toFixed(2)})<br>` +
+        `Max concurrent positions: <b>${r.max_concurrent}</b><br>` +
+        `Daily loss cap: <b>${r.max_daily_loss_pct}%</b><br>` +
+        `Safety floor: <b>${r.safety_floor_pct}%</b> of starting balance`;
+    }
   } catch (e) {
     tierEl.textContent = 'Could not read balance';
     detailsEl.textContent = e.message;
@@ -2317,7 +2541,7 @@ async function autoStartSession() {
     return toast('Pick at least one market', true);
   }
 
-  // Final safety gate: warn before launching pullback-only session.
+  // Pullback-only gets a second hard confirm.
   if (autoState.strategies.size === 1 && autoState.strategies.has('daily_pullback')) {
     const ok = confirm(
       "⚠️ WARNING — Daily pullback lost money over 6 years of backtesting.\n\n" +
@@ -2327,11 +2551,28 @@ async function autoStartSession() {
     if (!ok) return;
   }
 
+  // Live session gets a very explicit confirm.
+  if (state.environment === 'live') {
+    const ok = confirm(
+      "⚠️ LIVE TRADING CONFIRMATION\n\n" +
+      "This session will place REAL ORDERS on your OKX live account.\n\n" +
+      "Every entry, exit, stop-loss adjust, and close uses real money.\n\n" +
+      "Are you absolutely sure you want to start a live session?"
+    );
+    if (!ok) return;
+  }
+
   let riskPct, riskUsdt, riskUnit;
   if (autoState.riskMode === 'auto') {
     await autoLoadRecommendation();
     if (!autoState.autoRecommend) {
       return toast('Could not load auto risk profile', true);
+    }
+    if (autoState.autoRecommend.below_minimum) {
+      return toast(
+        `Balance below the $${autoState.autoRecommend.min_account_balance} minimum`,
+        true
+      );
     }
     riskPct = parseFloat(autoState.autoRecommend.risk_per_trade_pct);
     riskUsdt = 0;
@@ -2379,7 +2620,8 @@ async function autoStartSession() {
 }
 
 async function autoStopSession() {
-  if (!confirm('Stop this session and close all open positions at market?')) return;
+  const envLabel = state.environment === 'live' ? 'LIVE' : 'DEMO';
+  if (!confirm(`Stop this ${envLabel} session and close all open positions at market?`)) return;
   try {
     await api('/api/auto/stop', { method: 'POST' });
     toast('Session stopped');
@@ -2400,6 +2642,7 @@ async function autoRefreshStatus() {
 function autoRenderNoSession() {
   document.getElementById('autoNoSession').classList.remove('hidden');
   document.getElementById('autoHasSession').classList.add('hidden');
+  autoRenderSessionEnvBanner();
 }
 
 function autoTierFromBalance(balance) {
@@ -2418,7 +2661,6 @@ function strategyLabel(strategyField) {
     if (names[0] === 'daily_pullback') return 'Daily pullback';
     return names[0];
   }
-  // Both
   return 'Both strategies';
 }
 
@@ -2426,6 +2668,9 @@ function autoRenderLiveSession(s) {
   document.getElementById('autoNoSession').classList.add('hidden');
   const wrap = document.getElementById('autoHasSession');
   wrap.classList.remove('hidden');
+
+  const env = s.environment || 'demo';
+  const envLabel = env === 'live' ? 'LIVE' : 'DEMO';
 
   const pnl = parseFloat(s.pnl);
   const sessionPnl = parseFloat(s.session_pnl || '0');
@@ -2460,17 +2705,22 @@ function autoRenderLiveSession(s) {
     streakHtml = `<span class="loss" style="font-size:12px">${streak} losses · paused until streak resets</span>`;
   }
 
+  const liveClass = env === 'live' ? 'live' : '';
+
   wrap.innerHTML = `
-    <div class="session-live">
+    <div class="session-live ${liveClass}">
       <div class="session-header">
         <div class="session-status">
-          <span class="session-pulse"></span>
-          <span>${escapeHtml(stratLabel)} · ACTIVE</span>
+          <span class="session-pulse ${liveClass}"></span>
+          <span>${escapeHtml(stratLabel)} · ${envLabel} · ACTIVE</span>
         </div>
         <span class="session-history-date">${h}h ${m}m left</span>
       </div>
 
       <div style="display:flex;justify-content:center;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+        ${env === 'live'
+          ? '<span class="tag" style="border-color:rgba(255,137,151,0.6);color:#ffc7d4">🔴 LIVE — real funds</span>'
+          : '<span class="tag" style="border-color:rgba(77,221,172,0.5);color:var(--good)">🧪 Demo</span>'}
         <span class="tag" style="border-color:rgba(98,140,255,0.5);color:var(--accent-soft)">
           ${tier.label} tier
         </span>
@@ -2540,10 +2790,16 @@ async function autoRefreshHistory() {
       }[s.end_reason] || s.end_reason || 'Ended';
       const date = (s.started_at || '').slice(0, 16).replace('T', ' ');
       const stratLabel = strategyLabel(s.strategy);
+      const env = (s.environment || 'demo').toUpperCase();
+      const envColor = env === 'LIVE' ? '#ff8997' : '#4dddac';
       return `
         <div class="session-history">
           <div class="session-history-row">
-            <span><b>${escapeHtml(stratLabel)}</b> · ${s.trades_count} trades (W${s.wins_count}/L${s.losses_count})</span>
+            <span>
+              <b>${escapeHtml(stratLabel)}</b>
+              <span style="color:${envColor};font-size:11px;font-weight:700;margin-left:6px">${env}</span>
+              · ${s.trades_count} trades (W${s.wins_count}/L${s.losses_count})
+            </span>
             <span class="session-history-pnl ${cls}">${sign}$${Math.abs(pnl).toFixed(2)}</span>
           </div>
           <div class="session-history-row">
