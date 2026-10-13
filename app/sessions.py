@@ -40,6 +40,8 @@ class SessionConfig:
     safety_floor_pct: Decimal
     leverage: int
     markets: str
+    # "demo" or "live". Defaults to "demo" so any old call site stays safe.
+    environment: str = "demo"
 
 
 @dataclass
@@ -167,6 +169,7 @@ _DDL_POSTGRES = [
         mode TEXT NOT NULL,
         strategy TEXT NOT NULL,
         markets TEXT NOT NULL DEFAULT 'auto',
+        environment TEXT NOT NULL DEFAULT 'demo',
         started_at TIMESTAMPTZ NOT NULL,
         ends_at TIMESTAMPTZ NOT NULL,
         starting_balance NUMERIC NOT NULL,
@@ -223,6 +226,7 @@ _DDL_SQLITE = [
         mode TEXT NOT NULL,
         strategy TEXT NOT NULL,
         markets TEXT NOT NULL DEFAULT 'auto',
+        environment TEXT NOT NULL DEFAULT 'demo',
         started_at TEXT NOT NULL,
         ends_at TEXT NOT NULL,
         starting_balance TEXT NOT NULL,
@@ -278,6 +282,7 @@ _MIGRATIONS = [
     "ALTER TABLE auto_sessions ADD COLUMN risk_per_trade_pct TEXT DEFAULT '1.0'",
     "ALTER TABLE auto_sessions ADD COLUMN risk_per_trade_usdt TEXT DEFAULT '0.0'",
     "ALTER TABLE auto_sessions ADD COLUMN risk_unit TEXT DEFAULT 'pct'",
+    "ALTER TABLE auto_sessions ADD COLUMN environment TEXT NOT NULL DEFAULT 'demo'",
     "ALTER TABLE session_positions ADD COLUMN order_id TEXT",
     "ALTER TABLE session_positions ADD COLUMN initial_sl TEXT",
     "ALTER TABLE session_positions ADD COLUMN current_sl TEXT",
@@ -324,16 +329,17 @@ class SessionManager:
         with self.backend.cursor() as cur:
             self.backend.run(cur, """
                 INSERT INTO auto_sessions
-                  (user_id, mode, strategy, markets,
+                  (user_id, mode, strategy, markets, environment,
                    started_at, ends_at,
                    starting_balance, current_balance,
                    target_profit, max_loss,
                    risk_per_trade_pct, risk_per_trade_usdt, risk_unit,
                    safety_floor_pct, leverage, status, loss_streak)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, 'active', 0)
             """, (
                 user_id, config.mode, config.strategy, config.markets,
+                config.environment,
                 datetime.now(UTC), ends_at,
                 str(starting_balance), str(starting_balance),
                 str(config.target_profit), str(config.max_loss),
@@ -547,7 +553,6 @@ class SessionManager:
                     wins += 1
                 elif v < 0:
                     losses += 1
-                # v == 0: scratch trade, counted in total only
             self.backend.run(cur, """
                 UPDATE auto_sessions
                 SET trades_count = %s, wins_count = %s, losses_count = %s
@@ -618,6 +623,7 @@ class SessionManager:
         risk_pct = self._dec(row_dict.get("risk_per_trade_pct") or "1.0")
         risk_usdt = self._dec(row_dict.get("risk_per_trade_usdt") or "0.0")
         risk_unit = row_dict.get("risk_unit") or "pct"
+        environment = row_dict.get("environment") or "demo"
 
         cfg = SessionConfig(
             mode=row_dict["mode"],
@@ -631,6 +637,7 @@ class SessionManager:
             safety_floor_pct=self._dec(row_dict["safety_floor_pct"]),
             leverage=int(row_dict["leverage"]),
             markets=row_dict["markets"],
+            environment=environment,
         )
         return SessionState(
             id=int(row_dict["id"]),
