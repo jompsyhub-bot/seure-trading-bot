@@ -54,6 +54,77 @@ behavior matches expectations, consider going live with a small balance
 
 ## Going live — full workflow
 
+
+Both are **required**. If `ALLOW_LIVE_TRADING=true` is set without a
+confirmation code, the app refuses to boot. This is a hard gate —
+there is no way to accidentally enable live trading without a
+confirmation code.
+
+### 2. User creates a live OKX API key
+
+In OKX, create a **trade-only** API key. Requirements:
+
+- **Trade** permissions (derivatives is what the bot uses)
+- **Read** permissions (for account/positions info)
+- **No withdrawal permissions** — the bot never needs them, and
+  trade-only keys are a critical safety layer
+- **No transfer permissions**
+- **IP whitelist** (optional but recommended) — restrict to your server's IP
+
+### 3. User connects through the Mini App
+
+Account tab → **Live** toggle → paste credentials → type the confirmation
+code → tick the acceptance checkbox → Connect.
+
+The backend validates the credentials against OKX's `/account/config`
+endpoint **using the live header** (not demo). If OKX rejects the keys,
+the connection is refused. Only after OKX confirms the credentials does
+the bot store them (encrypted at rest).
+
+### 4. User starts a live session
+
+Automate tab → pick strategy, duration, target, risk → **Start session**.
+
+Before the session starts, the user sees a final confirmation dialog
+that specifically warns about real-money trading. Only after tapping
+through does the session begin.
+
+### 5. Session runs
+
+The worker trades the user's live account the same way it trades demo.
+Log lines are tagged `[LIVE]` so you can distinguish them from demo at
+a glance.
+
+### 6. User stops the session
+
+Click **Stop session** in the Mini App. The worker closes all open
+positions at market, reconciles P&L, and ends the session.
+
+---
+
+## Environment variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token (from BotFather) |
+| `ADMIN_USER_ID` | Yes | Your Telegram user ID |
+| `MINI_APP_URL` | Yes | Public HTTPS URL of this app |
+| `DATABASE_URL` | Prod | Supabase/Postgres connection string |
+| `DATABASE_PATH` | Dev | SQLite file path (fallback when no DATABASE_URL) |
+| `CREDENTIAL_ENCRYPTION_KEY` | Yes | Fernet key to encrypt user API credentials at rest |
+| `ALLOW_LIVE_TRADING` | For live | Master kill switch. Default `false`. |
+| `LIVE_CONFIRMATION_CODE` | For live | Phrase users must type to connect live |
+| `TRADING_MODE` | No | `paper` (default) or `live` — legacy, not used by Mini App |
+| `MAX_DEMO_MARGIN_PCT` | No | Cap on margin as % of balance for manual orders |
+| `RUN_TELEGRAM_POLLER` | No | Legacy flag (unused) |
+
+**Never commit `.env`.** Use `.env.example` as a template.
+
+Generate a Fernet key:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
 ### 1. Operator enables live trading
 
 Two environment variables on the server must be set:
