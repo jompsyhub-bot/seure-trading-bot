@@ -3,7 +3,7 @@
 Wires together:
   * app.risk             — tier caps, loss-streak sizing, auto-leverage
   * app.position_manager — breakeven, trailing, time stop
-  * app.exchange         — OKX Demo REST + WS
+  * app.exchange         — OKX REST + WS
   * app.sessions         — persistent session and position state
 
 Supports running 1 or 2 strategies in a single session:
@@ -11,6 +11,9 @@ Supports running 1 or 2 strategies in a single session:
   * Strategies are tried in order (leftmost = highest priority)
   * On any market, the first strategy that produces a valid entry wins
   * Only one position per market at a time — no strategy collisions
+
+Routes each session to demo or live based on session.config.environment.
+Live sessions are refused when ALLOW_LIVE_TRADING is false.
 """
 from __future__ import annotations
 
@@ -22,7 +25,13 @@ from typing import Optional
 
 import aiohttp
 
-from .exchange import ExchangeError, OKXDemoClient, OrderRejected
+from .exchange import (
+    ExchangeError,
+    OKXClient,
+    OKXDemoClient,
+    OKXLiveClient,
+    OrderRejected,
+)
 from .models import OrderIntent, OrderResult, Side
 from .position_manager import Action as PMAction
 from .position_manager import evaluate as pm_evaluate
@@ -105,12 +114,49 @@ def _algo_clordid_for(client_order_id: str) -> str:
 
 
 class AutoTradingWorker:
-    def __init__(self, session_manager, database, vault, notifier):
+    def __init__(self, session_manager, database, vault, notifier, settings=None):
         self.session_manager = session_manager
         self.database = database
         self.vault = vault
         self.notifier = notifier
+        # Optional Settings object. When provided, the worker can refuse
+        # to run live sessions if the server has live trading disabled.
+        # When None, live sessions are refused outright — fail-safe.
+        self.settings = settings
         self.running = True
+
+    # --------------------------------------------------------------
+    # Client factory
+    # --------------------------------------------------------------
+
+    def _client_for(self, user_id: int, environment: str) -> OKXClient:
+        """Return a demo or live OKX client for this user.
+
+        Reads the user's stored credentials and instantiates the right
+        class. Refuses to build a live client when the server has live
+        trading disabled — this is a hard safety check that runs on every
+        session tick, not just at session start.
+        """
+        creds = self.database.exchange_credentials(user_id)
+        if not creds or creds.get("provider") != "okx":
+            raise ExchangeError("No OKX credentials for user")
+
+        api_key = self.vault.decrypt(creds["encrypted_api_key"])
+        api_secret = self.vault.decrypt(creds["encrypted_api_secret"])
+        passphrase = self.vault.decrypt(creds["encrypted_passphrase"])
+
+        if environment == "live":
+            if self.settings is None or not getattr(self.settings, "allow_live_trading", False):
+                raise ExchangeError(
+                    "Live session refused: ALLOW_LIVE_TRADING is disabled on this server."
+                )
+            return OKXLiveClient(api_key, api_secret, passphrase)
+
+        return OKXDemoClient(api_key, api_secret, passphrase)
+
+    # --------------------------------------------------------------
+    # Main run loop
+    # --------------------------------------------------------------
 
     async def run(self) -> None:
         log.info("AutoTradingWorker started")
@@ -169,15 +215,11 @@ class AutoTradingWorker:
         session = self.session_manager.get_by_id(session_id)
         if not session:
             return
-        creds = self.database.exchange_credentials(user_id)
-        if not creds or creds.get("provider") != "okx":
-            log.info("Session %s: no OKX credentials, skipping", session_id)
+        try:
+            client = self._client_for(user_id, session.config.environment)
+        except ExchangeError as exc:
+            log.warning("Session %s: cannot build client for repair — %s", session_id, exc)
             return
-        client = OKXDemoClient(
-            self.vault.decrypt(creds["encrypted_api_key"]),
-            self.vault.decrypt(creds["encrypted_api_secret"]),
-            self.vault.decrypt(creds["encrypted_passphrase"]),
-        )
         try:
             await self._reconcile_tracked_positions(client, session)
             trades, wins, losses = self.session_manager.recount_session_from_positions(session_id)
@@ -192,15 +234,32 @@ class AutoTradingWorker:
 
     async def _process_session(self, session: SessionState) -> None:
         user_id = session.user_id
-        creds = self.database.exchange_credentials(user_id)
-        if not creds or creds.get("provider") != "okx":
+        env = session.config.environment
+
+        # Guard: live session on a server with live trading disabled.
+        # This should never fire (api.py refuses to create such a session),
+        # but if it does — e.g. someone flipped ALLOW_LIVE_TRADING off
+        # mid-session — end the session cleanly instead of trading live.
+        if env == "live":
+            if self.settings is None or not getattr(self.settings, "allow_live_trading", False):
+                log.error(
+                    "Session %s is LIVE but ALLOW_LIVE_TRADING is off — ending session",
+                    session.id,
+                )
+                try:
+                    self.session_manager.end_session(
+                        session.id, EndReason.ERROR, session.current_balance
+                    )
+                except Exception:
+                    pass
+                return
+
+        try:
+            client = self._client_for(user_id, env)
+        except ExchangeError as exc:
+            log.warning("Session %s: cannot build client — %s", session.id, exc)
             return
 
-        client = OKXDemoClient(
-            self.vault.decrypt(creds["encrypted_api_key"]),
-            self.vault.decrypt(creds["encrypted_api_secret"]),
-            self.vault.decrypt(creds["encrypted_passphrase"]),
-        )
         try:
             await self._reconcile_tracked_positions(client, session)
             session = self.session_manager.get_by_id(session.id) or session
@@ -282,8 +341,7 @@ class AutoTradingWorker:
                     skip_reasons.append(f"{market}: risk ({decision.reason})")
                     break
 
-                # --- Try each strategy in priority order ---
-                primary_signal = None   # for skip reason display
+                primary_signal = None
                 entry_signal = None
                 entry_strategy_name = None
 
@@ -333,9 +391,9 @@ class AutoTradingWorker:
                     )
 
             log.info(
-                "Session %s: scan done — strategies=%s markets=%d "
+                "Session %s: scan done — env=%s strategies=%s markets=%d "
                 "long_signals=%d short_signals=%d entries=%d skips=%d",
-                session.id, strategy_names, len(markets),
+                session.id, env, strategy_names, len(markets),
                 long_signals, short_signals, entries_placed, skips,
             )
             if skip_reasons:
@@ -790,10 +848,11 @@ class AutoTradingWorker:
                         session.id, type(exc).__name__, exc)
             return False
 
+        env_label = "LIVE" if session.config.environment == "live" else "DEMO"
         try:
             await self.notifier.send(
                 session.user_id,
-                f"🤖 Auto entry — {signal.action.upper()} {market}\n"
+                f"🤖 Auto entry [{env_label}] — {signal.action.upper()} {market}\n"
                 f"Entry ~{filled_price:.4f} · SL {sl:.4f} · TP {tp:.4f}\n"
                 f"Contracts: {filled_contracts} · Leverage: {leverage}×\n"
                 f"Risk: ~{risk_amount:.2f} USDT · Session #{session.id}",
@@ -802,8 +861,8 @@ class AutoTradingWorker:
             pass
 
         log.info(
-            "Session %s: ENTERED %s %s x%s at %s (lev %sx, order %s)",
-            session.id, signal.action, market, filled_contracts,
+            "Session %s: ENTERED [%s] %s %s x%s at %s (lev %sx, order %s)",
+            session.id, env_label, signal.action, market, filled_contracts,
             filled_price, leverage, order_id,
         )
         return True
@@ -814,8 +873,8 @@ class AutoTradingWorker:
 
     async def _end_session(self, client, session: SessionState,
                            reason: EndReason, balance: Decimal) -> None:
-        log.info("Session %s ending: %s (balance=%.2f)",
-                 session.id, reason.value, balance)
+        log.info("Session %s ending: %s (env=%s balance=%.2f)",
+                 session.id, reason.value, session.config.environment, balance)
 
         await self._reconcile_tracked_positions(client, session)
         session = self.session_manager.get_by_id(session.id) or session
@@ -865,11 +924,12 @@ class AutoTradingWorker:
             EndReason.USER_STOP: "⏹️ Stopped by user",
             EndReason.ERROR: "⚠️ Stopped due to error",
         }
+        env_label = "LIVE" if session.config.environment == "live" else "DEMO"
         sp_sign = "+" if session_pnl >= 0 else "-"
         ac_sign = "+" if account_change >= 0 else "-"
         return (
             f"{reason_lines.get(reason, 'Session ended')}\n\n"
-            f"Session #{session.id} · {session.config.mode}\n\n"
+            f"Session #{session.id} · {session.config.mode} · {env_label}\n\n"
             f"🤖 Session P&L:  {sp_sign}${abs(session_pnl):.2f} USDT\n"
             f"   ({session.trades_count} session trades: "
             f"W {session.wins_count} / L {session.losses_count})\n\n"
