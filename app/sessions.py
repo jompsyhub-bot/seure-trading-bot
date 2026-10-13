@@ -161,6 +161,15 @@ class _Backend:
         return [dict(r) if not self.is_postgres else r for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+# CHANGE (Step 3 fix): `session_positions` gains a `notional` column. The
+# old `session_open_exposure` multiplied entry_price * contracts, which is
+# 100x too large on OKX swaps (contracts are in ctVal units, not in the
+# base currency). Storing the true notional at position-creation time
+# avoids the conversion entirely on the read path.
+
 _DDL_POSTGRES = [
     """
     CREATE TABLE IF NOT EXISTS auto_sessions (
@@ -202,6 +211,7 @@ _DDL_POSTGRES = [
         direction TEXT NOT NULL DEFAULT 'long',
         entry_price NUMERIC,
         contracts NUMERIC,
+        notional NUMERIC,
         take_profit NUMERIC,
         opened_at TIMESTAMPTZ NOT NULL,
         closed_at TIMESTAMPTZ,
@@ -259,6 +269,7 @@ _DDL_SQLITE = [
         direction TEXT NOT NULL DEFAULT 'long',
         entry_price TEXT,
         contracts TEXT,
+        notional TEXT,
         take_profit TEXT,
         opened_at TEXT NOT NULL,
         closed_at TEXT,
@@ -276,6 +287,7 @@ _DDL_SQLITE = [
 ]
 
 # Each migration attempted independently so failures never block.
+# CHANGE: added the `notional` migration for existing tables.
 _MIGRATIONS = [
     "ALTER TABLE auto_sessions ADD COLUMN loss_streak INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE auto_sessions ADD COLUMN last_loss_at TEXT",
@@ -290,6 +302,7 @@ _MIGRATIONS = [
     "ALTER TABLE session_positions ADD COLUMN last_action_candle_ts INTEGER",
     "ALTER TABLE session_positions ADD COLUMN direction TEXT DEFAULT 'long'",
     "ALTER TABLE session_positions ADD COLUMN take_profit TEXT",
+    "ALTER TABLE session_positions ADD COLUMN notional TEXT",
 ]
 
 
@@ -439,18 +452,29 @@ class SessionManager:
         algo_clordid: Optional[str] = None,
         direction: str = "long",
         take_profit: Optional[Decimal] = None,
+        notional: Optional[Decimal] = None,
     ) -> None:
+        """Record a newly-opened position.
+
+        `notional` is the true position value in USDT, computed by the
+        caller as `contracts × ctVal × ctMult × entry_price`. It must be
+        passed for `session_open_exposure` to work correctly. When None,
+        the exposure check falls back to zero for this row, which is
+        safer than the previous behavior (multiplying entry_price by
+        contracts, which was 100x too large on OKX swaps).
+        """
         with self.backend.cursor() as cur:
             self.backend.run(cur, """
                 INSERT INTO session_positions
                   (session_id, inst_id, pos_side, direction,
-                   entry_price, contracts, take_profit,
+                   entry_price, contracts, notional, take_profit,
                    opened_at, client_order_id, order_id,
                    initial_sl, current_sl, algo_clordid)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 session_id, inst_id, pos_side, direction,
                 str(entry_price), str(contracts),
+                str(notional) if notional is not None else None,
                 str(take_profit) if take_profit is not None else None,
                 datetime.now(UTC), client_order_id, order_id,
                 str(initial_sl) if initial_sl is not None else None,
@@ -502,17 +526,28 @@ class SessionManager:
         return Decimal(str(row["total"] or 0))
 
     def session_open_exposure(self, session_id: int) -> Decimal:
+        """Sum of notional value across all open positions in this session.
+
+        Reads the pre-computed `notional` column. This is the correct
+        value for OKX swaps: the caller multiplies contracts by ctVal
+        and ctMult and the entry price, and stores the result here.
+
+        Rows with a NULL notional (older rows created before this column
+        existed) contribute zero. That's safer than over-reporting and
+        freezing the session.
+        """
         try:
             with self.backend.cursor() as cur:
                 rows = self.backend.fetchall(cur, """
-                    SELECT entry_price, contracts FROM session_positions
+                    SELECT notional FROM session_positions
                     WHERE session_id = %s AND closed_at IS NULL
                 """, (session_id,))
             total = Decimal("0")
             for r in rows:
-                entry = Decimal(str(r["entry_price"] or 0))
-                contracts = Decimal(str(r["contracts"] or 0))
-                total += entry * contracts
+                raw = r.get("notional") if isinstance(r, dict) else r["notional"]
+                if raw is None:
+                    continue
+                total += Decimal(str(raw))
             return total
         except Exception:
             return Decimal("0")
