@@ -298,34 +298,30 @@ class OKXClient:
             raise ExchangeError(data.get("msg", "OKX rejected the leverage setting"))
 
     async def place_market_swap(
-        self,
-        *,
-        inst_id: str,
-        side: str,
-        position_side: str,
-        contracts: Decimal,
-        client_order_id: str,
-        take_profit: Decimal,
-        stop_loss: Decimal,
+        self, *, inst_id: str, side: str, position_side: str, 
+        margin_usdt: Decimal, client_order_id: str, 
+        take_profit: Decimal, stop_loss: Decimal
     ) -> dict:
         request_path = "/api/v5/trade/order"
         payload = {
-            "instId": inst_id,
-            "tdMode": "isolated",
-            "side": side,
-            "posSide": position_side,
-            "ordType": "market",
-            "sz": str(contracts),
-            "clOrdId": client_order_id,
+            "instId": inst_id, 
+            "tdMode": "isolated", 
+            "side": side, 
+            "posSide": position_side, 
+            "ordType": "market", 
+            # Send size in USDT margin directly
+            "sz": str(margin_usdt), 
+            "tgtCcy": "quote_ccy", 
+            "clOrdId": client_order_id, 
             "attachAlgoOrds": [{
-                "attachAlgoClOrdId": f"tp{client_order_id}"[:32],
-                "tpTriggerPx": str(take_profit),
-                "tpTriggerPxType": "mark",
-                "tpOrdPx": "-1",
-                "slTriggerPx": str(stop_loss),
-                "slTriggerPxType": "mark",
-                "slOrdPx": "-1",
-            }],
+                "attachAlgoClOrdId": f"tp{client_order_id}"[:32], 
+                "tpTriggerPx": str(take_profit), 
+                "tpTriggerPxType": "mark", 
+                "tpOrdPx": "-1", 
+                "slTriggerPx": str(stop_loss), 
+                "slTriggerPxType": "mark", 
+                "slOrdPx": "-1"
+            }]
         }
         body = json.dumps(payload, separators=(",", ":"))
         session = await self._session()
