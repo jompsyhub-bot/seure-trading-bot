@@ -27,25 +27,16 @@ class OrderRejected(ExchangeError):
     pass
 
 
-# ---------------------------------------------------------------------------
-# OKX client — base class shared by demo and live
-# ---------------------------------------------------------------------------
-
 class OKXClient:
     """OKX REST + WebSocket adapter.
 
     The only difference between demo and live is:
       * the `x-simulated-trading` header ("1" for demo, "0" for live)
       * the WebSocket host (wspap.okx.com for demo, ws.okx.com for live)
-
-    Both are driven by `self.live`, which the two subclasses set at init
-    time. Every other behavior — signing, endpoints, payloads — is
-    identical between the two environments.
     """
 
     base_url = "https://www.okx.com"
 
-    # WebSocket hosts. Demo uses wspap.okx.com; live uses ws.okx.com.
     _DEMO_WS_HOST = "wss://wspap.okx.com:8443"
     _LIVE_WS_HOST = "wss://ws.okx.com:8443"
 
@@ -62,8 +53,6 @@ class OKXClient:
                 api_key[:6] if api_key else "<empty>",
             )
 
-    # -- WS URLs --
-
     def _private_ws_url(self) -> str:
         host = self._LIVE_WS_HOST if self.live else self._DEMO_WS_HOST
         return f"{host}/ws/v5/private"
@@ -71,8 +60,6 @@ class OKXClient:
     def _public_ws_url(self) -> str:
         host = self._LIVE_WS_HOST if self.live else self._DEMO_WS_HOST
         return f"{host}/ws/v5/public"
-
-    # -- HTTP session --
 
     async def _session(self) -> aiohttp.ClientSession:
         if self.session is None:
@@ -87,8 +74,6 @@ class OKXClient:
         if self.session:
             await self.session.close()
             self.session = None
-
-    # -- WebSockets --
 
     async def private_events(self):
         timestamp = str(int(time.time()))
@@ -223,8 +208,6 @@ class OKXClient:
                 }:
                     raise ExchangeError("OKX public ticker feed disconnected")
 
-    # -- Auth headers --
-
     def _headers(self, method: str, request_path: str, body: str = "") -> dict[str, str]:
         timestamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         prehash = f"{timestamp}{method.upper()}{request_path}{body}"
@@ -236,12 +219,9 @@ class OKXClient:
             "OK-ACCESS-SIGN": signature,
             "OK-ACCESS-TIMESTAMP": timestamp,
             "OK-ACCESS-PASSPHRASE": self.passphrase,
-            # The ONLY difference between demo and live requests.
             "x-simulated-trading": "0" if self.live else "1",
             "Content-Type": "application/json",
         }
-
-    # -- Private REST endpoints --
 
     async def account_config(self) -> dict:
         request_path = "/api/v5/account/config"
@@ -298,30 +278,36 @@ class OKXClient:
             raise ExchangeError(data.get("msg", "OKX rejected the leverage setting"))
 
     async def place_market_swap(
-        self, *, inst_id: str, side: str, position_side: str, 
-        margin_usdt: Decimal, client_order_id: str, 
-        take_profit: Decimal, stop_loss: Decimal
+        self,
+        *,
+        inst_id: str,
+        side: str,
+        position_side: str,
+        margin_usdt: Decimal,
+        client_order_id: str,
+        take_profit: Decimal,
+        stop_loss: Decimal,
     ) -> dict:
         request_path = "/api/v5/trade/order"
         payload = {
-            "instId": inst_id, 
-            "tdMode": "isolated", 
-            "side": side, 
-            "posSide": position_side, 
-            "ordType": "market", 
-            # Send size in USDT margin directly
-            "sz": str(margin_usdt), 
-            "tgtCcy": "quote_ccy", 
-            "clOrdId": client_order_id, 
+            "instId": inst_id,
+            "tdMode": "isolated",
+            "side": side,
+            "posSide": position_side,
+            "ordType": "market",
+            # Use margin in USDT directly
+            "sz": str(margin_usdt),
+            "tgtCcy": "quote_ccy",
+            "clOrdId": client_order_id,
             "attachAlgoOrds": [{
-                "attachAlgoClOrdId": f"tp{client_order_id}"[:32], 
-                "tpTriggerPx": str(take_profit), 
-                "tpTriggerPxType": "mark", 
-                "tpOrdPx": "-1", 
-                "slTriggerPx": str(stop_loss), 
-                "slTriggerPxType": "mark", 
-                "slOrdPx": "-1"
-            }]
+                "attachAlgoClOrdId": f"tp{client_order_id}"[:32],
+                "tpTriggerPx": str(take_profit),
+                "tpTriggerPxType": "mark",
+                "tpOrdPx": "-1",
+                "slTriggerPx": str(stop_loss),
+                "slTriggerPxType": "mark",
+                "slOrdPx": "-1",
+            }],
         }
         body = json.dumps(payload, separators=(",", ":"))
         session = await self._session()
@@ -382,12 +368,6 @@ class OKXClient:
         return item
 
     async def positions_history(self, inst_id: str, limit: int = 20) -> list[dict]:
-        """Return recently-closed positions for an instrument.
-
-        Each row includes `realizedPnl` for the closed position. Used to
-        reconcile manual closes (user clicks "close" on OKX's UI) since
-        the entry order itself has no PnL.
-        """
         request_path = (
             f"/api/v5/account/positions-history"
             f"?instType=SWAP&instId={inst_id}&limit={limit}"
@@ -405,11 +385,6 @@ class OKXClient:
     async def amend_algo_sl(
         self, *, inst_id: str, algo_clordid: str, new_sl_trigger: Decimal
     ) -> dict:
-        """Move the stop-loss leg of an attached algo order to a new trigger.
-
-        `algo_clordid` is the attachAlgoClOrdId we set at entry
-        (format: "tp{original_clordid}").
-        """
         request_path = "/api/v5/trade/amend-algos"
         body = json.dumps(
             {
@@ -447,7 +422,6 @@ class OKXClient:
         return data.get("data", [None])[0]
 
     async def order_detail_by_clordid(self, inst_id: str, client_order_id: str) -> dict | None:
-        """Fetch an order by our clOrdId (fallback when ordId is unknown)."""
         request_path = f"/api/v5/trade/order?instId={inst_id}&clOrdId={client_order_id}"
         session = await self._session()
         async with session.get(
@@ -472,24 +446,6 @@ class OKXClient:
         return [row for row in data.get("data", []) if Decimal(row.get("pos") or "0") != 0]
 
     async def account_balance(self) -> Decimal:
-        """Return the USDT equity of the account.
-
-        We use the USDT `eq` field, NOT `availEq` and NOT account-level
-        `totalEq`:
-
-          * `availEq` includes cross-currency collateral in multi-currency
-            margin mode, which massively inflates the number when the
-            account holds BTC/ETH test balances. That caused a false
-            +$98,856 target hit in session #23.
-          * `availEq` also drops by the margin amount when a position
-            opens, which falsely triggered the session's max-loss check.
-          * `totalEq` mixes all currencies together, so it has the same
-            pollution problem as `availEq`.
-
-        USDT `eq` = cash balance + unrealized PnL for the USDT currency
-        only. It stays flat on position open and only moves with real
-        PnL, which is exactly what the session logic needs.
-        """
         request_path = "/api/v5/account/balance?ccy=USDT"
         session = await self._session()
         async with session.get(
@@ -506,8 +462,6 @@ class OKXClient:
         eq = usdt.get("eq") or usdt.get("cashBal") or "0"
         return Decimal(str(eq))
 
-    # -- Public REST endpoints (no auth, same for demo and live) --
-
     async def swap_instrument(self, inst_id: str) -> dict:
         session = await self._session()
         async with session.get(
@@ -521,7 +475,6 @@ class OKXClient:
         return data["data"][0]
 
     async def list_swap_instruments(self) -> list[dict]:
-        """Return SWAP instruments available on the current environment."""
         session = await self._session()
         async with session.get(
             f"{self.base_url}/api/v5/public/instruments",
@@ -545,7 +498,6 @@ class OKXClient:
         return Decimal(data["data"][0]["last"])
 
     async def candles(self, inst_id: str, bar: str = "1H", limit: int = 300) -> list[dict]:
-        """Fetch closed candles from OKX public REST. Oldest first."""
         session = await self._session()
         async with session.get(
             f"{self.base_url}/api/v5/market/candles",
@@ -584,41 +536,22 @@ class OKXClient:
         return data
 
 
-# ---------------------------------------------------------------------------
-# Thin subclasses — the ONLY difference is the `live` flag
-# ---------------------------------------------------------------------------
-
 class OKXDemoClient(OKXClient):
-    """OKX Demo Trading client. Routes every request to demo."""
-
     def __init__(self, api_key: str, api_secret: str, passphrase: str):
         super().__init__(api_key, api_secret, passphrase, live=False)
 
 
 class OKXLiveClient(OKXClient):
-    """OKX Live Trading client. Routes every request to the real account.
-
-    WARNING: orders placed through this client use real funds.
-    """
-
     def __init__(self, api_key: str, api_secret: str, passphrase: str):
         super().__init__(api_key, api_secret, passphrase, live=True)
 
 
-# ---------------------------------------------------------------------------
-# Bybit (legacy, unchanged)
-# ---------------------------------------------------------------------------
-
 class BybitClient:
-    """Minimal V5 client: credentials stay in process memory and auth uses headers."""
+    """Legacy Bybit client (unused by Mini App)."""
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True, environment: str | None = None):
         self.api_key, self.api_secret = api_key, api_secret
         environment = environment or ("testnet" if testnet else "mainnet")
-        urls = {
-            "testnet": "https://api-testnet.bybit.com",
-            "demo": "https://api-demo.bybit.com",
-            "mainnet": "https://api.bybit.com",
-        }
+        urls = {"testnet": "https://api-testnet.bybit.com", "demo": "https://api-demo.bybit.com", "mainnet": "https://api.bybit.com"}
         if environment not in urls:
             raise ValueError("Unsupported Bybit environment")
         self.environment = environment
@@ -628,10 +561,7 @@ class BybitClient:
     async def _session(self) -> aiohttp.ClientSession:
         if self.session is None:
             connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-            self.session = aiohttp.ClientSession(
-                connector=connector,
-                timeout=aiohttp.ClientTimeout(total=15),
-            )
+            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=15))
         return self.session
 
     async def close(self) -> None:
@@ -643,32 +573,20 @@ class BybitClient:
         timestamp, window = str(int(time.time() * 1000)), "5000"
         payload = f"{timestamp}{self.api_key}{window}{body}"
         signature = hmac.new(self.api_secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        return {
-            "X-BAPI-API-KEY": self.api_key,
-            "X-BAPI-TIMESTAMP": timestamp,
-            "X-BAPI-RECV-WINDOW": window,
-            "X-BAPI-SIGN": signature,
-            "Content-Type": "application/json",
-        }
+        return {"X-BAPI-API-KEY": self.api_key, "X-BAPI-TIMESTAMP": timestamp, "X-BAPI-RECV-WINDOW": window, "X-BAPI-SIGN": signature, "Content-Type": "application/json"}
 
     async def _json(self, response: aiohttp.ClientResponse) -> dict:
         try:
             data = await response.json(content_type=None)
         except (ValueError, UnicodeDecodeError):
-            raise ExchangeError(
-                f"Bybit returned a non-API response (HTTP {response.status}). "
-                "Check that the hosting region is permitted by Bybit and retry."
-            ) from None
+            raise ExchangeError(f"Bybit returned a non-API response (HTTP {response.status})") from None
         if not isinstance(data, dict):
             raise ExchangeError(f"Bybit returned an unexpected response (HTTP {response.status})")
         return data
 
     async def ticker(self, symbol: str) -> Decimal:
         session = await self._session()
-        async with session.get(
-            f"{self.base_url}/v5/market/tickers",
-            params={"category": "spot", "symbol": symbol},
-        ) as response:
+        async with session.get(f"{self.base_url}/v5/market/tickers", params={"category": "spot", "symbol": symbol}) as response:
             data = await self._json(response)
         items = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not items:
@@ -677,65 +595,26 @@ class BybitClient:
 
     async def instrument(self, symbol: str) -> dict:
         session = await self._session()
-        async with session.get(
-            f"{self.base_url}/v5/market/instruments-info",
-            params={"category": "spot", "symbol": symbol},
-        ) as response:
+        async with session.get(f"{self.base_url}/v5/market/instruments-info", params={"category": "spot", "symbol": symbol}) as response:
             data = await self._json(response)
         items = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not items:
             raise ExchangeError(f"Instrument unavailable for {symbol}")
         return items[0]
 
-    async def linear_instrument(self, symbol: str) -> dict:
-        session = await self._session()
-        async with session.get(
-            f"{self.base_url}/v5/market/instruments-info",
-            params={"category": "linear", "symbol": symbol},
-        ) as response:
-            data = await self._json(response)
-        items = data.get("result", {}).get("list", [])
-        if data.get("retCode") != 0 or not items:
-            raise ExchangeError(f"No linear futures instrument found for {symbol}")
-        return items[0]
-
-    async def place_market_order(
-        self,
-        intent: OrderIntent,
-        stop_loss: Decimal | None = None,
-        take_profit: Decimal | None = None,
-    ) -> OrderResult:
+    async def place_market_order(self, intent: OrderIntent, stop_loss: Decimal | None = None, take_profit: Decimal | None = None) -> OrderResult:
         info = await self.instrument(intent.symbol)
         price = await self.ticker(intent.symbol)
         lot = info["lotSizeFilter"]
-        qty = (intent.notional_usdt / price).quantize(
-            Decimal(lot["basePrecision"]), rounding=ROUND_DOWN
-        )
+        qty = (intent.notional_usdt / price).quantize(Decimal(lot["basePrecision"]), rounding=ROUND_DOWN)
         if qty <= 0 or qty < Decimal(lot["minOrderQty"]):
             raise ExchangeError("Order is below Bybit minimum quantity")
-        payload = {
-            "category": "spot",
-            "symbol": intent.symbol,
-            "side": intent.side.value,
-            "orderType": "Market",
-            "qty": str(qty),
-            "marketUnit": "baseCoin",
-            "orderLinkId": intent.idempotency_key,
-        }
+        payload = {"category": "spot", "symbol": intent.symbol, "side": intent.side.value, "orderType": "Market", "qty": str(qty), "marketUnit": "baseCoin", "orderLinkId": intent.idempotency_key}
         if stop_loss is not None and take_profit is not None:
-            payload.update({
-                "stopLoss": str(stop_loss),
-                "takeProfit": str(take_profit),
-                "tpOrderType": "Market",
-                "slOrderType": "Market",
-            })
+            payload.update({"stopLoss": str(stop_loss), "takeProfit": str(take_profit), "tpOrderType": "Market", "slOrderType": "Market"})
         body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         session = await self._session()
-        async with session.post(
-            f"{self.base_url}/v5/order/create",
-            data=body,
-            headers=self._headers(body),
-        ) as response:
+        async with session.post(f"{self.base_url}/v5/order/create", data=body, headers=self._headers(body)) as response:
             data = await self._json(response)
         if data.get("retCode") != 0:
             raise ExchangeError(data.get("retMsg", "Bybit rejected order"))
@@ -744,29 +623,18 @@ class BybitClient:
     async def order_status(self, order_id: str) -> OrderResult:
         query = urlencode(sorted({"category": "spot", "orderId": order_id}.items()))
         session = await self._session()
-        async with session.get(
-            f"{self.base_url}/v5/order/realtime?{query}",
-            headers=self._headers(query),
-        ) as response:
+        async with session.get(f"{self.base_url}/v5/order/realtime?{query}", headers=self._headers(query)) as response:
             data = await self._json(response)
         orders = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or not orders:
             raise ExchangeError(f"Could not reconcile order {order_id}")
         order = orders[0]
-        return OrderResult(
-            order_id,
-            order["orderStatus"].upper(),
-            Decimal(order.get("avgPrice") or "0"),
-            Decimal(order.get("cumExecQty") or "0"),
-        )
+        return OrderResult(order_id, order["orderStatus"].upper(), Decimal(order.get("avgPrice") or "0"), Decimal(order.get("cumExecQty") or "0"))
 
     async def api_key_info(self) -> dict:
         session = await self._session()
         query = ""
-        async with session.get(
-            f"{self.base_url}/v5/user/query-api",
-            headers=self._headers(query),
-        ) as response:
+        async with session.get(f"{self.base_url}/v5/user/query-api", headers=self._headers(query)) as response:
             data = await self._json(response)
         if data.get("retCode") != 0:
             raise ExchangeError(data.get("retMsg", "Bybit API key validation failed"))
@@ -774,10 +642,7 @@ class BybitClient:
 
     async def rsi_14(self, symbol: str, interval: str = "15") -> Decimal:
         session = await self._session()
-        async with session.get(
-            f"{self.base_url}/v5/market/kline",
-            params={"category": "spot", "symbol": symbol, "interval": interval, "limit": "30"},
-        ) as response:
+        async with session.get(f"{self.base_url}/v5/market/kline", params={"category": "spot", "symbol": symbol, "interval": interval, "limit": "30"}) as response:
             data = await self._json(response)
         rows = data.get("result", {}).get("list", [])
         if data.get("retCode") != 0 or len(rows) < 15:
@@ -792,7 +657,6 @@ class BybitClient:
 
 
 class PaperBroker:
-    """Deterministic simulated execution using the same public ticker feed."""
     def __init__(self, market: BybitClient):
         self.market = market
 
