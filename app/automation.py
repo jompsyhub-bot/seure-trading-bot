@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from typing import Optional
 
 import aiohttp
@@ -38,8 +38,6 @@ from .position_manager import evaluate as pm_evaluate
 from .risk import (
     evaluate_entry,
     pick_safe_leverage,
-    compute_contracts,
-    minimum_viable_balance,
     rules_for,
     MIN_ACCOUNT_BALANCE,
 )
@@ -121,7 +119,6 @@ class AutoTradingWorker:
         self.notifier = notifier
         # Optional Settings object. When provided, the worker can refuse
         # to run live sessions if the server has live trading disabled.
-        # When None, live sessions are refused outright — fail-safe.
         self.settings = settings
         self.running = True
 
@@ -130,13 +127,7 @@ class AutoTradingWorker:
     # --------------------------------------------------------------
 
     def _client_for(self, user_id: int, environment: str) -> OKXClient:
-        """Return a demo or live OKX client for this user.
-
-        Reads the user's stored credentials and instantiates the right
-        class. Refuses to build a live client when the server has live
-        trading disabled — this is a hard safety check that runs on every
-        session tick, not just at session start.
-        """
+        """Return a demo or live OKX client for this user."""
         creds = self.database.exchange_credentials(user_id)
         if not creds or creds.get("provider") != "okx":
             raise ExchangeError("No OKX credentials for user")
@@ -237,9 +228,6 @@ class AutoTradingWorker:
         env = session.config.environment
 
         # Guard: live session on a server with live trading disabled.
-        # This should never fire (api.py refuses to create such a session),
-        # but if it does — e.g. someone flipped ALLOW_LIVE_TRADING off
-        # mid-session — end the session cleanly instead of trading live.
         if env == "live":
             if self.settings is None or not getattr(self.settings, "allow_live_trading", False):
                 log.error(
@@ -689,7 +677,7 @@ class AutoTradingWorker:
         return strategy.evaluate(market, {"4h": c4h, "1d": c1d})
 
     # --------------------------------------------------------------
-    # Entry
+    # Entry (Fractional Sizing)
     # --------------------------------------------------------------
 
     async def _place_entry(self, client, session, signal, balance: Decimal,
@@ -707,68 +695,68 @@ class AutoTradingWorker:
             return False
 
         try:
-            ct_val = Decimal(instrument["ctVal"])
-            ct_mult = Decimal(instrument.get("ctMult") or "1")
-            contract_value = ct_val * ct_mult
-            min_sz = Decimal(instrument["minSz"])
             exchange_max_lev = int(instrument.get("lever") or 1)
         except (KeyError, TypeError, ArithmeticError) as exc:
             log.info("Session %s: bad instrument data — %s", session.id, exc)
             return False
 
-        contracts = compute_contracts(
-            risk_amount=risk_amount,
-            entry_price=entry,
-            stop_price=sl,
-            contract_value=ct_val,
-            contract_multiplier=ct_mult,
-            min_contracts=min_sz,
-        )
-
-        if contracts is None:
-            needed = minimum_viable_balance(
-                entry_price=entry,
-                stop_price=sl,
-                contract_value=ct_val,
-                contract_multiplier=ct_mult,
-                min_contracts=min_sz,
-                risk_pct=(
-                    session.config.risk_per_trade_pct
-                    if session.config.risk_unit != "usdt"
-                    else Decimal("1")
-                ),
-            )
-            log.info(
-                "Session %s: %s needs at least $%s balance to trade at "
-                "current risk setting — skipping",
-                session.id, market, needed,
-            )
+        # --- DYNAMIC FRACTIONAL POSITION SIZING ---
+        price_distance = abs(entry - sl)
+        if price_distance <= 0:
             return False
-
-        notional = contracts * contract_value * entry
+            
+        # What % of the position is the stop loss?
+        sl_distance_pct = price_distance / entry
+        
+        # Calculate total notional value required to achieve this risk
+        ideal_notional = risk_amount / sl_distance_pct
 
         user_choice = session.config.leverage
-        sl_distance_pct = (
-            (abs(entry - sl) / entry).quantize(Decimal("0.00001"))
-            if entry > 0 else Decimal("0")
-        )
+        
         safe_leverage = pick_safe_leverage(
             user_max_leverage=user_choice,
             exchange_max_leverage=exchange_max_lev,
             stop_distance_pct=sl_distance_pct,
             available_margin=balance,
-            notional_needed=notional,
+            notional_needed=ideal_notional,
         )
         if safe_leverage is None:
-            log.info(
-                "Session %s: no safe leverage fits %s at notional $%s (balance $%s)",
-                session.id, market,
-                notional.quantize(Decimal("0.01")),
-                balance,
-            )
+            log.info("Session %s: no safe leverage fits %s", session.id, market)
             return False
 
         leverage = Decimal(safe_leverage)
+
+        # Calculate the margin needed for our ideal trade
+        margin_needed = ideal_notional / leverage
+
+        # OKX MINIMUM MARGIN OVERRIDE:
+        # Based on user screenshots, OKX allows ~$1.00 margin for fractional trades.
+        # If our math calculates $0.05, we bump it to $1.05, else OKX rejects it.
+        if margin_needed < Decimal("1.05"):
+            margin_needed = Decimal("1.05")
+
+        # Calculate the ACTUAL risk of this bumped-up trade
+        actual_notional = margin_needed * leverage
+        actual_risk = actual_notional * sl_distance_pct
+        
+        # SAFETY CHECK: Is this $1 minimum trade too aggressive for the session max loss?
+        if actual_risk > (session.max_loss * Decimal("0.50")):
+            log.info(
+                "Session %s: %s skipped — minimum OKX trade size risks $%s, "
+                "which is over 50%% of your session Max Loss ($%s).",
+                session.id, market, actual_risk.quantize(Decimal("0.01")), session.max_loss
+            )
+            return False
+
+        # Check free balance (keep 10% free)
+        if margin_needed > (balance * Decimal("0.90")):
+            log.info(
+                "Session %s: %s skipped — needs $%s margin, but balance is $%s",
+                session.id, market, margin_needed.quantize(Decimal("0.01")), balance
+            )
+            return False
+
+        notional = actual_notional
 
         try:
             account = await client.account_config()
@@ -802,7 +790,7 @@ class AutoTradingWorker:
             submission_started = True
             accepted = await client.place_market_swap(
                 inst_id=market, side=exchange_side, position_side=position_side,
-                contracts=contracts, client_order_id=client_order_id,
+                margin_usdt=margin_needed, client_order_id=client_order_id,
                 take_profit=tp, stop_loss=sl,
             )
             order_id = accepted.get("ordId")
@@ -812,7 +800,7 @@ class AutoTradingWorker:
             detail = await client.order_detail(market, order_id)
             status = (detail or {}).get("state", "live").upper()
             filled_price = Decimal((detail or {}).get("avgPx") or str(entry))
-            filled_contracts = Decimal((detail or {}).get("accFillSz") or str(contracts))
+            filled_contracts = Decimal((detail or {}).get("accFillSz") or "0")
             self.database.finalize(
                 client_order_id,
                 OrderResult(order_id, status, filled_price, filled_contracts),
@@ -854,16 +842,17 @@ class AutoTradingWorker:
                 session.user_id,
                 f"🤖 Auto entry [{env_label}] — {signal.action.upper()} {market}\n"
                 f"Entry ~{filled_price:.4f} · SL {sl:.4f} · TP {tp:.4f}\n"
-                f"Contracts: {filled_contracts} · Leverage: {leverage}×\n"
-                f"Risk: ~{risk_amount:.2f} USDT · Session #{session.id}",
+                f"Margin: {margin_needed:.2f} USDT · Lev: {leverage}×\n"
+                f"Est. Risk: ~{actual_risk:.2f} USDT · Session #{session.id}",
             )
         except Exception:
             pass
 
         log.info(
-            "Session %s: ENTERED [%s] %s %s x%s at %s (lev %sx, order %s)",
-            session.id, env_label, signal.action, market, filled_contracts,
-            filled_price, leverage, order_id,
+            "Session %s: ENTERED [%s] %s %s margin:$%s at %s (lev %sx, risk:$%s)",
+            session.id, env_label, signal.action, market, 
+            margin_needed.quantize(Decimal("0.01")),
+            filled_price, leverage, actual_risk.quantize(Decimal("0.01")),
         )
         return True
 
