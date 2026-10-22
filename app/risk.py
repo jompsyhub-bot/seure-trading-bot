@@ -38,28 +38,28 @@ TIER_RULES: dict = {
         max_concurrent=1,
         max_daily_loss_pct=Decimal("5.0"),
         max_total_exposure_pct=Decimal("30.0"),
-        concentration_cap_pct=Decimal("3.0"),
+        concentration_cap_pct=Decimal("10.0"),    # Bumped for micro accounts
     ),
     Tier.SMALL: TierRules(
         min_balance=Decimal("50"),
         max_concurrent=2,
         max_daily_loss_pct=Decimal("6.0"),
         max_total_exposure_pct=Decimal("40.0"),
-        concentration_cap_pct=Decimal("4.0"),
+        concentration_cap_pct=Decimal("15.0"),
     ),
     Tier.STANDARD: TierRules(
         min_balance=Decimal("500"),
         max_concurrent=3,
         max_daily_loss_pct=Decimal("8.0"),
         max_total_exposure_pct=Decimal("50.0"),
-        concentration_cap_pct=Decimal("5.0"),
+        concentration_cap_pct=Decimal("20.0"),
     ),
     Tier.LARGE: TierRules(
         min_balance=Decimal("5000"),
         max_concurrent=3,
         max_daily_loss_pct=Decimal("8.0"),
         max_total_exposure_pct=Decimal("50.0"),
-        concentration_cap_pct=Decimal("5.0"),
+        concentration_cap_pct=Decimal("20.0"),
     ),
 }
 
@@ -126,17 +126,11 @@ def evaluate_entry(
     loss_streak: int = 0,
     last_loss_at: Optional[datetime] = None,
 ) -> RiskDecision:
-    """Decide whether a new position may be opened right now.
-
-    Either `session_risk_pct` or `session_risk_usdt` must be provided.
-    Loss-streak pause only lasts LOSS_STREAK_PAUSE_HOURS; after that it resets.
-    """
     if balance < MIN_ACCOUNT_BALANCE:
         return RiskDecision.reject(
             f"balance ${balance:.2f} is below the ${MIN_ACCOUNT_BALANCE} minimum"
         )
 
-    # --- Loss-streak pause (time-limited) ---
     if loss_streak >= LOSS_STREAK_PAUSE_THRESHOLD:
         hours = _hours_since(last_loss_at)
         if hours < LOSS_STREAK_PAUSE_HOURS:
@@ -145,7 +139,6 @@ def evaluate_entry(
                 f"paused after {loss_streak} consecutive losses — "
                 f"{remaining:.1f}h remaining"
             )
-        # Pause expired — reset streak to 0 (below)
         loss_streak = 0
 
     tier = classify(balance)
@@ -168,9 +161,7 @@ def evaluate_entry(
 
     multiplier = loss_streak_multiplier(loss_streak)
 
-    # --- Compute risk amount in dollars ---
     if session_risk_usdt is not None and session_risk_usdt > 0:
-        # Fixed USDT: still subject to a sane pct ceiling
         hard_cap = balance * HARD_MAX_RISK_PCT / Decimal("100")
         risk_amount = min(session_risk_usdt, hard_cap)
     elif session_risk_pct is not None and session_risk_pct > 0:
@@ -181,7 +172,6 @@ def evaluate_entry(
 
     risk_amount = (risk_amount * multiplier).quantize(Decimal("0.01"))
 
-    # --- Concentration cap on the final number ---
     concentration_cap = (
         balance * rules.concentration_cap_pct / Decimal("100")
     ).quantize(Decimal("0.01"))
@@ -243,42 +233,3 @@ def pick_safe_leverage(
 
     # Use the user's chosen leverage (already capped), not the bare minimum.
     return ceiling
-
-
-def compute_contracts(
-    *,
-    risk_amount: Decimal,
-    entry_price: Decimal,
-    stop_price: Decimal,
-    contract_value: Decimal,
-    contract_multiplier: Decimal = Decimal("1"),
-    min_contracts: Decimal = Decimal("1"),
-) -> Optional[Decimal]:
-    price_distance = abs(entry_price - stop_price)
-    if price_distance <= 0 or contract_value <= 0 or contract_multiplier <= 0:
-        return None
-
-    per_contract_risk = price_distance * contract_value * contract_multiplier
-    if per_contract_risk <= 0:
-        return None
-
-    contracts = (risk_amount / per_contract_risk).to_integral_value(rounding=ROUND_DOWN)
-    if contracts < min_contracts:
-        return None
-    return contracts
-
-
-def minimum_viable_balance(
-    *,
-    entry_price: Decimal,
-    stop_price: Decimal,
-    contract_value: Decimal,
-    contract_multiplier: Decimal = Decimal("1"),
-    min_contracts: Decimal = Decimal("1"),
-    risk_pct: Decimal = Decimal("1"),
-) -> Decimal:
-    price_distance = abs(entry_price - stop_price)
-    per_contract_risk = price_distance * contract_value * contract_multiplier * min_contracts
-    if per_contract_risk <= 0 or risk_pct <= 0:
-        return Decimal("0")
-    return (per_contract_risk / (risk_pct / Decimal("100"))).quantize(Decimal("0.01"))
