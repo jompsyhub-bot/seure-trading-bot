@@ -1189,12 +1189,25 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
             raise HTTPException(400, "For a long order, stop loss must be below and take profit above the current price.")
         if request.side == "short" and not (request.take_profit < price < request.stop_loss):
             raise HTTPException(400, "For a short order, take profit must be below and stop loss above the current price.")
-        contract_notional = Decimal(instrument["ctVal"]) * Decimal(instrument.get("ctMult") or "1") * price
-        contracts = ((request.margin_usdt * leverage) / contract_notional).to_integral_value(rounding=ROUND_DOWN)
-        if contracts < Decimal(instrument["minSz"]):
-            raise HTTPException(400, "Margin is too small for the exchange minimum contract size.")
+
+        ct_val = Decimal(instrument["ctVal"])
+        ct_mult = Decimal(instrument.get("ctMult") or "1")
+        lot_sz = Decimal(instrument.get("lotSz") or "1")
+        min_sz = Decimal(instrument["minSz"])
+
+        contract_notional = ct_val * ct_mult * price
+        requested_notional = request.margin_usdt * leverage
+
+        ideal_contracts = requested_notional / contract_notional
+        steps = (ideal_contracts / lot_sz).to_integral_value(rounding=ROUND_DOWN)
+        contracts = steps * lot_sz
+
+        if contracts < min_sz:
+            contracts = min_sz
+
         actual_notional = contracts * contract_notional
         initial_margin = actual_notional / leverage
+        
         permitted_margin = available_balance * settings.max_demo_margin_pct / Decimal("100")
         if initial_margin > permitted_margin:
             raise HTTPException(
@@ -1202,6 +1215,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
                 f"Balance safety check refused {initial_margin:.2f} USDT margin; "
                 f"maximum is {permitted_margin:.2f} USDT.",
             )
+            
         if account.get("posMode") == "long_short_mode":
             position_side = request.side
         else:
@@ -1220,6 +1234,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
                     "order_id": existing.order_id, "status": existing.status,
                 }
             raise HTTPException(409, "This order is already being processed. Do not submit it again.")
+        
         submission_started = False
         try:
             await client.set_leverage(inst_id, leverage, position_side)
@@ -1247,6 +1262,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
             if not submission_started:
                 database.cancel_reservation(request.client_order_id)
             raise
+        
         _portfolio_cache.pop(user_id, None)
         await api.state.notifier.send(
             user_id,
@@ -1261,7 +1277,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
             "environment": database.connection_environment(user_id) or "demo",
             "order_id": order_id,
             "status": status,
-            "contracts": str(contracts),
+            "contracts": str(filled_contracts),
             "estimated_initial_margin_usdt": str(initial_margin),
             "take_profit": str(request.take_profit),
             "stop_loss": str(request.stop_loss),
