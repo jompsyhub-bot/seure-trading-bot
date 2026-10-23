@@ -8,7 +8,8 @@ from typing import Optional
 
 
 MIN_ACCOUNT_BALANCE = Decimal("5")
-HARD_MAX_RISK_PCT = Decimal("5")
+# Allow up to 50% risk per trade so small accounts can still trade meaningfully
+HARD_MAX_RISK_PCT = Decimal("50") 
 LOSS_STREAK_PAUSE_THRESHOLD = 3
 LOSS_STREAK_PAUSE_HOURS = 4
 
@@ -36,30 +37,30 @@ TIER_RULES: dict = {
     Tier.MICRO: TierRules(
         min_balance=Decimal("5"),
         max_concurrent=1,
-        max_daily_loss_pct=Decimal("5.0"),
-        max_total_exposure_pct=Decimal("30.0"),
-        concentration_cap_pct=Decimal("10.0"),    # Bumped for micro accounts
+        max_daily_loss_pct=Decimal("50.0"),    # Allow losing 50% of account in a day
+        max_total_exposure_pct=Decimal("100.0"), # Allow using full balance as margin
+        concentration_cap_pct=Decimal("50.0"),   # Allow 50% risk per trade
     ),
     Tier.SMALL: TierRules(
         min_balance=Decimal("50"),
         max_concurrent=2,
-        max_daily_loss_pct=Decimal("6.0"),
-        max_total_exposure_pct=Decimal("40.0"),
-        concentration_cap_pct=Decimal("15.0"),
+        max_daily_loss_pct=Decimal("20.0"),
+        max_total_exposure_pct=Decimal("80.0"),
+        concentration_cap_pct=Decimal("20.0"),
     ),
     Tier.STANDARD: TierRules(
         min_balance=Decimal("500"),
         max_concurrent=3,
-        max_daily_loss_pct=Decimal("8.0"),
-        max_total_exposure_pct=Decimal("50.0"),
-        concentration_cap_pct=Decimal("20.0"),
+        max_daily_loss_pct=Decimal("10.0"),
+        max_total_exposure_pct=Decimal("60.0"),
+        concentration_cap_pct=Decimal("10.0"),
     ),
     Tier.LARGE: TierRules(
         min_balance=Decimal("5000"),
         max_concurrent=3,
         max_daily_loss_pct=Decimal("8.0"),
         max_total_exposure_pct=Decimal("50.0"),
-        concentration_cap_pct=Decimal("20.0"),
+        concentration_cap_pct=Decimal("5.0"),
     ),
 }
 
@@ -192,44 +193,30 @@ def pick_safe_leverage(
     available_margin: Decimal,
     notional_needed: Decimal,
 ) -> Optional[int]:
-    """Return the leverage to use for this trade.
-
-    Priority order:
-      1. The user's chosen leverage (what they asked for in the session config)
-      2. Capped by the exchange's max for this instrument
-      3. Capped by liquidation safety: the stop loss must always fire
-         before the liquidation price is reached
-      4. Must still fit the trade's notional inside the available margin
-         (with a free-margin buffer kept back)
-
-    Returns None if no leverage satisfies every constraint.
-    """
     if stop_distance_pct <= 0 or available_margin <= 0 or notional_needed <= 0:
         return None
 
-    # Liquidation-safe ceiling: with isolated margin, liquidation happens at
-    # roughly 1/leverage adverse move. Keep the stop distance at most
-    # LIQUIDATION_BUFFER × that, so SL always fires first.
+    # Liquidation-safe ceiling
     safe_max = int(
         (LIQUIDATION_BUFFER / stop_distance_pct).to_integral_value(rounding=ROUND_DOWN)
     )
 
-    # User's choice, capped by safety and exchange limits.
     ceiling = min(user_max_leverage, exchange_max_leverage, safe_max)
     if ceiling < 1:
         return None
 
-    # Margin budget after keeping a free-margin cushion.
     margin_budget = available_margin * (Decimal("1") - FREE_MARGIN_FRACTION)
     if margin_budget <= 0:
         return None
 
-    # Minimum leverage needed to fit the notional inside the margin budget.
+    # Minimum leverage needed to fit the trade
     min_required = int(
         (notional_needed / margin_budget).to_integral_value(rounding=ROUND_CEILING)
     )
-    if min_required > ceiling:
-        return None
+    
+    # If the user's chosen leverage is too low to fit the trade, we auto-bump it
+    # up to the minimum required (capped by safety).
+    final_leverage = max(min_required, 1)
+    final_leverage = min(final_leverage, ceiling)
 
-    # Use the user's chosen leverage (already capped), not the bare minimum.
-    return ceiling
+    return final_leverage
