@@ -680,7 +680,7 @@ class AutoTradingWorker:
     # Entry (Fractional Sizing)
     # --------------------------------------------------------------
 
-    async def _place_entry(self, client, session, signal, balance: Decimal,
+        async def _place_entry(self, client, session, signal, balance: Decimal,
                            risk_amount: Decimal) -> bool:
         market = signal.market
         entry = signal.entry_price
@@ -695,21 +695,36 @@ class AutoTradingWorker:
             return False
 
         try:
+            ct_val = Decimal(instrument["ctVal"])
+            ct_mult = Decimal(instrument.get("ctMult") or "1")
+            lot_sz = Decimal(instrument.get("lotSz") or "1")
+            min_sz = Decimal(instrument.get("minSz") or "1")
             exchange_max_lev = int(instrument.get("lever") or 1)
         except (KeyError, TypeError, ArithmeticError) as exc:
             log.info("Session %s: bad instrument data — %s", session.id, exc)
             return False
 
-        # --- DYNAMIC FRACTIONAL POSITION SIZING ---
+        # --- FRACTIONAL POSITION SIZING ---
         price_distance = abs(entry - sl)
         if price_distance <= 0:
             return False
             
-        # What % of the position is the stop loss?
         sl_distance_pct = price_distance / entry
-        
-        # Calculate total notional value required to achieve this risk
         ideal_notional = risk_amount / sl_distance_pct
+        
+        contract_notional = ct_val * ct_mult * entry
+        target_contracts = ideal_notional / contract_notional
+
+        # Round down to the nearest lot size
+        steps = (target_contracts / lot_sz).to_integral_value(rounding=ROUND_DOWN)
+        contracts = steps * lot_sz
+
+        # If it rounds to 0, force OKX's minimum contract size
+        if contracts < min_sz:
+            contracts = min_sz
+
+        actual_notional = contracts * contract_notional
+        actual_risk = actual_notional * sl_distance_pct
 
         user_choice = session.config.leverage
         
@@ -718,35 +733,14 @@ class AutoTradingWorker:
             exchange_max_leverage=exchange_max_lev,
             stop_distance_pct=sl_distance_pct,
             available_margin=balance,
-            notional_needed=ideal_notional,
+            notional_needed=actual_notional,
         )
         if safe_leverage is None:
             log.info("Session %s: no safe leverage fits %s", session.id, market)
             return False
 
         leverage = Decimal(safe_leverage)
-
-        # Calculate the margin needed for our ideal trade
-        margin_needed = ideal_notional / leverage
-
-        # OKX MINIMUM MARGIN OVERRIDE:
-        # Based on user screenshots, OKX allows ~$1.00 margin for fractional trades.
-        # If our math calculates $0.05, we bump it to $1.05, else OKX rejects it.
-        if margin_needed < Decimal("1.05"):
-            margin_needed = Decimal("1.05")
-
-        # Calculate the ACTUAL risk of this bumped-up trade
-        actual_notional = margin_needed * leverage
-        actual_risk = actual_notional * sl_distance_pct
-        
-        # SAFETY CHECK: Is this $1 minimum trade too aggressive for the session max loss?
-        if actual_risk > (session.max_loss * Decimal("0.50")):
-            log.info(
-                "Session %s: %s skipped — minimum OKX trade size risks $%s, "
-                "which is over 50%% of your session Max Loss ($%s).",
-                session.id, market, actual_risk.quantize(Decimal("0.01")), session.max_loss
-            )
-            return False
+        margin_needed = actual_notional / leverage
 
         # Check free balance (keep 10% free)
         if margin_needed > (balance * Decimal("0.90")):
@@ -756,13 +750,20 @@ class AutoTradingWorker:
             )
             return False
 
+        # Double-check the actual risk (in case we forced min_sz and it pushed risk too high)
+        if actual_risk > (session.max_loss * Decimal("0.80")):
+            log.info(
+                "Session %s: %s skipped — min contract size risks $%s, "
+                "which is over 80%% of your Max Loss ($%s).",
+                session.id, market, actual_risk.quantize(Decimal("0.01")), session.max_loss
+            )
+            return False
+
         notional = actual_notional
 
         try:
             account = await client.account_config()
         except TRANSIENT_ERRORS as exc:
-            log.info("Session %s: account config failed — %s: %s",
-                     session.id, type(exc).__name__, exc)
             return False
 
         if account.get("posMode") == "long_short_mode":
@@ -780,7 +781,6 @@ class AutoTradingWorker:
             notional, client_order_id,
         )
         if not self.database.reserve(intent):
-            log.info("Session %s: reservation refused", session.id)
             return False
 
         submission_started = False
@@ -790,7 +790,7 @@ class AutoTradingWorker:
             submission_started = True
             accepted = await client.place_market_swap(
                 inst_id=market, side=exchange_side, position_side=position_side,
-                margin_usdt=margin_needed, client_order_id=client_order_id,
+                contracts=contracts, client_order_id=client_order_id,
                 take_profit=tp, stop_loss=sl,
             )
             order_id = accepted.get("ordId")
@@ -800,7 +800,7 @@ class AutoTradingWorker:
             detail = await client.order_detail(market, order_id)
             status = (detail or {}).get("state", "live").upper()
             filled_price = Decimal((detail or {}).get("avgPx") or str(entry))
-            filled_contracts = Decimal((detail or {}).get("accFillSz") or "0")
+            filled_contracts = Decimal((detail or {}).get("accFillSz") or str(contracts))
             self.database.finalize(
                 client_order_id,
                 OrderResult(order_id, status, filled_price, filled_contracts),
@@ -841,21 +841,20 @@ class AutoTradingWorker:
             await self.notifier.send(
                 session.user_id,
                 f"🤖 Auto entry [{env_label}] — {signal.action.upper()} {market}\n"
-                f"Entry ~{filled_price:.4f} · SL {sl:.4f} · TP {tp:.4f}\n"
-                f"Margin: {margin_needed:.2f} USDT · Lev: {leverage}×\n"
-                f"Est. Risk: ~{actual_risk:.2f} USDT · Session #{session.id}",
+                f"Contracts: {filled_contracts} (${margin_needed:.2f} margin)\n"
+                f"Leverage: {leverage}× · Risk: ~${actual_risk:.2f}",
             )
         except Exception:
             pass
 
         log.info(
-            "Session %s: ENTERED [%s] %s %s margin:$%s at %s (lev %sx, risk:$%s)",
-            session.id, env_label, signal.action, market, 
-            margin_needed.quantize(Decimal("0.01")),
-            filled_price, leverage, actual_risk.quantize(Decimal("0.01")),
+            "Session %s: ENTERED [%s] %s %s x%s at %s (lev %sx, margin:$%s, risk:$%s)",
+            session.id, env_label, signal.action, market, filled_contracts,
+            filled_price, leverage, margin_needed.quantize(Decimal("0.01")), 
+            actual_risk.quantize(Decimal("0.01")),
         )
         return True
-
+                            
     # --------------------------------------------------------------
     # End session
     # --------------------------------------------------------------
