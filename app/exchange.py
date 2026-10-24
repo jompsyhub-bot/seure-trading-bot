@@ -49,8 +49,7 @@ class OKXClient:
         if live:
             log.warning(
                 "OKXLiveClient initialized — this client places REAL orders. "
-                "api_key prefix=%s",
-                api_key[:6] if api_key else "<empty>",
+                "api_key prefix=%s", api_key[:6] if api_key else "<empty>",
             )
 
     def _private_ws_url(self) -> str:
@@ -283,11 +282,24 @@ class OKXClient:
         inst_id: str,
         side: str,
         position_side: str,
-        margin_usdt: Decimal,
+        contracts: Decimal,
         client_order_id: str,
         take_profit: Decimal,
         stop_loss: Decimal,
     ) -> dict:
+        """Place a market SWAP order with attached TP/SL.
+
+        `contracts` is the OKX `sz` value — the number of contracts as computed
+        by the caller. OKX does NOT accept `tgtCcy="quote_ccy"` for SWAP market
+        orders, so `sz` is the only size field and no currency hint is sent.
+        """
+        if contracts <= 0:
+            raise ValueError("Contract size must be greater than zero")
+        if side not in {"buy", "sell"}:
+            raise ValueError("Side must be 'buy' or 'sell'")
+        if position_side not in {"net", "long", "short"}:
+            raise ValueError("Unsupported OKX position side")
+
         request_path = "/api/v5/trade/order"
         payload = {
             "instId": inst_id,
@@ -295,9 +307,8 @@ class OKXClient:
             "side": side,
             "posSide": position_side,
             "ordType": "market",
-            # Use margin in USDT directly
-            "sz": str(margin_usdt),
-            "tgtCcy": "quote_ccy",
+            # Size is in contracts. No tgtCcy — OKX rejects it for SWAP orders.
+            "sz": str(contracts),
             "clOrdId": client_order_id,
             "attachAlgoOrds": [{
                 "attachAlgoClOrdId": f"tp{client_order_id}"[:32],
