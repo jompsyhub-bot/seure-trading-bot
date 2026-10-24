@@ -1,1 +1,20 @@
-{}
+{
+  "daily_breakout": {
+    "vol:1.5-2.0|atr:0.5-2.0%|str:<1%": {
+      "rr_2": {"win_rate": 0.68, "n": 42},
+      "rr_3": {"win_rate": 0.52, "n": 38},
+      ...
+    }
+  },
+  "daily_pullback": {
+    "long|rsi:center|atr:0.5-2.0%": {
+      "rr_2": {"win_rate": 0.54, "n": 128},
+      ...
+    },
+    "short|rsi:edge|atr:>=2.0%": { ... }
+  },
+  "_meta": {
+    "breakout": {"built_at": "...", "lookback_days": 20, ...},
+    "pullback": {"built_at": "...", "bars_4h_fetched": 10000, ...}
+  }
+}
