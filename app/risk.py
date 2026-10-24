@@ -193,30 +193,46 @@ def pick_safe_leverage(
     available_margin: Decimal,
     notional_needed: Decimal,
 ) -> Optional[int]:
-    if stop_distance_pct <= 0 or available_margin <= 0 or notional_needed <= 0:
+    """Choose leverage for an entry.
+
+    Policy (per user intent):
+      * Use the leverage the user picked at session setup.
+      * Cap it at the exchange's maximum for the token — never exceed it.
+      * If the user did not pick (0/None/auto), use the exchange maximum.
+      * If the user's choice is too low to fit the trade within 90% of
+        available balance, bump to the highest the exchange allows
+        (up to what's actually needed to fit).
+
+    `stop_distance_pct` is retained for signature compatibility with the
+    caller but is NOT used to cap leverage. Small accounts trading isolated
+    margin at high leverage can only lose the margin posted — the user
+    accepts liquidation as the effective stop in exchange for the size
+    flexibility this enables on balances that can't otherwise afford BTC.
+
+    Returns None only when the trade is genuinely unfittable (invalid
+    inputs, or the exchange max still can't cover the required margin).
+    """
+    if available_margin <= 0 or notional_needed <= 0:
         return None
 
-    # Liquidation-safe ceiling
-    safe_max = int(
-        (LIQUIDATION_BUFFER / stop_distance_pct).to_integral_value(rounding=ROUND_DOWN)
-    )
+    exchange_max = max(1, int(exchange_max_leverage))
 
-    ceiling = min(user_max_leverage, exchange_max_leverage, safe_max)
-    if ceiling < 1:
-        return None
+    # User's explicit choice, or exchange max if unspecified, capped at
+    # the exchange maximum. Nothing else lowers this number.
+    if user_max_leverage and user_max_leverage > 0:
+        target = min(int(user_max_leverage), exchange_max)
+    else:
+        target = exchange_max
 
-    margin_budget = available_margin * (Decimal("1") - FREE_MARGIN_FRACTION)
-    if margin_budget <= 0:
-        return None
+    # If the chosen leverage can't fit the trade within 90% of balance,
+    # bump to whatever is needed — capped at the exchange maximum.
+    margin_budget = available_margin * Decimal("0.90")
+    if margin_budget > 0:
+        needed = (notional_needed / margin_budget).to_integral_value(
+            rounding=ROUND_CEILING
+        )
+        needed_int = int(needed)
+        if needed_int > target:
+            target = min(needed_int, exchange_max)
 
-    # Minimum leverage needed to fit the trade
-    min_required = int(
-        (notional_needed / margin_budget).to_integral_value(rounding=ROUND_CEILING)
-    )
-    
-    # If the user's chosen leverage is too low to fit the trade, we auto-bump it
-    # up to the minimum required (capped by safety).
-    final_leverage = max(min_required, 1)
-    final_leverage = min(final_leverage, ceiling)
-
-    return final_leverage
+    return target
