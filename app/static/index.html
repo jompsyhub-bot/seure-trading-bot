@@ -2156,14 +2156,18 @@ async function futPlace() {
   } catch (e) { toast(e.message, true); }
 }
 
-async function futClosePosition(inst, side) {
+async function futClosePosition(inst, posSide) {
   const pretty = String(inst).replace('-USDT-SWAP', '').replace('-SWAP', '');
   const envLabel = state.environment === 'live' ? 'LIVE (REAL MONEY)' : 'DEMO';
-  if (!confirm(`Close the entire ${side.toUpperCase()} position for ${pretty} at market?\n\nOKX ${envLabel}. This cannot be undone.`)) return;
+  const sideLabel = posSide === 'long' ? 'LONG'
+                  : posSide === 'short' ? 'SHORT'
+                  : '';  // net — omit direction
+  const label = sideLabel ? `${sideLabel} position` : 'position';
+  if (!confirm(`Close the entire ${label} for ${pretty} at market?\n\nOKX ${envLabel}. This cannot be undone.`)) return;
   try {
     const d = await api('/api/futures/close-position', {
       method: 'POST',
-      body: JSON.stringify({ instrument: inst, position_side: side, confirmation: 'CLOSE_DEMO_POSITION' })
+      body: JSON.stringify({ instrument: inst, position_side: posSide, confirmation: 'CLOSE_DEMO_POSITION' })
     });
     toast(`Close accepted · P&L: $${Number(d.realized_pnl_usdt || 0).toFixed(2)}`);
     refreshPortfolio();
@@ -2223,7 +2227,7 @@ function renderFuturesPositions(positions, historyRows) {
             <br><span class="muted" style="font-size:12px">${x.leverage}× · entry ${fmtPrice(x.entry_price)} · now ${fmtPrice(x.mark_price)}</span>
           </td>
           <td>${futPnl(x.unrealized_pnl)}</td>
-          <td><button class="mini" onclick="futClosePosition('${x.instrument}','${x.side}')">Close</button></td>
+          <td><button class="mini" onclick="futClosePosition('${x.instrument}','${x.pos_side || x.side}')">Close</button></td>
         </tr>`).join('')}
       </table>`
     : '<div class="empty">No open positions.</div>';
@@ -2272,10 +2276,16 @@ function renderActivityPositions(positions) {
     const pnlClass = pnl > 0 ? 'good' : pnl < 0 ? 'loss' : '';
     const pct = approxPnlPct(x);
     const pctText = pct == null ? '' : `<div class="pos-pnl-pct ${pct > 0 ? 'good' : pct < 0 ? 'loss' : 'muted'}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}% of margin</div>`;
+    // Hedge-mode indicator — shows "long"/"short" next to the badge so it's
+    // obvious this is a hedge position. Hidden in net mode.
+    const rawSide = x.pos_side || x.side;
+    const modeTag = rawSide === 'net'
+      ? ''
+      : `<span style="font-size:10px;color:var(--muted);background:rgba(98,140,255,0.10);padding:2px 6px;border-radius:6px;margin-left:6px">${rawSide}</span>`;
     return `
       <div class="pos-card ${sideClass}">
         <div class="pos-head">
-          <div class="pos-market">${escapeHtml(prettySymbol(x.instrument))}<span class="pos-badge ${sideClass}">${sideLabel}</span></div>
+          <div class="pos-market">${escapeHtml(prettySymbol(x.instrument))}<span class="pos-badge ${sideClass}">${sideLabel}</span>${modeTag}</div>
           <span class="pos-lev">${x.leverage}×</span>
         </div>
         <div class="pos-pnl">
@@ -2288,7 +2298,7 @@ function renderActivityPositions(positions) {
           <div class="pos-detail"><span class="pos-detail-label">Size</span><span class="pos-detail-value">${x.contracts} cts</span></div>
           <div class="pos-detail"><span class="pos-detail-label">Margin mode</span><span class="pos-detail-value">${escapeHtml(x.margin_mode || '—')}</span></div>
         </div>
-        <button class="pos-close-btn" onclick="futClosePosition('${x.instrument}','${x.side}')">Close position</button>
+        <button class="pos-close-btn" onclick="futClosePosition('${x.instrument}','${x.pos_side || x.side}')">Close position</button>
       </div>
     `;
   }).join('');
