@@ -1068,26 +1068,36 @@ async def futures_preview(request: FuturesPreviewRequest,
         leverage = Decimal(request.leverage)
         if leverage > maximum_leverage:
             raise HTTPException(400, f"{inst_id} supports up to {maximum_leverage}× leverage on OKX.")
+        
+        ct_val = Decimal(instrument["ctVal"])
+        ct_mult = Decimal(instrument.get("ctMult") or "1")
+        lot_sz = Decimal(instrument.get("lotSz") or "1")
+        min_sz = Decimal(instrument.get("minSz") or "1")
+
         requested_notional = request.margin_usdt * leverage
-        multiplier = Decimal(instrument.get("ctMult") or "1")
-        contract_value = Decimal(instrument["ctVal"]) * multiplier
-        contract_notional = contract_value * price
-        contracts = (requested_notional / contract_notional).to_integral_value(rounding=ROUND_DOWN)
-        if contracts < Decimal(instrument["minSz"]):
-            raise HTTPException(
-                400,
-                f"Margin is too small for OKX's {instrument['minSz']} contract minimum at the current price.",
-            )
+        contract_notional = ct_val * ct_mult * price
+        
+        # Calculate exact fractional contracts
+        target_contracts = requested_notional / contract_notional
+        steps = (target_contracts / lot_sz).to_integral_value(rounding=ROUND_DOWN)
+        contracts = steps * lot_sz
+
+        if contracts < min_sz:
+            contracts = min_sz
+
         actual_notional = contracts * contract_notional
-        initial_margin = actual_notional / leverage
+        actual_margin = actual_notional / leverage
+        base_size = contracts * ct_val * ct_mult
+
         permitted_margin = available_balance * settings.max_demo_margin_pct / Decimal("100")
-        if initial_margin > permitted_margin:
+        if actual_margin > permitted_margin:
             raise HTTPException(
                 400,
-                f"Balance safety check: about {initial_margin:.2f} USDT margin is needed. "
+                f"Balance safety check: about {actual_margin:.2f} USDT margin is needed. "
                 f"This ticket permits up to {permitted_margin:.2f} USDT "
                 f"({settings.max_demo_margin_pct}% of your {available_balance:.2f} USDT balance).",
             )
+            
         return {
             "preview_only": True,
             "exchange": "okx",
@@ -1096,22 +1106,18 @@ async def futures_preview(request: FuturesPreviewRequest,
             "side": request.side,
             "mark_price": str(price),
             "leverage": str(leverage),
-            "contracts": str(contracts),
-            "contract_notional_usdt": str(contract_notional),
+            "contracts": str(base_size),  # Returning base coin size (e.g. 0.0011 BTC)
             "estimated_notional_usdt": str(actual_notional),
-            "estimated_initial_margin_usdt": str(initial_margin),
+            "estimated_initial_margin_usdt": str(actual_margin),
             "available_usdt": str(available_balance),
             "maximum_recommended_margin_usdt": str(permitted_margin),
-            "remaining_usdt_before_fees": str(available_balance - initial_margin),
+            "remaining_usdt_before_fees": str(available_balance - actual_margin),
             "position_mode": "Not changed by this preview",
             "liquidation_price": (
                 "Not estimated: it depends on OKX risk tiers, maintenance margin, "
                 "account mode, and other positions."
             ),
-            "next_step": (
-                "No order was placed. Execution requires a separate "
-                "confirmation-and-reconciliation build step."
-            ),
+            "next_step": "No order was placed. Review and confirm to place.",
         }
     except HTTPException:
         raise
@@ -1193,13 +1199,14 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
         ct_val = Decimal(instrument["ctVal"])
         ct_mult = Decimal(instrument.get("ctMult") or "1")
         lot_sz = Decimal(instrument.get("lotSz") or "1")
-        min_sz = Decimal(instrument["minSz"])
+        min_sz = Decimal(instrument.get("minSz") or "1")
 
         contract_notional = ct_val * ct_mult * price
         requested_notional = request.margin_usdt * leverage
 
-        ideal_contracts = requested_notional / contract_notional
-        steps = (ideal_contracts / lot_sz).to_integral_value(rounding=ROUND_DOWN)
+        # Calculate exact fractional contracts
+        target_contracts = requested_notional / contract_notional
+        steps = (target_contracts / lot_sz).to_integral_value(rounding=ROUND_DOWN)
         contracts = steps * lot_sz
 
         if contracts < min_sz:
@@ -1221,6 +1228,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
         else:
             position_side = "net"
         exchange_side = "buy" if request.side == "long" else "sell"
+        
         intent = OrderIntent(
             user_id, inst_id,
             Side.BUY if exchange_side == "buy" else Side.SELL,
@@ -1281,10 +1289,7 @@ async def place_futures_demo_order(request: FuturesDemoOrderRequest,
             "estimated_initial_margin_usdt": str(initial_margin),
             "take_profit": str(request.take_profit),
             "stop_loss": str(request.stop_loss),
-            "message": (
-                "Order accepted and reconciled. Check OKX's order/position screen "
-                "as the source of truth."
-            ),
+            "message": "Order accepted and reconciled. Check OKX's order/position screen as the source of truth.",
         }
     except HTTPException as exc:
         log.info(
