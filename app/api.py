@@ -86,6 +86,14 @@ _okx_client_lock = asyncio.Lock()
 
 _portfolio_sync_in_flight: set[int] = set()
 
+# Signals: cache is per-instId (shared across users — a signal for BTC-USDT-SWAP
+# is identical for everyone). Rate limit is per-user to prevent abuse.
+_signal_cache: dict[str, tuple[float, dict]] = {}
+SIGNAL_CACHE_TTL = 60.0
+_signal_rate_limit: dict[int, list[float]] = {}
+SIGNAL_RATE_WINDOW = 60.0
+SIGNAL_RATE_MAX = 10
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -227,6 +235,15 @@ class StartSessionRequest(BaseModel):
     safety_floor_pct: Decimal = Field(ge=50, le=95)
     leverage: int = Field(ge=1, le=100)
     markets: str = Field(default="auto", min_length=1, max_length=500)
+
+
+class SignalAnalyzeRequest(BaseModel):
+    """Payload for /api/signals/analyze.
+
+    `token` accepts "BTC", "BTC/USDT", "BTC-USDT", or "BTC-USDT-SWAP".
+    Strict match: must exist as a USDT perpetual on OKX, exactly as listed.
+    """
+    token: str = Field(min_length=1, max_length=32)
 
 
 def resolve_okx_swap_inst_id(symbol: str) -> str:
@@ -1704,3 +1721,98 @@ async def auto_history(x_telegram_init_data: str | None = Header(default=None)) 
     user = telegram_user(x_telegram_init_data)
     rows = session_manager.list_history(int(user["id"]), limit=20)
     return [_session_to_dict(s) for s in rows]
+
+
+# ---------------------------------------------------------------------------
+# Signals — read-only analysis of any OKX USDT perpetual.
+# Reuses the same strategies the auto-trader uses. No orders, no sessions.
+# ---------------------------------------------------------------------------
+
+def _check_signal_rate_limit(user_id: int) -> None:
+    """Per-user sliding-window rate limit. Raises 429 when over limit."""
+    now = time.monotonic()
+    hits = [t for t in _signal_rate_limit.get(user_id, []) if now - t < SIGNAL_RATE_WINDOW]
+    if len(hits) >= SIGNAL_RATE_MAX:
+        retry = int(SIGNAL_RATE_WINDOW - (now - hits[0])) + 1
+        raise HTTPException(429, f"Too many signal requests. Retry in {retry}s.")
+    hits.append(now)
+    _signal_rate_limit[user_id] = hits
+
+
+async def _persist_signal_async(user_id: int, token_input: str, result: dict) -> None:
+    """Fire-and-forget persistence — never blocks the endpoint response."""
+    try:
+        database.insert_signal(
+            user_id=user_id,
+            inst_id=result["inst_id"],
+            token_input=token_input,
+            strategy=result["signal"].get("strategy") or "none",
+            direction=result["signal"]["direction"],
+            overall_confidence=int(result["signal"]["confidence"]),
+            analysis=result,
+        )
+    except Exception as exc:
+        log.warning("Failed to persist signal for %s: %s: %s",
+                    user_id, type(exc).__name__, exc)
+
+
+@api.post("/api/signals/analyze")
+async def signals_analyze(
+    request: SignalAnalyzeRequest,
+    x_telegram_init_data: str | None = Header(default=None),
+) -> dict:
+    """Analyze a token and return a signal + 1:2..1:5 TP ladder with confidence.
+
+    Public market data only — no API key required. The client is created
+    per-request (matching the pattern used by /api/futures/leverage-options)
+    and always closed in the finally block.
+    """
+    # Local imports keep api.py's module-level import graph untouched and
+    # avoid importing signals/ before it exists on disk.
+    from .signals import SignalNotSupported, analyze_token
+    from .signals.analyzer import InsufficientHistory
+    from .signals.resolver import resolve_token_strict
+
+    user = telegram_user(x_telegram_init_data)
+    user_id = int(user["id"])
+    _check_signal_rate_limit(user_id)
+
+    client = OKXDemoClient("", "", "")
+    try:
+        # Resolve first so a cache hit doesn't fetch candles needlessly.
+        try:
+            inst_id, _ = await resolve_token_strict(request.token, client)
+        except SignalNotSupported as exc:
+            raise HTTPException(404, str(exc)) from None
+
+        now = time.monotonic()
+        cached = _signal_cache.get(inst_id)
+        if cached and (now - cached[0]) < SIGNAL_CACHE_TTL:
+            return cached[1]
+
+        try:
+            result = await analyze_token(request.token, client)
+        except InsufficientHistory as exc:
+            raise HTTPException(422, str(exc)) from None
+        except SignalNotSupported as exc:
+            raise HTTPException(404, str(exc)) from None
+
+        _signal_cache[inst_id] = (time.monotonic(), result)
+        asyncio.create_task(_persist_signal_async(user_id, request.token, result))
+        return result
+    except HTTPException:
+        raise
+    except (ExchangeError, aiohttp.ClientError, TimeoutError) as exc:
+        raise HTTPException(502, f"OKX market data unavailable: {exc}") from None
+    finally:
+        await client.close()
+
+
+@api.get("/api/signals/history")
+async def signals_history(
+    limit: int = 50,
+    x_telegram_init_data: str | None = Header(default=None),
+) -> list[dict]:
+    user = telegram_user(x_telegram_init_data)
+    limit = max(1, min(limit, 200))
+    return database.signals_history(int(user["id"]), limit=limit)
