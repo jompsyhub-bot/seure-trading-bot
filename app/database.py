@@ -68,6 +68,18 @@ class SQLiteDatabase:
               take_profit_pct TEXT NOT NULL DEFAULT '4',
               updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS signals (
+              id INTEGER PRIMARY KEY,
+              user_id INTEGER NOT NULL,
+              inst_id TEXT NOT NULL,
+              token_input TEXT NOT NULL,
+              strategy TEXT NOT NULL,
+              direction TEXT NOT NULL,
+              overall_confidence INTEGER NOT NULL DEFAULT 0,
+              analysis_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_signals_user_created ON signals(user_id, created_at);
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(bybit_connections)")}
             if "environment" not in columns:
@@ -288,6 +300,47 @@ class SQLiteDatabase:
             ).fetchone()
         return int(row["trades"]), Decimal(str(row["pnl"]))
 
+    # --- Signals --------------------------------------------------------
+
+    def insert_signal(
+        self,
+        user_id: int,
+        inst_id: str,
+        token_input: str,
+        strategy: str,
+        direction: str,
+        overall_confidence: int,
+        analysis: dict,
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                "INSERT INTO signals (user_id,inst_id,token_input,strategy,direction,"
+                "overall_confidence,analysis_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    user_id, inst_id, token_input, strategy, direction,
+                    int(overall_confidence), json.dumps(analysis),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def signals_history(self, user_id: int, limit: int = 50) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT inst_id,token_input,strategy,direction,overall_confidence,"
+                "analysis_json,created_at FROM signals "
+                "WHERE user_id=? ORDER BY id DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+        out = []
+        for row in rows:
+            entry = {k: row[k] for k in row.keys() if k != "analysis_json"}
+            try:
+                entry["analysis"] = json.loads(row["analysis_json"])
+            except (json.JSONDecodeError, TypeError):
+                entry["analysis"] = None
+            out.append(entry)
+        return out
+
 
 class PostgreSQLDatabase:
     """Supabase/Postgres implementation. psycopg is imported only when needed."""
@@ -352,6 +405,18 @@ class PostgreSQLDatabase:
           max_trades_per_day INTEGER NOT NULL DEFAULT 1, stop_loss_pct TEXT NOT NULL DEFAULT '2',
           take_profit_pct TEXT NOT NULL DEFAULT '4', updated_at TIMESTAMPTZ NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS signals (
+          id BIGSERIAL PRIMARY KEY,
+          user_id BIGINT NOT NULL,
+          inst_id TEXT NOT NULL,
+          token_input TEXT NOT NULL,
+          strategy TEXT NOT NULL,
+          direction TEXT NOT NULL,
+          overall_confidence INTEGER NOT NULL DEFAULT 0,
+          analysis_json TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_signals_user_created ON signals(user_id, created_at);
         """
         with self.connection() as conn:
             conn.execute("SELECT pg_advisory_xact_lock(68422147)")
@@ -567,6 +632,47 @@ class PostgreSQLDatabase:
                 (user_id,),
             ).fetchone()
         return int(row["trades"]), Decimal(str(row["pnl"]))
+
+    # --- Signals --------------------------------------------------------
+
+    def insert_signal(
+        self,
+        user_id: int,
+        inst_id: str,
+        token_input: str,
+        strategy: str,
+        direction: str,
+        overall_confidence: int,
+        analysis: dict,
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                "INSERT INTO signals (user_id,inst_id,token_input,strategy,direction,"
+                "overall_confidence,analysis_json,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    user_id, inst_id, token_input, strategy, direction,
+                    int(overall_confidence), json.dumps(analysis),
+                    datetime.now(UTC),
+                ),
+            )
+
+    def signals_history(self, user_id: int, limit: int = 50) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT inst_id,token_input,strategy,direction,overall_confidence,"
+                "analysis_json,created_at FROM signals "
+                "WHERE user_id=%s ORDER BY id DESC LIMIT %s",
+                (user_id, limit),
+            ).fetchall()
+        out = []
+        for row in rows:
+            entry = {k: row[k] for k in row.keys() if k != "analysis_json"}
+            try:
+                entry["analysis"] = json.loads(row["analysis_json"])
+            except (json.JSONDecodeError, TypeError):
+                entry["analysis"] = None
+            out.append(entry)
+        return out
 
 
 class Database:
