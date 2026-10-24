@@ -258,6 +258,22 @@ class SQLiteDatabase:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def okx_demo_users(self) -> list[int]:
+        """Return user IDs with a stored OKX connection.
+
+        Used by monitor_okx_private_events to know which users need a
+        private WebSocket subscription. Includes both demo and live
+        connections — okx_client_for() routes each one appropriately.
+        The function name is historical (it started demo-only); live
+        users are included because their push notifications are just as
+        important as demo ones.
+        """
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT telegram_user_id FROM bybit_connections WHERE provider='okx'"
+            ).fetchall()
+        return [int(r["telegram_user_id"]) for r in rows]
+
     def existing_order(self, key: str) -> OrderResult | None:
         with self.connection() as conn:
             row = conn.execute("SELECT * FROM orders WHERE idempotency_key=?", (key,)).fetchone()
@@ -591,6 +607,19 @@ class PostgreSQLDatabase:
                 "SELECT p.*,c.encrypted_api_key,c.encrypted_api_secret FROM automation_profiles p JOIN bybit_connections c ON c.telegram_user_id=p.telegram_user_id WHERE p.enabled=TRUE AND c.provider='bybit' AND c.environment='demo'"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def okx_demo_users(self) -> list[int]:
+        """Return user IDs with a stored OKX connection.
+
+        Used by monitor_okx_private_events to know which users need a
+        private WebSocket subscription. Includes both demo and live
+        connections — okx_client_for() routes each one appropriately.
+        """
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT telegram_user_id FROM bybit_connections WHERE provider='okx'"
+            ).fetchall()
+        return [int(row["telegram_user_id"]) for row in rows]
 
     def existing_order(self, key: str) -> OrderResult | None:
         with self.connection() as conn:
