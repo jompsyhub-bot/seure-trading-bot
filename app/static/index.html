@@ -365,6 +365,42 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .accept-row input[type="checkbox"]{width:22px;height:22px;flex-shrink:0;margin-top:1px;
   accent-color:var(--danger);cursor:pointer}
 .accept-row span{color:#ffc7d4}
+
+/* --- Signals tab --- */
+.sig-result-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:14px}
+.sig-title{font-size:18px;font-weight:700;word-break:break-all}
+.sig-sub{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4}
+.sig-badge{font-size:12px;font-weight:700;padding:7px 13px;border-radius:999px;
+  letter-spacing:0.3px;white-space:nowrap;flex-shrink:0}
+.sig-badge.long{background:rgba(77,221,172,0.15);color:var(--good)}
+.sig-badge.short{background:rgba(255,137,151,0.15);color:#ff8997}
+.sig-badge.none{background:rgba(168,180,205,0.12);color:var(--muted)}
+.sig-ladder{display:flex;flex-direction:column;gap:7px;margin:8px 0 4px}
+.sig-ladder-row{display:grid;grid-template-columns:42px 1fr 68px 42px;gap:10px;
+  align-items:center;font-size:13px}
+.sig-ladder-rr{font-weight:700;color:var(--accent-soft);font-variant-numeric:tabular-nums}
+.sig-ladder-price{text-align:right;font-variant-numeric:tabular-nums;font-size:12px;color:var(--text)}
+.sig-ladder-bar{height:8px;border-radius:4px;background:rgba(98,140,255,0.10);overflow:hidden}
+.sig-ladder-bar > div{height:100%;
+  background:linear-gradient(90deg,rgba(98,140,255,0.7),rgba(157,182,255,1));
+  border-radius:4px;transition:width .3s ease}
+.sig-ladder-conf{text-align:right;font-weight:700;font-variant-numeric:tabular-nums;font-size:12px}
+.sig-ladder-conf.calibrated{color:var(--good)}
+.sig-ladder-conf.heuristic{color:var(--muted);font-weight:600}
+.sig-reasons{list-style:none;padding:0;margin:6px 0 4px;font-size:13px;color:#b8c7e5;line-height:1.5}
+.sig-reasons li{padding:7px 0 7px 18px;border-bottom:1px solid var(--border);position:relative}
+.sig-reasons li:last-child{border-bottom:none}
+.sig-reasons li::before{content:'•';position:absolute;left:4px;color:var(--accent-soft);font-weight:700}
+.sig-since{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:8px 0}
+.sig-since .cell{padding:10px 6px;background:rgba(98,140,255,0.05);
+  border:1px solid var(--border);border-radius:9px;text-align:center}
+.sig-since .cell-label{font-size:10px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:0.3px}
+.sig-since .cell-val{font-size:14px;font-weight:700;margin-top:4px;
+  font-variant-numeric:tabular-nums;line-height:1.3}
+.sig-strategy-note{font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5;
+  padding-top:12px;border-top:1px solid var(--border)}
+.sig-strategy-note b{color:var(--text)}
 </style>
 </head>
 <body>
@@ -864,6 +900,46 @@ SL @ 77,000"></textarea>
   </div>
 </section>
 
+<section id="signals" class="view">
+  <h1>Signals</h1>
+  <p class="muted">Analyze any OKX USDT perpetual. Read-only — no orders placed.</p>
+
+  <div class="card">
+    <h2>Token analyzer</h2>
+    <p class="muted" style="font-size:13px;margin-top:0">
+      The bot runs both auto-trading strategies against the token's history and
+      returns the most recent signal with a 1:2 → 1:5 take-profit ladder.
+    </p>
+    <label for="sigToken">Token</label>
+    <input id="sigToken" placeholder="e.g. BTC/USDT or BTC"
+           autocomplete="off" autocapitalize="characters" spellcheck="false">
+    <div class="chip-row">
+      <button class="chip" onclick="sigQuick('BTC/USDT')">BTC</button>
+      <button class="chip" onclick="sigQuick('ETH/USDT')">ETH</button>
+      <button class="chip" onclick="sigQuick('SOL/USDT')">SOL</button>
+      <button class="chip" onclick="sigQuick('DOGE/USDT')">DOGE</button>
+    </div>
+    <p class="hint" style="margin-top:8px">
+      Must match an OKX USDT perpetual exactly. Some tokens use numeric prefixes
+      (e.g. <b>1000PEPE/USDT</b> instead of <b>PEPE/USDT</b>) — type the symbol
+      as it appears on OKX futures.
+    </p>
+    <button id="sigAnalyzeBtn" onclick="sigAnalyze()" style="margin-top:6px">
+      🔍 Analyze signal
+    </button>
+  </div>
+
+  <div id="sigResultCard" class="card hidden"></div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h2 style="margin:0">Recent signals</h2>
+      <button class="mini-ghost" onclick="sigRefreshHistory()">Refresh</button>
+    </div>
+    <div id="sigHistoryList" class="muted" style="margin-top:8px">Loading…</div>
+  </div>
+</section>
+
 <section id="activity" class="view">
   <h1>Activity</h1>
   <p class="muted">Live positions and order history from OKX.</p>
@@ -904,6 +980,7 @@ SL @ 77,000"></textarea>
   <button data-view="overview" onclick="go('overview',this)"><span class="ico">🏠</span>Home</button>
   <button data-view="automate" onclick="go('automate',this)"><span class="ico">⚙️</span>Automate</button>
   <button data-view="futures"  onclick="go('futures',this)"><span class="ico">📈</span>Futures</button>
+  <button data-view="signals"  onclick="go('signals',this)"><span class="ico">📡</span>Signals</button>
   <button data-view="activity" onclick="go('activity',this)"><span class="ico">🧾</span>Activity</button>
   <button data-view="account"  onclick="go('account',this)"><span class="ico">👤</span>Account</button>
 </nav>
@@ -1207,7 +1284,10 @@ function futSelectToken(instId) {
 }
 
 function go(id, btn) {
-  if (!state.connected && id !== 'account') {
+  // Signals is public: works without an OKX connection (only Telegram auth is
+  // required, and that's handled server-side). Don't force it to the connect
+  // screen the way Automate/Futures/Activity do.
+  if (!state.connected && id !== 'account' && id !== 'signals') {
     toast('Connect an account first');
     id = 'account';
     btn = document.querySelector('.nav button[data-view="account"]');
@@ -1216,6 +1296,7 @@ function go(id, btn) {
   document.querySelectorAll('.nav button').forEach(b =>
     b.classList.toggle('active', b === btn || b.dataset.view === id));
   if (id === 'futures') futInit();
+  if (id === 'signals') sigInit();
   if (id === 'activity') activityInit();
   if (id === 'automate') autoInit();
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2805,6 +2886,214 @@ async function autoRefreshHistory() {
           <div class="session-history-row">
             <span class="session-history-reason">${reason}</span>
             <span class="session-history-date">${date}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+/* ---------- Signals tab ---------- */
+
+let sigBusy = false;
+let sigInitialized = false;
+
+function sigInit() {
+  if (sigInitialized) return;
+  sigInitialized = true;
+  sigRefreshHistory();
+}
+
+function sigQuick(token) {
+  const input = document.getElementById('sigToken');
+  if (input) input.value = token;
+  sigAnalyze();
+}
+
+async function sigAnalyze() {
+  if (sigBusy) return;
+  const input = document.getElementById('sigToken');
+  const token = (input.value || '').trim();
+  if (!token) return toast('Enter a token like BTC/USDT', true);
+
+  const btn = document.getElementById('sigAnalyzeBtn');
+  sigBusy = true;
+  btn.disabled = true;
+  btn.textContent = 'Analyzing…';
+
+  // Wipe any prior error/success card so the user doesn't think the old one is new.
+  const card = document.getElementById('sigResultCard');
+  card.classList.add('hidden');
+  card.innerHTML = '';
+
+  try {
+    const d = await api('/api/signals/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ token })
+    });
+    sigRender(d);
+    setTimeout(() => {
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+    sigRefreshHistory();
+  } catch (e) {
+    sigRenderError(e.message || 'Analysis failed');
+  } finally {
+    sigBusy = false;
+    btn.disabled = false;
+    btn.textContent = '🔍 Analyze signal';
+  }
+}
+
+function sigRenderError(msg) {
+  const card = document.getElementById('sigResultCard');
+  card.classList.remove('hidden');
+  card.innerHTML = `
+    <h2>⚠️ Could not analyze</h2>
+    <div class="warning danger">${escapeHtml(msg)}</div>
+    <p class="muted" style="font-size:13px;margin-top:10px">
+      Not every token is listed as a USDT perpetual on OKX. If the symbol is
+      listed with a numeric prefix (e.g. <b>1000PEPE</b> instead of <b>PEPE</b>),
+      type the prefixed version exactly as it appears on OKX futures.
+    </p>
+  `;
+}
+
+function sigFormatPrice(v) {
+  const n = parseFloat(v);
+  if (!isFinite(n)) return '—';
+  if (n >= 1000) return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (n >= 1) return '$' + n.toFixed(4);
+  return '$' + n.toFixed(8);
+}
+
+function sigRender(d) {
+  const card = document.getElementById('sigResultCard');
+  card.classList.remove('hidden');
+  const s = d.signal || {};
+  const since = d.since_signal || {};
+  const other = d.other_strategy || {};
+
+  const dir = s.direction || 'none';
+  const dirLabel = dir === 'long' ? '↑ Long' : dir === 'short' ? '↓ Short' : '— None';
+  const dirCls = dir === 'long' ? 'long' : dir === 'short' ? 'short' : 'none';
+  const stratLabel = (s.strategy || '').replace(/_/g, ' ');
+  const firedAt = s.fired_at
+    ? new Date(s.fired_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : '—';
+
+  // "Since the signal" fields — pct_move may be a signed string like "+0.41%"
+  const pctMove = String(since.pct_move || '0%');
+  const pctNum = parseFloat(pctMove.replace('%', '')) || 0;
+  const pctCls = pctNum > 0 ? 'good' : pctNum < 0 ? 'loss' : '';
+  const actionText = since.hit_tp ? '🎯 Target 1 hit'
+                   : since.hit_sl ? '🛑 Stop hit'
+                   : since.still_actionable ? '✅ Still actionable'
+                   : '⚠️ Not actionable';
+  const actionCls = since.hit_tp ? 'good' : since.hit_sl ? 'loss' : since.still_actionable ? 'good' : 'warn';
+
+  const targetsHtml = (s.targets || []).map(t => {
+    const conf = Math.max(0, Math.min(100, parseInt(t.confidence) || 0));
+    const basis = t.basis === 'calibrated' ? 'calibrated' : 'heuristic';
+    return `
+      <div class="sig-ladder-row">
+        <span class="sig-ladder-rr">${escapeHtml(t.rr)}</span>
+        <span class="sig-ladder-price">${sigFormatPrice(t.price)}</span>
+        <div class="sig-ladder-bar"><div style="width:${conf}%"></div></div>
+        <span class="sig-ladder-conf ${basis}">${conf}%</span>
+      </div>
+    `;
+  }).join('');
+
+  const reasonsHtml = (s.reasons || []).map(r => `<li>${escapeHtml(r)}</li>`).join('');
+
+  const otherDir = other.direction || 'none';
+  const otherStr = (other.strategy || '').replace(/_/g, ' ');
+  const otherDirLabel = otherDir === 'long' ? '↑ Long' : otherDir === 'short' ? '↓ Short' : '—';
+  const otherDirCls = otherDir === 'long' ? 'good' : otherDir === 'short' ? 'loss' : 'muted';
+
+  card.innerHTML = `
+    <div class="sig-result-head">
+      <div>
+        <div class="sig-title">${escapeHtml(d.inst_id || '')}</div>
+        <div class="sig-sub">
+          ${stratLabel ? escapeHtml(stratLabel) + ' · ' : ''}${escapeHtml(firedAt)}${s.candles_ago != null ? ' · ' + s.candles_ago + ' candles ago' : ''}
+        </div>
+      </div>
+      <span class="sig-badge ${dirCls}">${dirLabel}</span>
+    </div>
+
+    ${dir === 'none' ? `
+      <div class="warning">${escapeHtml((s.reasons && s.reasons[0]) || 'No signal in scan window.')}</div>
+    ` : `
+      <div class="info-row"><span class="muted">Entry reference</span><b>${sigFormatPrice(s.entry_ref)}</b></div>
+      <div class="info-row"><span class="muted">Stop loss</span><b class="loss">${sigFormatPrice(s.stop_loss)}</b></div>
+      <div class="info-row"><span class="muted">Risk per unit</span><b>${sigFormatPrice(s.risk_per_unit)}</b></div>
+
+      <h3>Take-profit ladder</h3>
+      <p class="hint" style="margin:0 0 8px">
+        Each level's confidence is the historical probability of reaching it at that RR.
+      </p>
+      <div class="sig-ladder">${targetsHtml}</div>
+    `}
+
+    ${reasonsHtml ? `<h3>Why this signal</h3><ul class="sig-reasons">${reasonsHtml}</ul>` : ''}
+
+    ${dir !== 'none' ? `
+      <h3>Since the signal</h3>
+      <div class="sig-since">
+        <div class="cell">
+          <div class="cell-label">Now</div>
+          <div class="cell-val">${sigFormatPrice(since.price_now)}</div>
+        </div>
+        <div class="cell">
+          <div class="cell-label">Change</div>
+          <div class="cell-val ${pctCls}">${escapeHtml(pctMove)}</div>
+        </div>
+        <div class="cell">
+          <div class="cell-label">Status</div>
+          <div class="cell-val ${actionCls}" style="font-size:12px">${actionText}</div>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="sig-strategy-note">
+      <b>Other strategy:</b> ${escapeHtml(otherStr || '—')} ·
+      <span class="${otherDirCls}">${otherDirLabel}</span>
+      ${other.reason ? ' — ' + escapeHtml(other.reason) : ''}
+    </div>
+  `;
+}
+
+async function sigRefreshHistory() {
+  const el = document.getElementById('sigHistoryList');
+  if (!el) return;
+  try {
+    const rows = await api('/api/signals/history?limit=20');
+    if (!rows || !rows.length) {
+      el.innerHTML = '<div class="empty">No signals analyzed yet.<br><span style="font-size:12px">Run an analysis above and it will appear here.</span></div>';
+      return;
+    }
+    el.innerHTML = rows.map(r => {
+      const dir = r.direction || 'none';
+      const dirLabel = dir === 'long' ? '↑ Long' : dir === 'short' ? '↓ Short' : '—';
+      const dirCls = dir === 'long' ? 'good' : dir === 'short' ? 'loss' : 'muted';
+      const created = r.created_at
+        ? new Date(r.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : '—';
+      const conf = parseInt(r.overall_confidence) || 0;
+      const stratLabel = (r.strategy || '').replace(/_/g, ' ');
+      return `
+        <div class="history-card">
+          <div class="history-left">
+            <div class="history-market">${escapeHtml(r.inst_id || r.token_input || '')}</div>
+            <div class="history-meta">${escapeHtml(stratLabel)} · ${escapeHtml(created)}</div>
+          </div>
+          <div style="text-align:right">
+            <span class="${dirCls}" style="font-weight:700;font-size:13px">${dirLabel}</span>
+            <div class="muted" style="font-size:11px;margin-top:2px">${conf}% conf</div>
           </div>
         </div>
       `;
