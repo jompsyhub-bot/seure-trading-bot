@@ -948,6 +948,12 @@ async def _fetch_portfolio(user_id: int) -> dict:
 
     Reconciliation runs fire-and-forget so this endpoint responds in a few
     hundred milliseconds instead of blocking on OKX for up to 15 seconds.
+
+    Position `side` is a *semantic* direction ("long"/"short") derived from
+    posSide + sign of `pos` — required for correct display in net mode, where
+    OKX returns posSide="net" for every position regardless of direction.
+    The raw OKX posSide is preserved separately as `pos_side` because
+    close requests must match it exactly.
     """
     client = await okx_client_for_cached(user_id)
 
@@ -970,18 +976,37 @@ async def _fetch_portfolio(user_id: int) -> dict:
         asyncio.create_task(_bg_sync())
 
     positions = await client.swap_positions()
-    active = [{
-        "instrument": row.get("instId"),
-        "side": row.get("posSide"),
-        "contracts": row.get("pos"),
-        "entry_price": row.get("avgPx"),
-        "mark_price": row.get("markPx"),
-        "unrealized_pnl": row.get("upl"),
-        "realized_pnl": row.get("realizedPnl"),
-        "leverage": row.get("lever"),
-        "margin_mode": row.get("mgnMode"),
-        "liquidation_price": row.get("liqPx") or None,
-    } for row in positions]
+
+    active = []
+    for row in positions:
+        pos_side_raw = row.get("posSide") or "net"
+        try:
+            pos_amt = Decimal(row.get("pos") or "0")
+        except (InvalidOperation, ValueError):
+            pos_amt = Decimal("0")
+
+        # Semantic direction for display. In net mode, derive from sign.
+        if pos_side_raw == "long":
+            direction = "long"
+        elif pos_side_raw == "short":
+            direction = "short"
+        else:  # "net"
+            direction = "long" if pos_amt >= 0 else "short"
+
+        active.append({
+            "instrument": row.get("instId"),
+            "side": direction,                   # display: "long" | "short"
+            "pos_side": pos_side_raw,             # close requests: "net" | "long" | "short"
+            "contracts": str(abs(pos_amt)),       # always positive for display
+            "entry_price": row.get("avgPx"),
+            "mark_price": row.get("markPx"),
+            "unrealized_pnl": row.get("upl"),
+            "realized_pnl": row.get("realizedPnl"),
+            "leverage": row.get("lever"),
+            "margin_mode": row.get("mgnMode"),
+            "liquidation_price": row.get("liqPx") or None,
+        })
+
     return {
         "exchange": "okx",
         "environment": database.connection_environment(user_id) or "demo",
