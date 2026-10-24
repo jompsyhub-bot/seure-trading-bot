@@ -2,11 +2,15 @@
 
 Modes:
   python breakout.py                # year-by-year analysis (default, unchanged)
-  python breakout.py --calibrate    # writes app/signals/calibration.json
+  python breakout.py --calibrate    # merges daily_breakout into app/signals/calibration.json
 
 The calibration mode runs 36 backtests (9 markets × 4 RR levels) using the
 production lookback (20d) and produces per-bucket win rates at each RR level
 (2R, 3R, 4R, 5R) in the exact schema that app/signals/confidence.py expects.
+
+The --calibrate write merges into the existing calibration.json rather than
+overwriting it, so running backtest_pullback.py --calibrate before or after
+this preserves both strategies' buckets.
 
 Fees: 0.05% per side. Same parameters as the strategy.
 """
@@ -405,7 +409,7 @@ async def main_yearly():
 
 
 # ---------------------------------------------------------------------------
-# Calibration mode — produces app/signals/calibration.json
+# Calibration mode — merges daily_breakout into app/signals/calibration.json
 # ---------------------------------------------------------------------------
 
 CALIBRATION_OUTPUT = Path(__file__).resolve().parent.parent / "app" / "signals" / "calibration.json"
@@ -476,21 +480,29 @@ async def main_calibrate():
         if bucket_out:
             out_buckets[bucket] = bucket_out
 
-    calibration = {
-        "daily_breakout": out_buckets,
-        "_meta": {
-            "built_at": dt.datetime.now(dt.UTC).isoformat(),
-            "markets": [label for _, label in MARKETS],
-            "lookback_days": PRODUCTION_LOOKBACK,
-            "rr_levels": [k for _, k in CALIBRATION_LEVELS],
-            "data_source": "Binance USDT perpetuals",
-            "per_market_summary": per_market,
-        },
+    # Merge into existing calibration.json — preserves daily_pullback if present.
+    existing: dict = {}
+    if CALIBRATION_OUTPUT.exists():
+        try:
+            with open(CALIBRATION_OUTPUT, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    existing["daily_breakout"] = out_buckets
+    existing.setdefault("_meta", {})
+    existing["_meta"]["breakout"] = {
+        "built_at": dt.datetime.now(dt.UTC).isoformat(),
+        "markets": [label for _, label in MARKETS],
+        "lookback_days": PRODUCTION_LOOKBACK,
+        "rr_levels": [k for _, k in CALIBRATION_LEVELS],
+        "data_source": "Binance USDT perpetuals",
+        "per_market_summary": per_market,
     }
 
     CALIBRATION_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     with open(CALIBRATION_OUTPUT, "w", encoding="utf-8") as f:
-        json.dump(calibration, f, indent=2)
+        json.dump(existing, f, indent=2)
 
     # Summary
     total_buckets = len(out_buckets)
@@ -504,8 +516,9 @@ async def main_calibrate():
 
     print()
     print("=" * 90)
-    print(f"Wrote {CALIBRATION_OUTPUT}")
-    print(f"  Buckets: {total_buckets} total, {well_sampled} fully sampled (n≥20 at all 4 RR levels)")
+    print(f"Merged into {CALIBRATION_OUTPUT}")
+    print(f"  daily_breakout buckets: {total_buckets} "
+          f"({well_sampled} fully sampled: n≥20 at all 4 RR levels)")
     print(f"  Total trades across all RR sweeps: {total_trades_all_rr}")
     print()
     print("  Bucket                                                  n@2R  n@3R  n@4R  n@5R   win@2R  win@3R  win@4R  win@5R")
@@ -527,7 +540,7 @@ async def main_calibrate():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--calibrate", action="store_true",
-                        help="Run per-RR calibration and write app/signals/calibration.json")
+                        help="Run per-RR calibration and merge into app/signals/calibration.json")
     args = parser.parse_args()
 
     if args.calibrate:
