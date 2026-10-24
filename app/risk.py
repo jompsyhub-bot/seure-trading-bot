@@ -1,15 +1,28 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 from enum import Enum
 from typing import Optional
 
+log = logging.getLogger(__name__)
+
 
 MIN_ACCOUNT_BALANCE = Decimal("5")
 # Allow up to 50% risk per trade so small accounts can still trade meaningfully
-HARD_MAX_RISK_PCT = Decimal("50") 
+HARD_MAX_RISK_PCT = Decimal("50")
+
+# --- Risk floor -----------------------------------------------------------
+# Minimum USDT risk per trade, and minimum risk as % of balance. The effective
+# floor is max(MIN_RISK_USDT, balance * MIN_RISK_PCT / 100). This ensures small
+# accounts take positions large enough to matter, while scaling up automatically
+# as the balance grows. Crossover point is balance = MIN_RISK_USDT * 100 / MIN_RISK_PCT
+# = $30 — below that the USDT floor wins, above that the percentage floor wins.
+MIN_RISK_USDT = Decimal("1.50")
+MIN_RISK_PCT = Decimal("5")
+
 LOSS_STREAK_PAUSE_THRESHOLD = 3
 LOSS_STREAK_PAUSE_HOURS = 4
 
@@ -37,9 +50,9 @@ TIER_RULES: dict = {
     Tier.MICRO: TierRules(
         min_balance=Decimal("5"),
         max_concurrent=1,
-        max_daily_loss_pct=Decimal("50.0"),    # Allow losing 50% of account in a day
-        max_total_exposure_pct=Decimal("100.0"), # Allow using full balance as margin
-        concentration_cap_pct=Decimal("50.0"),   # Allow 50% risk per trade
+        max_daily_loss_pct=Decimal("50.0"),
+        max_total_exposure_pct=Decimal("100.0"),
+        concentration_cap_pct=Decimal("50.0"),
     ),
     Tier.SMALL: TierRules(
         min_balance=Decimal("50"),
@@ -85,6 +98,19 @@ def loss_streak_multiplier(loss_streak: int) -> Decimal:
     if loss_streak == 1:
         return Decimal("0.75")
     return Decimal("0.50")
+
+
+def _minimum_risk(balance: Decimal) -> Decimal:
+    """Effective risk floor: $1.50 or 5% of balance, whichever is higher.
+
+    This is the *floor*, not the target. The target comes from the user's
+    session setting; the floor only kicks in when the user's computed risk
+    is below it. Streak multipliers are applied BEFORE the floor, so on
+    accounts where the floor is binding (balance < ~$30) the streak
+    reduction is effectively inert.
+    """
+    pct_floor = balance * MIN_RISK_PCT / Decimal("100")
+    return max(MIN_RISK_USDT, pct_floor).quantize(Decimal("0.01"))
 
 
 @dataclass
@@ -162,22 +188,47 @@ def evaluate_entry(
 
     multiplier = loss_streak_multiplier(loss_streak)
 
+    # ---- Compute base risk from the user's session setting -----------------
     if session_risk_usdt is not None and session_risk_usdt > 0:
         hard_cap = balance * HARD_MAX_RISK_PCT / Decimal("100")
-        risk_amount = min(session_risk_usdt, hard_cap)
+        base_risk = min(session_risk_usdt, hard_cap)
     elif session_risk_pct is not None and session_risk_pct > 0:
         effective_pct = min(session_risk_pct, HARD_MAX_RISK_PCT)
-        risk_amount = balance * effective_pct / Decimal("100")
+        base_risk = balance * effective_pct / Decimal("100")
     else:
         return RiskDecision.reject("no risk amount specified", tier=tier)
 
-    risk_amount = (risk_amount * multiplier).quantize(Decimal("0.01"))
+    # ---- Apply loss-streak multiplier --------------------------------------
+    calculated_risk = (base_risk * multiplier).quantize(Decimal("0.01"))
 
-    concentration_cap = (
+    # ---- Apply MINIMUM RISK FLOOR ($1.50 or 5% of balance) -----------------
+    # Per user intent: even on a $7.22 account, every trade should risk enough
+    # to produce a meaningful P&L. Streak reduction happens above; the floor
+    # lifts the result back up if the streak dropped it below the minimum.
+    min_risk = _minimum_risk(balance)
+    risk_amount = max(calculated_risk, min_risk)
+    if risk_amount > calculated_risk:
+        log.info(
+            "Risk floored: calculated=$%s → floored=$%s "
+            "(balance=$%s, floor=$%s, tier=%s)",
+            calculated_risk, risk_amount, balance, min_risk, tier.value,
+        )
+
+    # ---- Apply concentration cap, but never below the floor (Q1=A) --------
+    tier_cap = (
         balance * rules.concentration_cap_pct / Decimal("100")
     ).quantize(Decimal("0.01"))
-    if risk_amount > concentration_cap:
-        risk_amount = concentration_cap
+    effective_cap = max(tier_cap, min_risk)
+    if risk_amount > effective_cap:
+        risk_amount = effective_cap
+
+    # ---- Apply the hard 50% ceiling, but never below the floor ------------
+    hard_cap = (
+        balance * HARD_MAX_RISK_PCT / Decimal("100")
+    ).quantize(Decimal("0.01"))
+    effective_hard_cap = max(hard_cap, min_risk)
+    if risk_amount > effective_hard_cap:
+        risk_amount = effective_hard_cap
 
     if risk_amount <= 0:
         return RiskDecision.reject("computed risk amount is zero", tier=tier)
