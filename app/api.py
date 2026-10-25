@@ -42,6 +42,7 @@ from .sessions import (
     should_end_session,
 )
 from .risk import classify, rules_for, MIN_ACCOUNT_BALANCE
+from .voice import router as voice_router, configure as voice_configure
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -97,6 +98,7 @@ SIGNAL_RATE_MAX = 10
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    voice_configure(database, session_manager, settings)
     task = None
     position_task = None
     ticker_task = None
@@ -149,6 +151,7 @@ async def lifespan(app: FastAPI):
 
 
 api = FastAPI(title="Safe Trading Bot API", docs_url=None, redoc_url=None, lifespan=lifespan)
+api.include_router(voice_router)
 
 
 class OKXConnectionRequest(BaseModel):
@@ -573,6 +576,11 @@ def reject_unsafe_permissions(info: dict) -> None:
 @api.get("/")
 async def mini_app() -> FileResponse:
     return FileResponse(static_dir / "index.html", headers=NO_CACHE_HEADERS)
+
+
+@api.get("/voice")
+async def voice_app() -> FileResponse:
+    return FileResponse(static_dir / "voice.html", headers=NO_CACHE_HEADERS)
 
 
 @api.get("/futures")
