@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Relay Voice</title>
+<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22Relay%20Voice%22%2C%22short_name%22%3A%22Voice%22%2C%22start_url%22%3A%22%2Fvoice%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230b1020%22%2C%22theme_color%22%3A%22%230b1020%22%7D">
+<style>
+:root{
+  --bg:#0b1020;--card:#151e33;--border:#283858;--text:#eef3ff;--muted:#a8b4cd;
+  --accent:#628cff;--good:#4dddac;--danger:#c75161;--field:#202c45;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  min-height:100vh;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+main{max-width:520px;margin:auto;padding:20px 16px;min-height:100vh;
+  display:flex;flex-direction:column;gap:16px}
+h1{font-size:22px;margin:0}
+p{margin:0}
+.muted{color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
+button{width:100%;border:0;border-radius:12px;padding:16px;font-size:16px;
+  font-family:inherit;font-weight:600;cursor:pointer;background:var(--accent);color:#fff}
+button:active{filter:brightness(.9)}
+button:disabled{opacity:.55;cursor:not-allowed}
+button.ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
+button.danger{background:var(--danger)}
+input{width:100%;background:var(--field);color:#fff;border:1px solid var(--border);
+  border-radius:10px;padding:14px;font-size:15px;font-family:inherit}
+input:focus{outline:none;border-color:var(--accent)}
+#talk{font-size:20px;padding:28px;min-height:120px;
+  background:linear-gradient(135deg,#628cff,#9db6ff);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  transition:transform .1s, box-shadow .15s}
+#talk.listening{background:linear-gradient(135deg,#c75161,#ff8997);
+  box-shadow:0 0 0 12px rgba(199,81,97,0.2);animation:pulse 1.5s ease-in-out infinite}
+#talk.thinking{background:linear-gradient(135deg,#f3c46c,#ffe4a0);color:#0b1020}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 12px rgba(199,81,97,0.2)}
+  50%{box-shadow:0 0 0 20px rgba(199,81,97,0.05)}}
+#talk .ico{font-size:32px}
+#talk .label{font-size:14px;font-weight:500;opacity:.9}
+#status{font-size:13px;color:var(--muted);text-align:center;min-height:20px}
+#log{display:flex;flex-direction:column;gap:10px;flex:1;overflow-y:auto;
+  max-height:50vh;padding-right:4px}
+.msg{padding:12px 14px;border-radius:12px;font-size:14px;line-height:1.5;
+  max-width:88%;word-wrap:break-word}
+.msg.me{align-self:flex-end;background:rgba(98,140,255,0.15);color:var(--accent-soft)}
+.msg.bot{align-self:flex-start;background:var(--field);color:var(--text)}
+.msg.sys{align-self:center;font-size:12px;color:var(--muted);background:none;padding:6px}
+.hidden{display:none!important}
+.row{display:flex;gap:8px}
+.row > *{flex:1}
+</style>
+</head>
+<body>
+<main>
+  <div id="authView">
+    <h1>Relay Voice</h1>
+    <p class="muted" style="margin:8px 0 20px">Enter the device token from your Telegram app.</p>
+    <div class="card">
+      <input id="tokenInput" placeholder="Paste token here" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="saveToken" style="margin-top:12px">Save</button>
+    </div>
+  </div>
+
+  <div id="mainView" class="hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h1>Relay Voice</h1>
+      <button class="ghost" style="width:auto;padding:8px 14px;font-size:13px" onclick="logout()">Sign out</button>
+    </div>
+
+    <div id="log"></div>
+
+    <div id="status">Tap and hold to talk</div>
+
+    <button id="talk">
+      <span class="ico">🎤</span>
+      <span class="label">Hold to Talk</span>
+    </button>
+
+    <div class="row">
+      <button class="ghost" onclick="quickCommand('pnl')">PNL</button>
+      <button class="ghost" onclick="quickCommand('positions')">Positions</button>
+      <button class="ghost" onclick="quickCommand('balance')">Balance</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = '/api/voice/command';
+const store = {
+  get token() { return localStorage.getItem('voiceToken') || ''; },
+  set token(v) { localStorage.setItem('voiceToken', v); },
+  clear() { localStorage.removeItem('voiceToken'); },
+};
+
+const $ = id => document.getElementById(id);
+const log = $('log');
+const status = $('status');
+const talk = $('talk');
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let listening = false;
+let lastSpoken = '';
+
+function addMsg(role, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + role;
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
+function speak(text) {
+  if (!text || text === lastSpoken) return;
+  lastSpoken = text;
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  } catch {}
+}
+
+async function sendCommand(text) {
+  if (!text) return;
+  addMsg('me', text);
+  talk.classList.remove('listening');
+  talk.classList.add('thinking');
+  $('.label', talk) || (talk.querySelector('.label').textContent = 'Thinking…');
+  status.textContent = 'Thinking…';
+
+  try {
+    const res = await fetch(API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + store.token,
+      },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      addMsg('bot', data.detail || 'Request failed');
+      status.textContent = 'Error';
+      return;
+    }
+    addMsg('bot', data.say);
+    speak(data.say);
+    status.textContent = data.pending ? 'Say confirm or cancel' : 'Ready';
+  } catch (err) {
+    addMsg('bot', 'Network error: ' + err.message);
+    status.textContent = 'Network error';
+  } finally {
+    talk.classList.remove('thinking');
+    talk.querySelector('.label').textContent = 'Hold to Talk';
+  }
+}
+
+function quickCommand(text) {
+  if (listening) return;
+  sendCommand(text);
+}
+
+function initRecognition() {
+  if (!SR) {
+    status.textContent = 'Speech recognition not supported. Use Chrome or Safari.';
+    return;
+  }
+  recognition = new SR();
+  recognition.continuous = false;
+  recognition.interimResults = false;
+  recognition.lang = 'en-US';
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    listening = true;
+    talk.classList.add('listening');
+    talk.querySelector('.label').textContent = 'Listening…';
+    status.textContent = 'Speak now';
+  };
+  recognition.onresult = (e) => {
+    const text = e.results[0][0].transcript.trim();
+    if (text) sendCommand(text);
+  };
+  recognition.onerror = (e) => {
+    listening = false;
+    talk.classList.remove('listening');
+    talk.querySelector('.label').textContent = 'Hold to Talk';
+    if (e.error === 'not-allowed') {
+      status.textContent = 'Microphone permission denied';
+    } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
+      status.textContent = 'Error: ' + e.error;
+    }
+  };
+  recognition.onend = () => {
+    listening = false;
+    talk.classList.remove('listening');
+    talk.querySelector('.label').textContent = 'Hold to Talk';
+  };
+}
+
+function startListening() {
+  if (listening || !recognition) return;
+  try { recognition.start(); } catch {}
+}
+function stopListening() {
+  if (!listening || !recognition) return;
+  try { recognition.stop(); } catch {}
+}
+
+talk.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  startListening();
+});
+talk.addEventListener('pointerup', (e) => {
+  e.preventDefault();
+  stopListening();
+});
+talk.addEventListener('pointercancel', stopListening);
+talk.addEventListener('pointerleave', stopListening);
+
+$('saveToken').addEventListener('click', () => {
+  const t = $('tokenInput').value.trim();
+  if (!t) return;
+  store.token = t;
+  showMain();
+});
+
+function logout() {
+  if (!confirm('Sign out? You can sign in again with a new token from the Telegram app.')) return;
+  store.clear();
+  location.reload();
+}
+
+function showMain() {
+  if (!store.token) {
+    $('authView').classList.remove('hidden');
+    $('mainView').classList.add('hidden');
+    return;
+  }
+  $('authView').classList.add('hidden');
+  $('mainView').classList.remove('hidden');
+  addMsg('sys', 'Connected. Tap and hold to talk.');
+  initRecognition();
+  if (!SR) {
+    status.textContent = 'Voice not supported in this browser. Try the quick buttons.';
+  }
+}
+
+window.addEventListener('load', showMain);
+</script>
+</body>
+</html>
