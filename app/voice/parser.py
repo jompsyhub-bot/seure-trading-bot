@@ -10,6 +10,8 @@ from typing import Literal, Optional
 IntentType = Literal[
     "trade_open", "trade_close",
     "query_pnl", "query_positions", "query_balance", "signal",
+    "session_status", "session_history", "signal_history", "order_history",
+    "price_check", "leverage_check", "environment", "daily_summary",
     "auto_start", "stop",
     "confirm", "cancel", "help", "unknown",
 ]
@@ -130,6 +132,7 @@ def parse_voice_command(text: str) -> VoiceIntent:
     t = re.sub(r"[^\w\s\$%:.\-]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
 
+    # --- Simple two-state commands ----------------------------------------
     if t in {"confirm", "yes", "yeah", "yep", "go", "go ahead", "execute", "do it", "place it"}:
         return VoiceIntent(intent_type="confirm", raw_text=original)
     if t in {"cancel", "no", "nope", "abort", "nevermind", "never mind", "forget it"}:
@@ -137,23 +140,78 @@ def parse_voice_command(text: str) -> VoiceIntent:
     if t in {"help", "commands", "what can you do", "what can i say"}:
         return VoiceIntent(intent_type="help", raw_text=original)
 
+    # --- Stop / kill switch (before everything else that might catch "session") --
     if (re.search(r"\b(stop|kill)\b.*\b(everything|auto|all|trading|session)\b", t)
             or t in {"stop", "kill switch", "emergency stop"}):
         return VoiceIntent(intent_type="stop", raw_text=original)
 
+    # --- Session status / history ----------------------------------------
+    if (re.search(r"\b(session|sess)\b.*\b(status|info|running|active|progress|doing)\b", t)
+            or t in {"session status", "how's my session", "how is my session",
+                     "active session", "am i running", "is my session running",
+                     "session info", "session progress"}):
+        return VoiceIntent(intent_type="session_status", raw_text=original)
+
+    if (re.search(r"\b(session|sess)\b.*\b(history|recent|past|list|last|completed|finished)\b", t)
+            or t in {"session history", "my sessions", "recent sessions",
+                     "past sessions", "show sessions", "list sessions"}):
+        return VoiceIntent(intent_type="session_history", raw_text=original)
+
+    # --- Signal history (before single-token analyze) --------------------
+    if (re.search(r"\b(signals?)\b.*\b(history|recent|past|list|last|completed)\b", t)
+            or t in {"signal history", "my signals", "recent signals",
+                     "past signals", "show signals", "list signals"}):
+        return VoiceIntent(intent_type="signal_history", raw_text=original)
+
+    # --- Order history ---------------------------------------------------
+    if (re.search(r"\b(orders?|trades?)\b.*\b(history|recent|past|list|last|completed|show)\b", t)
+            or t in {"order history", "my orders", "recent orders", "recent trades",
+                     "past trades", "trade history", "show orders", "show trades",
+                     "last trades", "list trades", "list orders"}):
+        return VoiceIntent(intent_type="order_history", raw_text=original)
+
+    # --- Price check ("price" keyword + token, but not if a side trigger exists) --
+    if re.search(r"\b(price|cost)\b", t) and not re.search(r"\b(long|short|buy|sell)\b", t):
+        inst = _extract_token(t)
+        if inst:
+            return VoiceIntent(intent_type="price_check", inst_id=inst, raw_text=original)
+
+    # --- Leverage check ("leverage" + "max/what/how much" + token) -------
+    if re.search(r"\bleverage\b", t) and re.search(r"\b(max|maximum|highest|what|how much)\b", t):
+        inst = _extract_token(t)
+        if inst:
+            return VoiceIntent(intent_type="leverage_check", inst_id=inst, raw_text=original)
+
+    # --- Environment -----------------------------------------------------
+    if (re.search(r"\b(live|demo)\b.*\b(mode|or|account|environment)\b", t)
+            or t in {"am i live", "am i on live", "am i on demo", "am i demo",
+                     "what mode", "which mode", "what environment", "environment",
+                     "am i live or demo", "live or demo"}):
+        return VoiceIntent(intent_type="environment", raw_text=original)
+
+    # --- Daily summary ---------------------------------------------------
+    if (re.search(r"\b(today|day)\b.*\b(summary|stats|pnl|performance|how did)\b", t)
+            or t in {"how did i do today", "today summary", "today's summary",
+                     "today pnl", "today's pnl", "day summary", "my day",
+                     "today stats", "how was my day"}):
+        return VoiceIntent(intent_type="daily_summary", raw_text=original)
+
+    # --- Existing: PnL / positions / balance -----------------------------
     if re.search(r"\b(pnl|p&l|profit|how much am i (up|down)|am i (up|down)|my earnings)\b", t):
         return VoiceIntent(intent_type="query_pnl", raw_text=original)
-    if re.search(r"\b(positions|open trades|my trades|what do i have|holdings|what am i holding)\b", t):
+    if re.search(r"\b(positions|open trades|what do i have|holdings|what am i holding)\b", t):
         return VoiceIntent(intent_type="query_positions", raw_text=original)
     if re.search(r"\b(balance|account value|how much (money|usdt)|how much is in)\b", t):
         return VoiceIntent(intent_type="query_balance", raw_text=original)
 
+    # --- Existing: signal analyze ----------------------------------------
     m = re.search(r"\b(?:signal|analyze|analysis|check|look at)\s+(\w+)", t)
     if m:
         inst = _extract_token(m.group(1))
         if inst:
             return VoiceIntent(intent_type="signal", inst_id=inst, raw_text=original)
 
+    # --- Existing: start auto trade --------------------------------------
     if re.search(r"\b(start|begin|launch)\b.*\b(auto|automat|session)\b", t) or "auto trade" in t:
         return VoiceIntent(
             intent_type="auto_start",
@@ -163,11 +221,13 @@ def parse_voice_command(text: str) -> VoiceIntent:
             raw_text=original,
         )
 
+    # --- Existing: close position ----------------------------------------
     if re.search(r"\b(close|exit|shut|dump)\b", t):
         inst = _extract_token(t)
         if inst:
             return VoiceIntent(intent_type="trade_close", inst_id=inst, raw_text=original)
 
+    # --- Existing: open trade --------------------------------------------
     side = None
     if re.search(r"\b(long|buy|bull)\b", t):
         side = "long"
