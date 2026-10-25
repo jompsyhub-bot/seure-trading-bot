@@ -1,4 +1,4 @@
-"""Execute parsed voice intents against the OKX client."""
+"""Execute parsed voice intents against the OKX client and local DB."""
 from __future__ import annotations
 
 import logging
@@ -14,42 +14,213 @@ log = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "I can do these things. "
-    "Say: long BTC 100x. short ETH 50x. close BTC. "
-    "What's my PNL. Show positions. My balance. "
-    "Signal BTC. Start auto trade. Stop everything. "
+    "To trade: long BTC one hundred x. short ETH fifty x. close BTC. "
+    "To check: PNL. positions. balance. session status. order history. signal history. "
+    "To research: signal BTC. BTC price. max leverage on BTC. "
+    "To automate: start auto trade. stop everything. "
     "Say cancel or confirm at any prompt."
 )
 
 
-async def execute_query(intent: VoiceIntent, client: OKXClient) -> str:
+def _pretty_strategy(field: str) -> str:
+    parts = [s.strip() for s in (field or "").split(",") if s.strip()]
+    if not parts:
+        return "unknown strategy"
+    if len(parts) == 1:
+        return parts[0].replace("_", " ")
+    return "both strategies"
+
+
+def _end_reason_str(r) -> str:
+    if r is None:
+        return "ended"
+    val = r if isinstance(r, str) else (r.value if hasattr(r, "value") else str(r))
+    return {
+        "target": "target hit",
+        "max_loss": "max loss",
+        "safety_stop": "safety floor",
+        "expired": "expired",
+        "user_stop": "stopped",
+        "error": "error",
+    }.get(val, val)
+
+
+def _fmt_usd(v) -> str:
+    try:
+        return f"{abs(Decimal(str(v))):.2f} dollars"
+    except Exception:
+        return "0 dollars"
+
+
+async def execute_query(
+    intent: VoiceIntent,
+    client: OKXClient | None,
+    user_id: int,
+    session_manager,
+    database,
+    env: str | None = None,
+) -> str:
+    # --- Client-free queries (work without OKX connection) ---------------
+
     if intent.intent_type == "help":
         return HELP_TEXT
 
+    if intent.intent_type == "environment":
+        if env == "live":
+            return "You're on LIVE. Real money is at stake."
+        if env == "demo":
+            return "You're on DEMO. No real money at risk."
+        return "No OKX account connected. Open the Telegram app to connect."
+
+    if intent.intent_type == "session_status":
+        session = session_manager.get_active(user_id)
+        if not session:
+            return "No session running. Say 'start auto trade' to begin one."
+        env_label = "LIVE" if session.config.environment == "live" else "DEMO"
+        strat = _pretty_strategy(session.config.strategy)
+        pnl = session.pnl
+        sign = "up" if pnl >= 0 else "down"
+        hours = max(0, session.seconds_remaining // 3600)
+        parts = [
+            f"Session {session.id} running. {strat} on {env_label}.",
+            f"{session.trades_count} trades, {session.wins_count} wins, {session.losses_count} losses.",
+            f"{sign.capitalize()} {_fmt_usd(pnl)} of {_fmt_usd(session.target_profit)} target.",
+            f"{hours} hour{'s' if hours != 1 else ''} remaining.",
+        ]
+        return " ".join(parts)
+
+    if intent.intent_type == "session_history":
+        try:
+            rows = session_manager.list_history(user_id, limit=3)
+        except Exception:
+            rows = []
+        if not rows:
+            return "No completed sessions yet."
+        parts = [f"Last {len(rows)} session{'s' if len(rows) != 1 else ''}."]
+        for s in rows:
+            strat = _pretty_strategy(s.config.strategy)
+            try:
+                pnl = session_manager.session_realized_pnl(s.id)
+            except Exception:
+                pnl = Decimal("0")
+            sign = "up" if pnl >= 0 else "down"
+            reason = _end_reason_str(s.end_reason)
+            parts.append(f"Session {s.id}: {strat}, {sign} {_fmt_usd(pnl)}, {reason}.")
+        return " ".join(parts)
+
+    if intent.intent_type == "signal_history":
+        try:
+            rows = database.signals_history(user_id, limit=5)
+        except Exception:
+            rows = []
+        if not rows:
+            return "No signals analyzed yet."
+        parts = [f"Last {len(rows)} signal{'s' if len(rows) != 1 else ''}."]
+        for r in rows:
+            inst = (r.get("inst_id") or "").replace("-USDT-SWAP", "")
+            direction = r.get("direction") or "none"
+            conf = int(r.get("overall_confidence") or 0)
+            if direction == "none":
+                parts.append(f"{inst} no signal.")
+            else:
+                parts.append(f"{inst} {direction}, {conf} percent confidence.")
+        return " ".join(parts)
+
+    if intent.intent_type == "order_history":
+        try:
+            rows = database.history(user_id, limit=5)
+        except Exception:
+            rows = []
+        if not rows:
+            return "No orders yet."
+        parts = [f"Last {len(rows)} order{'s' if len(rows) != 1 else ''}."]
+        for r in rows:
+            sym = (r.get("symbol") or "").replace("-USDT-SWAP", "")
+            side = r.get("side") or ""
+            status = (r.get("status") or "unknown").lower()
+            try:
+                pnl = Decimal(str(r.get("realized_pnl") or "0"))
+            except Exception:
+                pnl = Decimal("0")
+            if pnl != 0:
+                sign = "up" if pnl >= 0 else "down"
+                parts.append(f"{side} {sym} {status}, {sign} {_fmt_usd(pnl)}.")
+            else:
+                parts.append(f"{side} {sym} {status}.")
+        return " ".join(parts)
+
+    if intent.intent_type == "daily_summary":
+        try:
+            trades, pnl = database.today_stats(user_id)
+        except Exception:
+            trades, pnl = 0, Decimal("0")
+        parts = []
+        if trades == 0:
+            parts.append("No trades today.")
+        else:
+            sign = "up" if pnl >= 0 else "down"
+            parts.append(f"Today you did {trades} trade{'s' if trades != 1 else ''}, {sign} {_fmt_usd(pnl)}.")
+        session = session_manager.get_active(user_id)
+        if session:
+            env_label = "LIVE" if session.config.environment == "live" else "DEMO"
+            parts.append(f"Session {session.id} active on {env_label}.")
+        else:
+            parts.append("No active session.")
+        return " ".join(parts)
+
+    # --- Client-required queries ----------------------------------------
+
+    if intent.intent_type in {"query_balance", "query_pnl", "query_positions",
+                              "signal", "price_check", "leverage_check"}:
+        if client is None:
+            return "Connect your OKX account in the Telegram app first."
+
     if intent.intent_type == "query_balance":
         bal = await client.account_balance()
-        return f"Your balance is {bal:.2f} US dollars."
+        return f"Your balance is {_fmt_usd(bal)}."
 
     if intent.intent_type == "query_pnl":
         positions = await client.swap_positions()
         total = sum(Decimal(p.get("upl") or "0") for p in positions)
         bal = await client.account_balance()
         sign = "up" if total >= 0 else "down"
-        return f"Balance {bal:.2f} dollars. Open positions are {sign} {abs(total):.2f} dollars."
+        return f"Balance {_fmt_usd(bal)}. Open positions are {sign} {_fmt_usd(total)}."
 
     if intent.intent_type == "query_positions":
         positions = await client.swap_positions()
         if not positions:
             return "You have no open positions."
-        parts = []
+        parts = [f"You have {len(positions)} position{'s' if len(positions) != 1 else ''}."]
         for p in positions[:5]:
-            inst = p.get("instId", "").replace("-USDT-SWAP", "")
+            inst = (p.get("instId") or "").replace("-USDT-SWAP", "")
             side = p.get("posSide", "net")
             if side == "net":
                 side = "long" if Decimal(p.get("pos") or "0") > 0 else "short"
             pnl = Decimal(p.get("upl") or "0")
             sign = "up" if pnl >= 0 else "down"
-            parts.append(f"{side} {inst} {sign} {abs(pnl):.2f}")
-        return f"You have {len(positions)} positions. " + ". ".join(parts)
+            parts.append(f"{side} {inst}, {sign} {_fmt_usd(pnl)}.")
+        return " ".join(parts)
+
+    if intent.intent_type == "price_check":
+        try:
+            price = await client.last_price(intent.inst_id)
+        except Exception as exc:
+            return f"Could not fetch price: {exc}"
+        sym = intent.inst_id.replace("-USDT-SWAP", "")
+        if price >= Decimal("1000"):
+            return f"{sym} is {price:,.2f} dollars."
+        if price >= Decimal("1"):
+            return f"{sym} is {price:.2f} dollars."
+        return f"{sym} is {price:.6f} dollars."
+
+    if intent.intent_type == "leverage_check":
+        try:
+            instrument = await client.swap_instrument(intent.inst_id)
+        except Exception as exc:
+            return f"Could not check leverage: {exc}"
+        max_lev = instrument.get("lever") or "1"
+        sym = intent.inst_id.replace("-USDT-SWAP", "")
+        return f"{sym} supports up to {max_lev} times leverage."
 
     if intent.intent_type == "signal":
         from ..signals import analyze_token, SignalNotSupported
@@ -78,7 +249,7 @@ def build_confirmation_message(intent: VoiceIntent) -> str:
     if intent.intent_type == "trade_open":
         parts = [f"{intent.side.upper()} {intent.inst_id.replace('-USDT-SWAP', '')}"]
         if intent.leverage:
-            parts.append(f"at {intent.leverage}x leverage")
+            parts.append(f"at {intent.leverage} times leverage")
         if intent.margin_usdt:
             parts.append(f"with {intent.margin_usdt} dollar margin")
         return "Confirm " + " ".join(parts) + ". Default ATR-based stop and target will be used. Say confirm or cancel."
@@ -89,7 +260,7 @@ def build_confirmation_message(intent: VoiceIntent) -> str:
     if intent.intent_type == "auto_start":
         parts = ["Confirm starting auto trade"]
         if intent.leverage:
-            parts.append(f"at {intent.leverage}x leverage")
+            parts.append(f"at {intent.leverage} times leverage")
         if intent.strategy:
             parts.append(f"with {intent.strategy.replace('_', ' ')} strategy")
         if intent.rr:
@@ -184,7 +355,7 @@ async def execute_trade_open(intent: VoiceIntent, client: OKXClient, user_id: in
 
     return (
         f"Order placed. {intent.side.upper()} {intent.inst_id.replace('-USDT-SWAP', '')} "
-        f"at {leverage}x. {contracts} contracts, {actual_margin:.2f} dollars margin. "
+        f"at {leverage} times leverage. {contracts} contracts, {actual_margin:.2f} dollars margin. "
         f"Stop {sl:.2f}, target {tp:.2f}."
     )
 
@@ -261,7 +432,7 @@ async def execute_auto_start(intent: VoiceIntent, client: OKXClient, user_id: in
     return (
         f"Session {session_id} started. "
         f"{strategy_str.replace('_', ' ')} on 9 markets. "
-        f"{leverage}x leverage ceiling. "
+        f"{leverage} times leverage ceiling. "
         f"Target plus {config.target_profit:.2f}, max loss minus {config.max_loss:.2f}. "
         f"Running for 7 days."
     )
