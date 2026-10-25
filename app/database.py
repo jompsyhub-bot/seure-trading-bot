@@ -80,6 +80,15 @@ class SQLiteDatabase:
               created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_signals_user_created ON signals(user_id, created_at);
+            CREATE TABLE IF NOT EXISTS voice_devices (
+              device_token TEXT PRIMARY KEY,
+              telegram_user_id INTEGER NOT NULL,
+              device_name TEXT,
+              created_at TEXT NOT NULL,
+              last_seen_at TEXT NOT NULL,
+              revoked_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_voice_devices_user ON voice_devices(telegram_user_id);
             """)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(bybit_connections)")}
             if "environment" not in columns:
@@ -357,6 +366,64 @@ class SQLiteDatabase:
             out.append(entry)
         return out
 
+    # --- Voice devices --------------------------------------------------
+
+    def create_voice_device(self, token: str, user_id: int, device_name: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self.connection() as conn:
+            conn.execute(
+                "INSERT INTO voice_devices (device_token,telegram_user_id,device_name,"
+                "created_at,last_seen_at) VALUES (?,?,?,?,?)",
+                (token, user_id, device_name, now, now),
+            )
+
+    def voice_device_lookup(self, token: str) -> tuple[int | None, str | None]:
+        """Resolve a device token to (user_id, environment).
+
+        Returns (user_id, env) when the device is valid AND has an OKX
+        connection. Returns (user_id, None) when the device is valid but
+        the user hasn't connected OKX — the caller should prompt them to
+        connect. Returns (None, None) when the token is missing, unknown,
+        or revoked.
+        """
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT v.telegram_user_id, c.environment "
+                "FROM voice_devices v "
+                "LEFT JOIN bybit_connections c ON c.telegram_user_id = v.telegram_user_id "
+                "WHERE v.device_token=? AND v.revoked_at IS NULL",
+                (token,),
+            ).fetchone()
+        if not row:
+            return None, None
+        return int(row["telegram_user_id"]), row["environment"]
+
+    def list_voice_devices(self, user_id: int) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT device_token,device_name,created_at,last_seen_at "
+                "FROM voice_devices WHERE telegram_user_id=? AND revoked_at IS NULL "
+                "ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def revoke_voice_device(self, user_id: int, token_prefix: str) -> bool:
+        with self.connection() as conn:
+            cur = conn.execute(
+                "UPDATE voice_devices SET revoked_at=? "
+                "WHERE telegram_user_id=? AND device_token LIKE ? AND revoked_at IS NULL",
+                (datetime.now(UTC).isoformat(), user_id, f"{token_prefix}%"),
+            )
+        return cur.rowcount > 0
+
+    def touch_voice_device(self, token: str) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE voice_devices SET last_seen_at=? WHERE device_token=?",
+                (datetime.now(UTC).isoformat(), token),
+            )
+
 
 class PostgreSQLDatabase:
     """Supabase/Postgres implementation. psycopg is imported only when needed."""
@@ -433,6 +500,15 @@ class PostgreSQLDatabase:
           created_at TIMESTAMPTZ NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_signals_user_created ON signals(user_id, created_at);
+        CREATE TABLE IF NOT EXISTS voice_devices (
+          device_token TEXT PRIMARY KEY,
+          telegram_user_id BIGINT NOT NULL,
+          device_name TEXT,
+          created_at TIMESTAMPTZ NOT NULL,
+          last_seen_at TIMESTAMPTZ NOT NULL,
+          revoked_at TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_voice_devices_user ON voice_devices(telegram_user_id);
         """
         with self.connection() as conn:
             conn.execute("SELECT pg_advisory_xact_lock(68422147)")
@@ -702,6 +778,64 @@ class PostgreSQLDatabase:
                 entry["analysis"] = None
             out.append(entry)
         return out
+
+    # --- Voice devices --------------------------------------------------
+
+    def create_voice_device(self, token: str, user_id: int, device_name: str) -> None:
+        now = datetime.now(UTC)
+        with self.connection() as conn:
+            conn.execute(
+                "INSERT INTO voice_devices (device_token,telegram_user_id,device_name,"
+                "created_at,last_seen_at) VALUES (%s,%s,%s,%s,%s)",
+                (token, user_id, device_name, now, now),
+            )
+
+    def voice_device_lookup(self, token: str) -> tuple[int | None, str | None]:
+        """Resolve a device token to (user_id, environment).
+
+        Returns (user_id, env) when the device is valid AND has an OKX
+        connection. Returns (user_id, None) when the device is valid but
+        the user hasn't connected OKX — the caller should prompt them to
+        connect. Returns (None, None) when the token is missing, unknown,
+        or revoked.
+        """
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT v.telegram_user_id, c.environment "
+                "FROM voice_devices v "
+                "LEFT JOIN bybit_connections c ON c.telegram_user_id = v.telegram_user_id "
+                "WHERE v.device_token=%s AND v.revoked_at IS NULL",
+                (token,),
+            ).fetchone()
+        if not row:
+            return None, None
+        return int(row["telegram_user_id"]), row["environment"]
+
+    def list_voice_devices(self, user_id: int) -> list[dict]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT device_token,device_name,created_at,last_seen_at "
+                "FROM voice_devices WHERE telegram_user_id=%s AND revoked_at IS NULL "
+                "ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def revoke_voice_device(self, user_id: int, token_prefix: str) -> bool:
+        with self.connection() as conn:
+            cur = conn.execute(
+                "UPDATE voice_devices SET revoked_at=%s "
+                "WHERE telegram_user_id=%s AND device_token LIKE %s AND revoked_at IS NULL",
+                (datetime.now(UTC), user_id, f"{token_prefix}%"),
+            )
+        return cur.rowcount > 0
+
+    def touch_voice_device(self, token: str) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE voice_devices SET last_seen_at=%s WHERE device_token=%s",
+                (datetime.now(UTC), token),
+            )
 
 
 class Database:
