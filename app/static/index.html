@@ -401,6 +401,27 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
 .sig-strategy-note{font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5;
   padding-top:12px;border-top:1px solid var(--border)}
 .sig-strategy-note b{color:var(--text)}
+
+/* --- Voice assistant --- */
+.voice-token-box{
+  font-family:ui-monospace,Menlo,Consolas,monospace;
+  font-size:12px;background:var(--field);border:1px solid var(--border);
+  padding:12px;border-radius:8px;word-break:break-all;color:var(--text);
+  line-height:1.5;user-select:all;-webkit-user-select:all;
+}
+.voice-actions{display:flex;gap:8px;margin-top:8px}
+.voice-actions button.ghost{
+  flex:1;padding:12px;border:1px solid var(--border);background:transparent;
+  color:var(--text);font-size:14px;font-weight:600;border-radius:10px;
+  margin:0;transition:background .15s;
+}
+.voice-actions button.ghost:active{background:rgba(98,140,255,0.10)}
+.voice-actions a{
+  flex:1;text-align:center;padding:12px;background:rgba(98,140,255,0.12);
+  border:1px solid rgba(98,140,255,0.35);border-radius:10px;color:var(--accent-soft);
+  text-decoration:none;font-size:14px;font-weight:600;transition:background .15s;
+}
+.voice-actions a:active{background:rgba(98,140,255,0.20)}
 </style>
 </head>
 <body>
@@ -469,6 +490,40 @@ input[type="range"].lev-slider::-moz-range-thumb{width:22px;height:22px;backgrou
       <div>Environment<div id="accountEnv" class="metric">DEMO</div></div>
     </div>
     <button class="ghost" style="margin-top:12px" onclick="disconnect()">Disconnect</button>
+  </div>
+
+  <div id="voiceCard" class="card hidden">
+    <h2>🎙 Voice assistant</h2>
+    <p class="muted" style="font-size:13px;margin-top:0">
+      Control the bot hands-free from your phone. Speak commands like
+      <b>"PNL"</b>, <b>"Long BTC 100x"</b>, <b>"Signal ETH"</b>, or
+      <b>"Stop everything"</b>.
+    </p>
+    <p class="hint" style="margin-top:10px">
+      The voice app is a web page served by your bot. Generate a token below,
+      open the app on your phone, paste the token, then add it to your home
+      screen for one-tap access.
+    </p>
+    <button onclick="voiceGenerateToken()" style="margin-top:8px">
+      🎙 Generate voice token
+    </button>
+    <div id="voiceTokenBox" class="hidden" style="margin-top:12px">
+      <p class="hint" style="margin:0 0 6px">
+        Paste this into the voice app's setup screen:
+      </p>
+      <div id="voiceToken" class="voice-token-box"></div>
+      <div class="voice-actions">
+        <button class="ghost" onclick="voiceCopyToken()">Copy</button>
+        <a href="/voice" target="_blank" rel="noopener">Open voice app</a>
+      </div>
+      <p class="hint" style="margin-top:12px">
+        <b>Install as an app:</b>
+        <br>• <b>Android Chrome:</b> menu (⋮) → <b>Add to Home Screen</b>
+        <br>• <b>iOS Safari:</b> Share button → <b>Add to Home Screen</b>
+        <br><br>
+        Once installed, tap the mic and speak. The bot replies in text and voice.
+      </p>
+    </div>
   </div>
 </section>
 
@@ -1173,6 +1228,47 @@ async function disconnect() {
   } catch (e) { toast(e.message, true); }
 }
 
+/* ---------- Voice assistant ---------- */
+
+async function voiceGenerateToken() {
+  try {
+    const d = await api('/api/voice/devices', {
+      method: 'POST',
+      body: JSON.stringify({ device_name: 'My Phone' })
+    });
+    document.getElementById('voiceToken').textContent = d.device_token;
+    document.getElementById('voiceTokenBox').classList.remove('hidden');
+    toast('Voice token generated — copy it to the voice app');
+  } catch (e) { toast(e.message, true); }
+}
+
+function voiceCopyToken() {
+  const token = document.getElementById('voiceToken').textContent;
+  if (!token) return toast('Generate a token first', true);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(token).then(
+      () => toast('Token copied'),
+      () => {
+        const el = document.getElementById('voiceToken');
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        toast('Long-press the token to copy');
+      }
+    );
+  } else {
+    const el = document.getElementById('voiceToken');
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    toast('Long-press the token to copy');
+  }
+}
+
 /* ---------- Utilities ---------- */
 
 let instrumentsCache = null;
@@ -1324,6 +1420,7 @@ function render(d) {
 
   document.getElementById('connectForm').classList.toggle('hidden', state.connected);
   document.getElementById('accountInfo').classList.toggle('hidden', !state.connected);
+  document.getElementById('voiceCard').classList.toggle('hidden', !state.connected);
   if (state.connected) {
     const provider = (d.provider || 'okx').toUpperCase();
     const env = (d.environment || 'demo').toUpperCase();
