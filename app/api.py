@@ -42,7 +42,21 @@ from .sessions import (
     should_end_session,
 )
 from .risk import classify, rules_for, MIN_ACCOUNT_BALANCE
-from .voice import router as voice_router, configure as voice_configure
+
+# ---------------------------------------------------------------------------
+# Voice — imported defensively so a broken/missing voice module cannot take
+# down the trading bot. If the import fails, VOICE_ENABLED stays False and
+# the /api/voice/* and /voice routes are never registered.
+# ---------------------------------------------------------------------------
+try:
+    from .voice import router as voice_router, configure as voice_configure
+    VOICE_ENABLED = True
+    _voice_import_error = None
+except Exception as _voice_exc:
+    VOICE_ENABLED = False
+    voice_router = None
+    voice_configure = None
+    _voice_import_error = _voice_exc
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -63,6 +77,16 @@ session_manager = SessionManager(settings.database_url, str(settings.database_pa
 session_manager.ensure_schema()
 static_dir = Path(__file__).parent / "static"
 log = logging.getLogger(__name__)
+
+if VOICE_ENABLED:
+    log.info("Voice module loaded — /api/voice/* and /voice enabled")
+else:
+    log.warning(
+        "Voice module failed to import (%s: %s) — voice endpoints disabled, "
+        "trading continues normally",
+        type(_voice_import_error).__name__ if _voice_import_error else "unknown",
+        _voice_import_error,
+    )
 
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -98,7 +122,11 @@ SIGNAL_RATE_MAX = 10
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    voice_configure(database, session_manager, settings)
+    if VOICE_ENABLED and voice_configure is not None:
+        try:
+            voice_configure(database, session_manager, settings)
+        except Exception as exc:
+            log.warning("voice_configure failed: %s: %s", type(exc).__name__, exc)
     task = None
     position_task = None
     ticker_task = None
@@ -108,10 +136,11 @@ async def lifespan(app: FastAPI):
     app.state.futures_subscribers = {}
     app.state.futures_price_preferences = {}
     log.info(
-        "Application startup — mode=%s, automation=%s, live_trading=%s",
+        "Application startup — mode=%s, automation=%s, live_trading=%s, voice=%s",
         settings.trading_mode,
         "okx-demo" if settings.encryption_key else "disabled",
         "ENABLED" if settings.allow_live_trading else "disabled",
+        "ENABLED" if VOICE_ENABLED else "disabled",
     )
     ticker_task = asyncio.create_task(monitor_okx_public_prices(), name="okx-demo-public-tickers")
     if settings.encryption_key:
@@ -151,7 +180,13 @@ async def lifespan(app: FastAPI):
 
 
 api = FastAPI(title="Safe Trading Bot API", docs_url=None, redoc_url=None, lifespan=lifespan)
-api.include_router(voice_router)
+
+if VOICE_ENABLED and voice_router is not None:
+    try:
+        api.include_router(voice_router)
+    except Exception as exc:
+        log.warning("include_router(voice) failed: %s: %s", type(exc).__name__, exc)
+        VOICE_ENABLED = False
 
 
 class OKXConnectionRequest(BaseModel):
@@ -578,9 +613,13 @@ async def mini_app() -> FileResponse:
     return FileResponse(static_dir / "index.html", headers=NO_CACHE_HEADERS)
 
 
-@api.get("/voice")
-async def voice_app() -> FileResponse:
-    return FileResponse(static_dir / "voice.html", headers=NO_CACHE_HEADERS)
+if VOICE_ENABLED:
+    @api.get("/voice")
+    async def voice_app() -> FileResponse:
+        voice_path = static_dir / "voice.html"
+        if not voice_path.exists():
+            raise HTTPException(503, "Voice app not installed on this server.")
+        return FileResponse(voice_path, headers=NO_CACHE_HEADERS)
 
 
 @api.get("/futures")
@@ -649,6 +688,7 @@ async def health() -> dict:
         "mode": settings.trading_mode,
         "automation_environment": "okx",
         "live_trading_enabled": bool(settings.allow_live_trading),
+        "voice_enabled": bool(VOICE_ENABLED),
     }
 
 
