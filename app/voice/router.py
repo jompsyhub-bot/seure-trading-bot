@@ -29,6 +29,16 @@ router = APIRouter(prefix="/api/voice", tags=["voice"])
 _pending: dict[str, tuple[float, dict]] = {}
 PENDING_TTL = 60.0
 
+QUERY_INTENTS = {
+    "query_pnl", "query_positions", "query_balance", "signal", "help",
+    "session_status", "session_history", "signal_history", "order_history",
+    "price_check", "leverage_check", "environment", "daily_summary",
+}
+CLIENT_REQUIRED_INTENTS = {
+    "query_pnl", "query_positions", "query_balance", "signal",
+    "price_check", "leverage_check",
+}
+
 
 class VoiceCommandRequest(BaseModel):
     text: str = Field(min_length=1, max_length=500)
@@ -106,12 +116,28 @@ async def voice_command(
     if intent.intent_type == "cancel":
         return VoiceCommandResponse(say="Cancelled." if pending else "Nothing to cancel.")
 
-    if intent.intent_type in {"query_pnl", "query_positions", "query_balance", "signal", "help"}:
-        client = _make_client(user_id, env, database, settings)
+    if intent.intent_type in QUERY_INTENTS:
+        # Client-required queries need OKX; others work without.
+        client = None
+        if intent.intent_type in CLIENT_REQUIRED_INTENTS:
+            try:
+                client = _make_client(user_id, env, database, settings)
+            except HTTPException as exc:
+                return VoiceCommandResponse(say=str(exc.detail))
+        else:
+            # Non-client queries may still benefit from a live price check etc.,
+            # but we don't need to spin up a client for them. Try anyway if
+            # OKX is available so the behavior is consistent.
+            try:
+                client = _make_client(user_id, env, database, settings)
+            except HTTPException:
+                client = None
+
         try:
-            reply = await execute_query(intent, client)
+            reply = await execute_query(intent, client, user_id, session_manager, database, env)
         finally:
-            await client.close()
+            if client:
+                await client.close()
         return VoiceCommandResponse(say=reply)
 
     if intent.intent_type in {"trade_open", "trade_close", "auto_start", "stop"}:
@@ -138,7 +164,6 @@ async def create_device(
     request: CreateDeviceRequest,
     x_telegram_init_data: str | None = Header(default=None),
 ) -> dict:
-    # Import late to avoid circular imports through api.py
     from ..web_auth import TelegramAuthError, validate_init_data
 
     if not x_telegram_init_data:
