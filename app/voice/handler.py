@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
 
 from ..exchange import OKXClient, ExchangeError, OrderRejected
@@ -14,8 +15,12 @@ log = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "I can do these things. "
-    "To trade: long BTC one hundred x. short ETH fifty x. close BTC. "
-    "To check: PNL. positions. balance. session status. order history. signal history. "
+    "To trade: long BTC one hundred x. short ETH fifty x. "
+    "To manage: move BTC stop to seventy eight thousand. "
+    "set ETH target to three thousand. close half my BTC. close everything. "
+    "To check: PNL. positions. balance. session status. session history. "
+    "order history. signal history. win rate. best trade. worst trade. "
+    "portfolio breakdown. how did I do today. this week. this month. "
     "To research: signal BTC. BTC price. max leverage on BTC. "
     "To automate: start auto trade. stop everything. "
     "Say cancel or confirm at any prompt."
@@ -52,6 +57,31 @@ def _fmt_usd(v) -> str:
         return "0 dollars"
 
 
+def _fmt_price(p: Decimal, inst_id: str) -> str:
+    sym = inst_id.replace("-USDT-SWAP", "")
+    if p >= Decimal("1000"):
+        return f"{sym} at {p:,.2f}"
+    if p >= Decimal("1"):
+        return f"{sym} at {p:.2f}"
+    return f"{sym} at {p:.6f}"
+
+
+def _parse_iso(ts) -> datetime | None:
+    if not ts:
+        return None
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+    try:
+        s = str(ts).replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Query dispatch — all read-only operations
+# ---------------------------------------------------------------------------
+
 async def execute_query(
     intent: VoiceIntent,
     client: OKXClient | None,
@@ -60,7 +90,7 @@ async def execute_query(
     database,
     env: str | None = None,
 ) -> str:
-    # --- Client-free queries (work without OKX connection) ---------------
+    # ---- Client-free queries -----------------------------------------
 
     if intent.intent_type == "help":
         return HELP_TEXT
@@ -83,8 +113,10 @@ async def execute_query(
         hours = max(0, session.seconds_remaining // 3600)
         parts = [
             f"Session {session.id} running. {strat} on {env_label}.",
-            f"{session.trades_count} trades, {session.wins_count} wins, {session.losses_count} losses.",
-            f"{sign.capitalize()} {_fmt_usd(pnl)} of {_fmt_usd(session.target_profit)} target.",
+            f"{session.trades_count} trades, {session.wins_count} wins, "
+            f"{session.losses_count} losses.",
+            f"{sign.capitalize()} {_fmt_usd(pnl)} of "
+            f"{_fmt_usd(session.target_profit)} target.",
             f"{hours} hour{'s' if hours != 1 else ''} remaining.",
         ]
         return " ".join(parts)
@@ -105,7 +137,9 @@ async def execute_query(
                 pnl = Decimal("0")
             sign = "up" if pnl >= 0 else "down"
             reason = _end_reason_str(s.end_reason)
-            parts.append(f"Session {s.id}: {strat}, {sign} {_fmt_usd(pnl)}, {reason}.")
+            parts.append(
+                f"Session {s.id}: {strat}, {sign} {_fmt_usd(pnl)}, {reason}."
+            )
         return " ".join(parts)
 
     if intent.intent_type == "signal_history":
@@ -159,7 +193,10 @@ async def execute_query(
             parts.append("No trades today.")
         else:
             sign = "up" if pnl >= 0 else "down"
-            parts.append(f"Today you did {trades} trade{'s' if trades != 1 else ''}, {sign} {_fmt_usd(pnl)}.")
+            parts.append(
+                f"Today you did {trades} trade{'s' if trades != 1 else ''}, "
+                f"{sign} {_fmt_usd(pnl)}."
+            )
         session = session_manager.get_active(user_id)
         if session:
             env_label = "LIVE" if session.config.environment == "live" else "DEMO"
@@ -168,12 +205,103 @@ async def execute_query(
             parts.append("No active session.")
         return " ".join(parts)
 
-    # --- Client-required queries ----------------------------------------
+    if intent.intent_type == "win_rate":
+        try:
+            rows = database.history(user_id, limit=100)
+        except Exception:
+            rows = []
+        closed = [
+            r for r in rows
+            if (r.get("status") or "").upper() in {"FILLED", "NEW"}
+            and r.get("realized_pnl") not in (None, "", "0")
+        ]
+        if not closed:
+            return "No closed trades with P&L yet to compute a win rate."
+        wins = sum(
+            1 for r in closed
+            if Decimal(str(r.get("realized_pnl") or "0")) > 0
+        )
+        total = len(closed)
+        rate = round(wins * 100 / total)
+        return (
+            f"Your win rate is {rate} percent. "
+            f"{wins} wins out of {total} closed trades."
+        )
 
-    if intent.intent_type in {"query_balance", "query_pnl", "query_positions",
-                              "signal", "price_check", "leverage_check"}:
-        if client is None:
-            return "Connect your OKX account in the Telegram app first."
+    if intent.intent_type in {"best_trade", "worst_trade"}:
+        try:
+            rows = database.history(user_id, limit=100)
+        except Exception:
+            rows = []
+        scored = []
+        for r in rows:
+            try:
+                pnl = Decimal(str(r.get("realized_pnl") or "0"))
+            except Exception:
+                continue
+            if pnl == 0:
+                continue
+            scored.append((pnl, r))
+        if not scored:
+            return "No closed trades with P&L yet."
+        scored.sort(key=lambda x: x[0])
+        if intent.intent_type == "best_trade":
+            pnl, r = scored[-1]
+            sign = "up"
+        else:
+            pnl, r = scored[0]
+            sign = "up" if pnl > 0 else "down"
+        sym = (r.get("symbol") or "").replace("-USDT-SWAP", "")
+        side = (r.get("side") or "").lower()
+        return (
+            f"Your {'best' if intent.intent_type == 'best_trade' else 'worst'} "
+            f"trade was {side} {sym}, {sign} {_fmt_usd(pnl)}."
+        )
+
+    if intent.intent_type == "period_summary":
+        period = intent.period or "today"
+        try:
+            rows = database.history(user_id, limit=200)
+        except Exception:
+            rows = []
+        now = datetime.now(UTC)
+        if period == "today":
+            cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif period == "week":
+            cutoff = now - timedelta(days=7)
+        else:
+            cutoff = now - timedelta(days=30)
+        period_rows = []
+        for r in rows:
+            ts = _parse_iso(r.get("created_at"))
+            if ts and ts >= cutoff:
+                period_rows.append(r)
+        if not period_rows:
+            return f"No trades in the last {period}."
+        wins = 0
+        total_pnl = Decimal("0")
+        for r in period_rows:
+            try:
+                pnl = Decimal(str(r.get("realized_pnl") or "0"))
+            except Exception:
+                pnl = Decimal("0")
+            total_pnl += pnl
+            if pnl > 0:
+                wins += 1
+        sign = "up" if total_pnl >= 0 else "down"
+        return (
+            f"In the last {period}: {len(period_rows)} trades, "
+            f"{wins} wins, {sign} {_fmt_usd(total_pnl)}."
+        )
+
+    # ---- Client-required queries -------------------------------------
+
+    client_required = {
+        "query_balance", "query_pnl", "query_positions", "signal",
+        "price_check", "leverage_check", "portfolio_breakdown",
+    }
+    if intent.intent_type in client_required and client is None:
+        return "Connect your OKX account in the Telegram app first."
 
     if intent.intent_type == "query_balance":
         bal = await client.account_balance()
@@ -201,17 +329,30 @@ async def execute_query(
             parts.append(f"{side} {inst}, {sign} {_fmt_usd(pnl)}.")
         return " ".join(parts)
 
+    if intent.intent_type == "portfolio_breakdown":
+        positions = await client.swap_positions()
+        if not positions:
+            return "No open positions to break down."
+        by_market: dict[str, Decimal] = {}
+        for p in positions:
+            inst = (p.get("instId") or "").replace("-USDT-SWAP", "")
+            try:
+                pnl = Decimal(p.get("upl") or "0")
+            except Exception:
+                pnl = Decimal("0")
+            by_market[inst] = by_market.get(inst, Decimal("0")) + pnl
+        parts = ["Portfolio breakdown."]
+        for inst, pnl in sorted(by_market.items(), key=lambda x: -abs(x[1]))[:5]:
+            sign = "up" if pnl >= 0 else "down"
+            parts.append(f"{inst}: {sign} {_fmt_usd(pnl)}.")
+        return " ".join(parts)
+
     if intent.intent_type == "price_check":
         try:
             price = await client.last_price(intent.inst_id)
         except Exception as exc:
             return f"Could not fetch price: {exc}"
-        sym = intent.inst_id.replace("-USDT-SWAP", "")
-        if price >= Decimal("1000"):
-            return f"{sym} is {price:,.2f} dollars."
-        if price >= Decimal("1"):
-            return f"{sym} is {price:.2f} dollars."
-        return f"{sym} is {price:.6f} dollars."
+        return _fmt_price(price, intent.inst_id) + " dollars."
 
     if intent.intent_type == "leverage_check":
         try:
@@ -226,17 +367,23 @@ async def execute_query(
         from ..signals import analyze_token, SignalNotSupported
         from ..signals.analyzer import InsufficientHistory
         try:
-            result = await analyze_token(intent.inst_id.replace("-USDT-SWAP", "/USDT"), client)
+            result = await analyze_token(
+                intent.inst_id.replace("-USDT-SWAP", "/USDT"), client
+            )
         except (SignalNotSupported, InsufficientHistory) as exc:
             return f"Could not analyze {intent.inst_id}: {exc}"
 
         sig = result["signal"]
         if sig["direction"] == "none":
             reason = (sig.get("reasons") or [""])[0]
-            return f"No signal for {intent.inst_id.replace('-USDT-SWAP', '')}. {reason}"
+            return (
+                f"No signal for {intent.inst_id.replace('-USDT-SWAP', '')}. "
+                f"{reason}"
+            )
 
         return (
-            f"{sig['direction'].upper()} signal on {intent.inst_id.replace('-USDT-SWAP', '')}. "
+            f"{sig['direction'].upper()} signal on "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')}. "
             f"Confidence {sig['confidence']} percent. "
             f"Entry {sig['entry_ref']}. Stop {sig['stop_loss']}. "
             f"Strategy {sig['strategy'].replace('_', ' ')}."
@@ -245,6 +392,10 @@ async def execute_query(
     return "Sorry, I didn't catch that."
 
 
+# ---------------------------------------------------------------------------
+# Confirmation messages
+# ---------------------------------------------------------------------------
+
 def build_confirmation_message(intent: VoiceIntent) -> str:
     if intent.intent_type == "trade_open":
         parts = [f"{intent.side.upper()} {intent.inst_id.replace('-USDT-SWAP', '')}"]
@@ -252,10 +403,18 @@ def build_confirmation_message(intent: VoiceIntent) -> str:
             parts.append(f"at {intent.leverage} times leverage")
         if intent.margin_usdt:
             parts.append(f"with {intent.margin_usdt} dollar margin")
-        return "Confirm " + " ".join(parts) + ". Default ATR-based stop and target will be used. Say confirm or cancel."
+        return (
+            "Confirm " + " ".join(parts)
+            + ". Default ATR-based stop and target will be used. "
+            "Say confirm or cancel."
+        )
 
     if intent.intent_type == "trade_close":
-        return f"Confirm closing your {intent.inst_id.replace('-USDT-SWAP', '')} position. Say confirm or cancel."
+        return (
+            f"Confirm closing your "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')} position. "
+            f"Say confirm or cancel."
+        )
 
     if intent.intent_type == "auto_start":
         parts = ["Confirm starting auto trade"]
@@ -268,10 +427,46 @@ def build_confirmation_message(intent: VoiceIntent) -> str:
         return " ".join(parts) + ". Say confirm or cancel."
 
     if intent.intent_type == "stop":
-        return "Confirm stopping all automation and closing all bot positions. Say confirm or cancel."
+        return (
+            "Confirm stopping all automation and closing all bot positions. "
+            "Say confirm or cancel."
+        )
+
+    if intent.intent_type == "update_sl":
+        price_str = f"{intent.price_target:.2f}"
+        return (
+            f"Confirm moving stop loss on "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')} to {price_str}. "
+            f"Say confirm or cancel."
+        )
+
+    if intent.intent_type == "update_tp":
+        price_str = f"{intent.price_target:.2f}"
+        return (
+            f"Confirm moving take profit on "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')} to {price_str}. "
+            f"Say confirm or cancel."
+        )
+
+    if intent.intent_type == "close_partial":
+        return (
+            f"Confirm closing {intent.close_pct} percent of your "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')} position at market. "
+            f"Say confirm or cancel."
+        )
+
+    if intent.intent_type == "close_all":
+        return (
+            "Confirm closing ALL open positions at market. "
+            "Your session will stay running. Say confirm or cancel."
+        )
 
     return "Say confirm to proceed."
 
+
+# ---------------------------------------------------------------------------
+# Destructive execution
+# ---------------------------------------------------------------------------
 
 async def _atr_distance(client: OKXClient, inst_id: str) -> Decimal:
     candles = await client.candles(inst_id, "4H", 20)
@@ -281,13 +476,19 @@ async def _atr_distance(client: OKXClient, inst_id: str) -> Decimal:
     trs = []
     for i in range(1, len(candles)):
         c, prev = candles[i], candles[i - 1]
-        tr = max(c["high"] - c["low"], abs(c["high"] - prev["close"]), abs(c["low"] - prev["close"]))
+        tr = max(
+            c["high"] - c["low"],
+            abs(c["high"] - prev["close"]),
+            abs(c["low"] - prev["close"]),
+        )
         trs.append(tr)
     atr = sum(trs[-14:]) / 14
     return Decimal(str(atr))
 
 
-async def execute_trade_open(intent: VoiceIntent, client: OKXClient, user_id: int, database) -> str:
+async def execute_trade_open(
+    intent: VoiceIntent, client: OKXClient, user_id: int, database
+) -> str:
     try:
         instrument = await client.swap_instrument(intent.inst_id)
     except ExchangeError as exc:
@@ -327,22 +528,34 @@ async def execute_trade_open(intent: VoiceIntent, client: OKXClient, user_id: in
     actual_margin = actual_notional / Decimal(leverage)
 
     if actual_margin > balance * Decimal("0.90"):
-        return f"Not enough balance. Need {actual_margin:.2f} margin, have {balance:.2f}."
+        return (
+            f"Not enough balance. Need {actual_margin:.2f} margin, "
+            f"have {balance:.2f}."
+        )
 
     account = await client.account_config()
     if account.get("acctLv") not in {"2", "3", "4"}:
-        return "OKX account is in Spot mode. Switch to Futures mode in OKX settings first."
+        return (
+            "OKX account is in Spot mode. Switch to Futures mode in OKX "
+            "settings first."
+        )
 
-    position_side = intent.side if account.get("posMode") == "long_short_mode" else "net"
+    position_side = (
+        intent.side if account.get("posMode") == "long_short_mode" else "net"
+    )
     exchange_side = "buy" if intent.side == "long" else "sell"
     order_key = f"voice{uuid.uuid4().hex[:20]}"[:28]
 
     try:
         await client.set_leverage(intent.inst_id, Decimal(leverage), position_side)
         accepted = await client.place_market_swap(
-            inst_id=intent.inst_id, side=exchange_side, position_side=position_side,
-            contracts=contracts, client_order_id=order_key,
-            take_profit=tp, stop_loss=sl,
+            inst_id=intent.inst_id,
+            side=exchange_side,
+            position_side=position_side,
+            contracts=contracts,
+            client_order_id=order_key,
+            take_profit=tp,
+            stop_loss=sl,
         )
     except OrderRejected as exc:
         return f"OKX rejected the order: {exc}"
@@ -354,8 +567,9 @@ async def execute_trade_open(intent: VoiceIntent, client: OKXClient, user_id: in
         return "OKX returned no order ID. Check the OKX app before retrying."
 
     return (
-        f"Order placed. {intent.side.upper()} {intent.inst_id.replace('-USDT-SWAP', '')} "
-        f"at {leverage} times leverage. {contracts} contracts, {actual_margin:.2f} dollars margin. "
+        f"Order placed. {intent.side.upper()} "
+        f"{intent.inst_id.replace('-USDT-SWAP', '')} at {leverage} times leverage. "
+        f"{contracts} contracts, {actual_margin:.2f} dollars margin. "
         f"Stop {sl:.2f}, target {tp:.2f}."
     )
 
@@ -364,7 +578,10 @@ async def execute_trade_close(intent: VoiceIntent, client: OKXClient) -> str:
     positions = await client.swap_positions()
     match = next((p for p in positions if p.get("instId") == intent.inst_id), None)
     if not match:
-        return f"You have no open {intent.inst_id.replace('-USDT-SWAP', '')} position."
+        return (
+            f"You have no open "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')} position."
+        )
 
     pos_side = match.get("posSide") or "net"
     contracts = abs(Decimal(match.get("pos") or "0"))
@@ -381,8 +598,10 @@ async def execute_trade_close(intent: VoiceIntent, client: OKXClient) -> str:
     order_key = f"voice{uuid.uuid4().hex[:20]}"[:28]
     try:
         accepted = await client.close_market_swap(
-            inst_id=intent.inst_id, side=close_side,
-            position_side=pos_side, contracts=contracts,
+            inst_id=intent.inst_id,
+            side=close_side,
+            position_side=pos_side,
+            contracts=contracts,
             client_order_id=order_key,
         )
     except OrderRejected as exc:
@@ -393,11 +612,221 @@ async def execute_trade_close(intent: VoiceIntent, client: OKXClient) -> str:
     return f"Closed {intent.inst_id.replace('-USDT-SWAP', '')} position."
 
 
-async def execute_auto_start(intent: VoiceIntent, client: OKXClient, user_id: int,
-                             session_manager, settings) -> str:
+async def execute_close_partial(
+    intent: VoiceIntent, client: OKXClient
+) -> str:
+    positions = await client.swap_positions()
+    match = next((p for p in positions if p.get("instId") == intent.inst_id), None)
+    if not match:
+        return (
+            f"You have no open "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')} position."
+        )
+
+    pos_side = match.get("posSide") or "net"
+    total = abs(Decimal(match.get("pos") or "0"))
+    if total <= 0:
+        return "Position has no contracts to close."
+
+    pct = intent.close_pct or 50
+    if pct >= 100:
+        return await execute_trade_close(intent, client)
+
+    try:
+        instrument = await client.swap_instrument(intent.inst_id)
+        lot_sz = Decimal(instrument.get("lotSz") or "1")
+        min_sz = Decimal(instrument.get("minSz") or "1")
+    except ExchangeError:
+        lot_sz = Decimal("1")
+        min_sz = Decimal("1")
+
+    target_contracts = total * Decimal(pct) / Decimal("100")
+    steps = (target_contracts / lot_sz).to_integral_value(rounding=ROUND_DOWN)
+    close_contracts = steps * lot_sz
+    if close_contracts < min_sz:
+        close_contracts = min_sz
+    if close_contracts > total:
+        close_contracts = total
+
+    if close_contracts <= 0:
+        return "Cannot compute a partial close size — try a larger percentage."
+
+    if pos_side == "long":
+        close_side = "sell"
+    elif pos_side == "short":
+        close_side = "buy"
+    else:
+        close_side = (
+            "sell" if Decimal(match.get("pos") or "0") > 0 else "buy"
+        )
+
+    order_key = f"voice{uuid.uuid4().hex[:20]}"[:28]
+    try:
+        accepted = await client.close_market_swap(
+            inst_id=intent.inst_id,
+            side=close_side,
+            position_side=pos_side,
+            contracts=close_contracts,
+            client_order_id=order_key,
+        )
+    except OrderRejected as exc:
+        return f"OKX rejected the partial close: {exc}"
+    except ExchangeError as exc:
+        return f"Exchange error: {exc}"
+
+    remaining = total - close_contracts
+    return (
+        f"Closed {close_contracts} of {total} contracts on "
+        f"{intent.inst_id.replace('-USDT-SWAP', '')}. "
+        f"{remaining} contracts still open."
+    )
+
+
+async def execute_close_all(client: OKXClient, user_id: int) -> str:
+    positions = await client.swap_positions()
+    if not positions:
+        return "You have no open positions."
+
+    closed = 0
+    for p in positions:
+        inst = p.get("instId")
+        if not inst:
+            continue
+        pos_side = p.get("posSide") or "net"
+        contracts = abs(Decimal(p.get("pos") or "0"))
+        if contracts <= 0:
+            continue
+        pos_amt = Decimal(p.get("pos") or "0")
+        close_side = (
+            "sell" if (pos_side == "long" or (pos_side == "net" and pos_amt > 0))
+            else "buy"
+        )
+        try:
+            await client.close_market_swap(
+                inst_id=inst,
+                side=close_side,
+                position_side=pos_side,
+                contracts=contracts,
+                client_order_id=f"voice{uuid.uuid4().hex[:20]}"[:28],
+            )
+            closed += 1
+        except Exception as exc:
+            log.warning(
+                "close_all failed for %s: %s: %s",
+                inst, type(exc).__name__, exc,
+            )
+
+    if closed == 0:
+        return "Tried to close all positions but none closed successfully."
+    return (
+        f"Closed {closed} position{'s' if closed != 1 else ''}. "
+        f"Session still running."
+    )
+
+
+async def _find_algo_clordid(client: OKXClient, inst_id: str) -> str | None:
+    """Look up the pending conditional algo for a given instrument."""
+    try:
+        algos = await client.list_pending_algo_orders(inst_id)
+    except Exception as exc:
+        log.debug("list_pending_algo_orders failed: %s: %s", type(exc).__name__, exc)
+        return None
+    # Our convention: algoClOrdId starts with "tp"
+    for a in algos:
+        aid = a.get("algoClOrdId") or ""
+        if aid.startswith("tp"):
+            return aid
+    # Fallback: return the first algo with a clOrdId
+    for a in algos:
+        aid = a.get("algoClOrdId")
+        if aid:
+            return aid
+    return None
+
+
+async def execute_update_sl(intent: VoiceIntent, client: OKXClient) -> str:
+    positions = await client.swap_positions()
+    match = next((p for p in positions if p.get("instId") == intent.inst_id), None)
+    if not match:
+        return (
+            f"You have no open "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')} position."
+        )
+
+    algo_id = await _find_algo_clordid(client, intent.inst_id)
+    if not algo_id:
+        return (
+            f"No pending stop-loss found for "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')}. "
+            f"Set it manually in OKX or place a new position with a stop."
+        )
+
+    try:
+        await client.amend_algo_sl(
+            inst_id=intent.inst_id,
+            algo_clordid=algo_id,
+            new_sl_trigger=intent.price_target,
+        )
+    except OrderRejected as exc:
+        return f"OKX rejected the SL update: {exc}"
+    except ExchangeError as exc:
+        return f"Exchange error: {exc}"
+
+    return (
+        f"Stop loss on "
+        f"{intent.inst_id.replace('-USDT-SWAP', '')} moved to "
+        f"{intent.price_target:.2f}."
+    )
+
+
+async def execute_update_tp(intent: VoiceIntent, client: OKXClient) -> str:
+    positions = await client.swap_positions()
+    match = next((p for p in positions if p.get("instId") == intent.inst_id), None)
+    if not match:
+        return (
+            f"You have no open "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')} position."
+        )
+
+    algo_id = await _find_algo_clordid(client, intent.inst_id)
+    if not algo_id:
+        return (
+            f"No pending take-profit found for "
+            f"{intent.inst_id.replace('-USDT-SWAP', '')}. "
+            f"Set it manually in OKX or place a new position with a target."
+        )
+
+    try:
+        await client.amend_algo_tp(
+            inst_id=intent.inst_id,
+            algo_clordid=algo_id,
+            new_tp_trigger=intent.price_target,
+        )
+    except OrderRejected as exc:
+        return f"OKX rejected the TP update: {exc}"
+    except ExchangeError as exc:
+        return f"Exchange error: {exc}"
+
+    return (
+        f"Take profit on "
+        f"{intent.inst_id.replace('-USDT-SWAP', '')} moved to "
+        f"{intent.price_target:.2f}."
+    )
+
+
+async def execute_auto_start(
+    intent: VoiceIntent,
+    client: OKXClient,
+    user_id: int,
+    session_manager,
+    settings,
+) -> str:
     existing = session_manager.get_active(user_id)
     if existing:
-        return f"You already have an active session number {existing.id}. Stop it first."
+        return (
+            f"You already have an active session number {existing.id}. "
+            f"Stop it first."
+        )
 
     balance = await client.account_balance()
     if balance < Decimal("5"):
@@ -433,8 +862,8 @@ async def execute_auto_start(intent: VoiceIntent, client: OKXClient, user_id: in
         f"Session {session_id} started. "
         f"{strategy_str.replace('_', ' ')} on 9 markets. "
         f"{leverage} times leverage ceiling. "
-        f"Target plus {config.target_profit:.2f}, max loss minus {config.max_loss:.2f}. "
-        f"Running for 7 days."
+        f"Target plus {config.target_profit:.2f}, "
+        f"max loss minus {config.max_loss:.2f}. Running for 7 days."
     )
 
 
@@ -453,11 +882,18 @@ async def execute_stop(client: OKXClient, user_id: int, session_manager) -> str:
         contracts = abs(Decimal(p.get("pos") or "0"))
         if contracts <= 0:
             continue
-        close_side = "sell" if (pos_side == "long" or (pos_side == "net" and Decimal(p.get("pos") or "0") > 0)) else "buy"
+        pos_amt = Decimal(p.get("pos") or "0")
+        close_side = (
+            "sell" if (pos_side == "long" or (pos_side == "net" and pos_amt > 0))
+            else "buy"
+        )
         try:
             await client.close_market_swap(
-                inst_id=inst, side=close_side, position_side=pos_side,
-                contracts=contracts, client_order_id=f"voice{uuid.uuid4().hex[:20]}"[:28],
+                inst_id=inst,
+                side=close_side,
+                position_side=pos_side,
+                contracts=contracts,
+                client_order_id=f"voice{uuid.uuid4().hex[:20]}"[:28],
             )
             closed += 1
         except Exception:
@@ -465,4 +901,7 @@ async def execute_stop(client: OKXClient, user_id: int, session_manager) -> str:
 
     balance = await client.account_balance()
     session_manager.end_session(session.id, EndReason.USER_STOP, balance)
-    return f"Session {session.id} stopped. Closed {closed} position{'s' if closed != 1 else ''}."
+    return (
+        f"Session {session.id} stopped. "
+        f"Closed {closed} position{'s' if closed != 1 else ''}."
+    )
