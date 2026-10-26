@@ -37,7 +37,6 @@ html,body{
   overscroll-behavior:none;
 }
 
-/* Aurora background */
 .aurora-bg{
   position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0;
 }
@@ -77,7 +76,6 @@ html,body{
   50%{transform:translate(-50%,-50%) scale(1.2);opacity:0.4}
 }
 
-/* Layout */
 main{
   position:relative;z-index:1;
   max-width:520px;margin:auto;
@@ -86,7 +84,6 @@ main{
   display:flex;flex-direction:column;gap:14px;
 }
 
-/* Header */
 .app-header{
   display:flex;justify-content:space-between;align-items:center;
   padding:4px 4px 0;
@@ -108,7 +105,6 @@ main{
 }
 .header-action:active{background:rgba(30,35,65,0.7)}
 
-/* Session indicator */
 .session-bar{
   display:none;
   align-items:center;justify-content:center;gap:8px;
@@ -129,7 +125,6 @@ main{
   50%{border-color:rgba(139,92,246,0.6)}
 }
 
-/* Message log */
 .log{
   flex:1;overflow-y:auto;
   display:flex;flex-direction:column;gap:10px;
@@ -176,14 +171,12 @@ main{
   border-radius:12px;
 }
 
-/* Status line */
 .status-line{
   text-align:center;font-size:12px;color:var(--text-dim);
   min-height:18px;padding:4px;
   font-weight:500;letter-spacing:0.3px;
 }
 
-/* Mic orb */
 .orb-wrap{
   display:flex;justify-content:center;align-items:center;
   padding:8px 0 24px;
@@ -243,12 +236,8 @@ main{
     inset 0 -8px 24px rgba(0,0,0,0.3);
   animation:mic-breathe 1.6s ease-in-out infinite;
 }
-.mic-orb.listening::before{
-  border-color:rgba(244,114,182,0.5);
-}
-.mic-orb.listening::after{
-  border-color:rgba(244,114,182,0.3);
-}
+.mic-orb.listening::before{border-color:rgba(244,114,182,0.5)}
+.mic-orb.listening::after{border-color:rgba(244,114,182,0.3)}
 @keyframes mic-breathe{
   0%,100%{transform:scale(1)}
   50%{transform:scale(1.06)}
@@ -271,6 +260,26 @@ main{
   to{transform:rotate(360deg) scale(1.02)}
 }
 
+.mic-orb.speaking{
+  background:radial-gradient(circle at 30% 30%,
+    #ccfbf1 0%,
+    #5eead4 30%,
+    #14b8a6 60%,
+    #115e59 100%);
+  box-shadow:
+    0 0 50px rgba(20,184,166,0.55),
+    0 0 120px rgba(20,184,166,0.25),
+    inset 0 2px 20px rgba(255,255,255,0.3),
+    inset 0 -8px 20px rgba(0,0,0,0.2);
+  animation:mic-speak-pulse 0.9s ease-in-out infinite;
+}
+.mic-orb.speaking::before{border-color:rgba(94,234,212,0.5)}
+.mic-orb.speaking::after{border-color:rgba(94,234,212,0.3)}
+@keyframes mic-speak-pulse{
+  0%,100%{transform:scale(1)}
+  50%{transform:scale(1.04)}
+}
+
 .mic-icon{
   font-size:44px;line-height:1;
   filter:drop-shadow(0 2px 6px rgba(0,0,0,0.35));
@@ -284,13 +293,11 @@ main{
   to{transform:rotate(-360deg)}
 }
 
-/* Bottom hint */
 .hint{
   text-align:center;font-size:11px;color:var(--text-dim);
   padding:0 20px;line-height:1.5;opacity:0.7;
 }
 
-/* Auth view */
 #authView{
   display:flex;flex-direction:column;gap:16px;
   justify-content:center;flex:1;padding:0 8px;
@@ -337,7 +344,6 @@ main{
 </head>
 <body>
 
-<!-- Aurora background -->
 <div class="aurora-bg">
   <div class="aurora-orb aurora-orb-1"></div>
   <div class="aurora-orb aurora-orb-2"></div>
@@ -378,6 +384,7 @@ main{
 
     <div class="hint">
       Tap to start a listening session (5 min). Talk freely — no need to tap again.
+      Tap again during speech to interrupt.
     </div>
   </div>
 </main>
@@ -401,8 +408,11 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
 let sessionActive = false;
 let sessionTimeout = null;
-let lastSpoken = '';
+let speaking = false;
 let busy = false;
+let lastSpoken = '';
+let currentUtterance = null;
+let ttsSafetyTimeout = null;
 
 const SESSION_DURATION_MS = 5 * 60 * 1000;
 
@@ -416,28 +426,87 @@ function addMsg(role, text) {
   log.scrollTop = log.scrollHeight;
 }
 
+/* ---------------- TTS-aware listening gate ---------------- */
+
+function resumeListening() {
+  if (speaking || busy || !sessionActive) return;
+  if (!recognition) return;
+  setTimeout(() => {
+    if (speaking || busy || !sessionActive) return;
+    try { recognition.start(); } catch {}
+  }, 400);
+}
+
+function stopSpeaking() {
+  try { window.speechSynthesis.cancel(); } catch {}
+  if (!speaking) return;
+  speaking = false;
+  orb.classList.remove('speaking');
+  status.textContent = sessionActive ? 'Listening…' : 'Tap the orb to speak';
+  clearTimeout(ttsSafetyTimeout);
+  resumeListening();
+}
+
 function speak(text) {
-  if (!text || text === lastSpoken) return;
+  if (!text) {
+    resumeListening();
+    return;
+  }
+  if (text === lastSpoken) {
+    // Already said it — still resume listening
+    resumeListening();
+    return;
+  }
   lastSpoken = text;
+
+  speaking = true;
+  orb.classList.remove('listening', 'thinking');
+  orb.classList.add('speaking');
+  status.textContent = 'Speaking… (tap orb to interrupt)';
+
   try {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
-    // Prefer an English voice if available
     const voices = window.speechSynthesis.getVoices();
     const preferred = voices.find(v => v.lang.startsWith('en') && v.name.includes('Female'))
                   || voices.find(v => v.lang.startsWith('en'))
                   || voices[0];
     if (preferred) u.voice = preferred;
+    currentUtterance = u;
+
+    const done = () => {
+      if (currentUtterance !== u) return;   // superseded by newer utterance
+      if (!speaking) return;                // already handled (cancel path)
+      speaking = false;
+      orb.classList.remove('speaking');
+      status.textContent = sessionActive ? 'Listening…' : 'Tap the orb to speak';
+      clearTimeout(ttsSafetyTimeout);
+      resumeListening();
+    };
+
+    u.onend = done;
+    u.onerror = done;
+
+    clearTimeout(ttsSafetyTimeout);
+    const safetyMs = Math.max(4000, text.length * 120);
+    ttsSafetyTimeout = setTimeout(done, safetyMs);
+
     window.speechSynthesis.speak(u);
-  } catch {}
+  } catch (err) {
+    // TTS failed — let listening resume
+    speaking = false;
+    orb.classList.remove('speaking');
+    resumeListening();
+  }
 }
 
 /* ---------------- Command dispatch ---------------- */
 
 async function sendCommand(text) {
-  if (!text || busy) return;
+  if (!text || busy || speaking) return;
   busy = true;
+  try { recognition && recognition.abort(); } catch {}
   addMsg('user', text);
   orb.classList.remove('listening');
   orb.classList.add('thinking');
@@ -453,26 +522,23 @@ async function sendCommand(text) {
       body: JSON.stringify({ text }),
     });
     const data = await res.json();
+    orb.classList.remove('thinking');
+    busy = false;
+
     if (!res.ok) {
-      addMsg('bot', data.detail || 'Request failed');
-      speak(data.detail || 'Request failed');
-      status.textContent = 'Error';
+      const msg = data.detail || 'Request failed';
+      addMsg('bot', msg);
+      speak(msg);
       return;
     }
     addMsg('bot', data.say);
     speak(data.say);
-    status.textContent = data.pending ? 'Say confirm or cancel' : 'Ready';
   } catch (err) {
-    addMsg('bot', 'Network error: ' + err.message);
-    speak('Network error');
-    status.textContent = 'Network error';
-  } finally {
-    busy = false;
     orb.classList.remove('thinking');
-    if (sessionActive) {
-      orb.classList.add('listening');
-      try { recognition && recognition.start(); } catch {}
-    }
+    busy = false;
+    const msg = 'Network error: ' + err.message;
+    addMsg('bot', msg);
+    speak('Network error');
   }
 }
 
@@ -514,14 +580,14 @@ function initRecognition() {
 
   recognition.onend = () => {
     orb.classList.remove('listening');
-    if (sessionActive && !busy) {
-      // Auto-restart within session
+    // Never restart while speaking or busy — TTS gate handles resume
+    if (sessionActive && !busy && !speaking) {
       setTimeout(() => {
-        if (sessionActive) {
+        if (sessionActive && !busy && !speaking) {
           try { recognition.start(); } catch {}
         }
       }, 250);
-    } else if (!sessionActive) {
+    } else if (!sessionActive && !speaking && !busy) {
       status.textContent = 'Tap the orb to speak';
     }
   };
@@ -540,6 +606,15 @@ function startSession() {
   sessionLabel.textContent = 'Listening session active (5 min)';
   orb.classList.add('listening');
   status.textContent = 'Listening…';
+
+  // Prime the TTS engine — iOS requires a user-gesture-triggered speak()
+  // before allowing async speak() calls from speech recognition callbacks.
+  try {
+    const prime = new SpeechSynthesisUtterance('');
+    prime.volume = 0;
+    window.speechSynthesis.speak(prime);
+  } catch {}
+
   try { recognition.start(); } catch {}
 
   clearTimeout(sessionTimeout);
@@ -556,12 +631,20 @@ function stopSession() {
   try { recognition && recognition.stop(); } catch {}
   clearTimeout(sessionTimeout);
   sessionTimeout = null;
+  // Don't cancel TTS here — let the current response finish
   status.textContent = 'Tap the orb to speak';
 }
 
 /* ---------------- Orb ---------------- */
 
 orb.addEventListener('click', () => {
+  if (speaking) {
+    // Interrupt TTS and resume listening
+    stopSpeaking();
+    return;
+  }
+  if (busy) return;  // Ignore taps during thinking
+
   if (sessionActive) {
     stopSession();
     addMsg('system', 'Session stopped.');
@@ -601,6 +684,7 @@ function showMain() {
 
 function logout() {
   if (!confirm('Sign out? You can sign in with a new token from Telegram.')) return;
+  stopSpeaking();
   stopSession();
   store.clear();
   location.reload();
@@ -608,7 +692,6 @@ function logout() {
 
 /* ---------------- Boot ---------------- */
 
-// Load voices on some browsers that need a delay
 if (window.speechSynthesis) {
   window.speechSynthesis.onvoiceschanged = () => {};
 }
