@@ -87,6 +87,7 @@ main{
 .app-header{
   display:flex;justify-content:space-between;align-items:center;
   padding:4px 4px 0;
+  gap:8px;
 }
 .app-title{
   font-family:'Fraunces',Georgia,serif;
@@ -94,14 +95,45 @@ main{
   background:linear-gradient(135deg,#c4b5fd 0%,#f0abfc 50%,#7dd3fc 100%);
   -webkit-background-clip:text;background-clip:text;
   -webkit-text-fill-color:transparent;
+  flex-shrink:0;
+}
+.header-controls{
+  display:flex;gap:6px;align-items:center;
+}
+.header-icon-btn{
+  width:36px;height:36px;
+  border-radius:10px;
+  background:rgba(20,25,55,0.55);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--glass-border);
+  color:var(--text-dim);
+  cursor:pointer;
+  font-size:16px;
+  font-family:inherit;
+  display:flex;align-items:center;justify-content:center;
+  transition:all 0.15s;
+  padding:0;
+  line-height:1;
+}
+.header-icon-btn:active{background:rgba(30,35,65,0.7)}
+.header-icon-btn:disabled{opacity:0.4;cursor:not-allowed}
+.header-icon-btn.muted{
+  color:var(--loss);
+  border-color:rgba(255,137,151,0.4);
+  background:rgba(255,137,151,0.08);
+}
+.header-icon-btn.voice-active{
+  color:var(--accent-bright);
+  border-color:rgba(167,139,250,0.35);
 }
 .header-action{
   background:rgba(20,25,55,0.55);
   backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
   border:1px solid var(--glass-border);
   color:var(--text-dim);font-size:12px;font-weight:500;
-  padding:7px 14px;border-radius:12px;cursor:pointer;
+  padding:8px 12px;border-radius:10px;cursor:pointer;
   font-family:inherit;transition:all 0.15s;
+  height:36px;
 }
 .header-action:active{background:rgba(30,35,65,0.7)}
 
@@ -353,7 +385,11 @@ main{
 <main>
   <div class="app-header">
     <div class="app-title">Relay</div>
-    <button class="header-action" onclick="logout()" id="signOutBtn" style="display:none">Sign out</button>
+    <div class="header-controls">
+      <button class="header-icon-btn" id="muteBtn" title="Mute voice" aria-label="Toggle mute">🔊</button>
+      <button class="header-icon-btn" id="voiceBtn" title="Change voice" aria-label="Change voice">🎵</button>
+      <button class="header-action" id="signOutBtn" style="display:none">Sign out</button>
+    </div>
   </div>
 
   <div id="authView">
@@ -394,7 +430,14 @@ const API = '/api/voice/command';
 const store = {
   get token() { return localStorage.getItem('voiceToken') || ''; },
   set token(v) { localStorage.setItem('voiceToken', v); },
-  clear() { localStorage.removeItem('voiceToken'); },
+  get muted() { return localStorage.getItem('voiceMuted') === '1'; },
+  set muted(v) { localStorage.setItem('voiceMuted', v ? '1' : '0'); },
+  get voiceName() { return localStorage.getItem('voiceName') || ''; },
+  set voiceName(v) { localStorage.setItem('voiceName', v || ''); },
+  clear() {
+    localStorage.removeItem('voiceToken');
+    // Preserve mute + voice settings across sign-out
+  },
 };
 
 const $ = id => document.getElementById(id);
@@ -403,6 +446,8 @@ const status = $('status');
 const orb = $('micOrb');
 const sessionBar = $('sessionBar');
 const sessionLabel = $('sessionLabel');
+const muteBtn = $('muteBtn');
+const voiceBtn = $('voiceBtn');
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
@@ -414,6 +459,10 @@ let lastSpoken = '';
 let currentUtterance = null;
 let ttsSafetyTimeout = null;
 
+let muted = store.muted;
+let availableVoices = [];
+let currentVoiceIndex = 0;
+
 const SESSION_DURATION_MS = 5 * 60 * 1000;
 
 /* ---------------- Messaging ---------------- */
@@ -424,6 +473,97 @@ function addMsg(role, text) {
   d.textContent = text;
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
+}
+
+/* ---------------- Voice picker ---------------- */
+
+function loadVoices() {
+  if (!window.speechSynthesis) return;
+  const all = window.speechSynthesis.getVoices();
+  if (!all || all.length === 0) return;
+
+  // Filter to English voices; if none, fall back to all
+  const english = all.filter(v => v.lang && v.lang.toLowerCase().startsWith('en'));
+  availableVoices = english.length > 0 ? english : all;
+
+  // Restore stored voice by name
+  const stored = store.voiceName;
+  if (stored) {
+    const idx = availableVoices.findIndex(v => v.name === stored);
+    if (idx >= 0) currentVoiceIndex = idx;
+  }
+
+  updateVoiceBtn();
+}
+
+function updateVoiceBtn() {
+  const btn = voiceBtn;
+  if (availableVoices.length <= 1) {
+    btn.disabled = true;
+    btn.title = availableVoices.length === 0
+      ? 'No voices available on this device'
+      : 'Only one voice available';
+    btn.classList.remove('voice-active');
+  } else {
+    btn.disabled = false;
+    const v = availableVoices[currentVoiceIndex];
+    btn.title = `Voice: ${v.name} (${currentVoiceIndex + 1}/${availableVoices.length})`;
+    btn.classList.toggle('voice-active', currentVoiceIndex > 0);
+  }
+}
+
+function cycleVoice() {
+  if (availableVoices.length <= 1) {
+    status.textContent = availableVoices.length === 0
+      ? 'No voices available on this device'
+      : 'Only one voice available';
+    return;
+  }
+  currentVoiceIndex = (currentVoiceIndex + 1) % availableVoices.length;
+  const voice = availableVoices[currentVoiceIndex];
+  store.voiceName = voice.name;
+  updateVoiceBtn();
+
+  // Announce the new voice (even if muted, we want feedback — but respect mute)
+  if (!muted) {
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(`Voice changed to ${voice.name}`);
+      u.voice = voice;
+      u.rate = 1.0;
+      window.speechSynthesis.speak(u);
+    } catch {}
+  }
+  status.textContent = `Voice: ${voice.name}`;
+}
+
+/* ---------------- Mute toggle ---------------- */
+
+function updateMuteBtn() {
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  muteBtn.title = muted ? 'Unmute voice' : 'Mute voice';
+  muteBtn.classList.toggle('muted', muted);
+}
+
+function toggleMute() {
+  muted = !muted;
+  store.muted = muted;
+  updateMuteBtn();
+
+  if (muted) {
+    // Cut off any in-progress speech and resume listening immediately
+    try { window.speechSynthesis.cancel(); } catch {}
+    speaking = false;
+    orb.classList.remove('speaking');
+    if (sessionActive) {
+      status.textContent = 'Listening… (voice muted)';
+      resumeListening();
+    } else {
+      status.textContent = 'Voice muted. Tap orb to speak.';
+    }
+  } else {
+    status.textContent = sessionActive ? 'Listening…' : 'Voice unmuted. Tap orb to speak.';
+  }
 }
 
 /* ---------------- TTS-aware listening gate ---------------- */
@@ -453,11 +593,16 @@ function speak(text) {
     return;
   }
   if (text === lastSpoken) {
-    // Already said it — still resume listening
     resumeListening();
     return;
   }
   lastSpoken = text;
+
+  // Muted: skip TTS entirely but still free the mic
+  if (muted) {
+    resumeListening();
+    return;
+  }
 
   speaking = true;
   orb.classList.remove('listening', 'thinking');
@@ -468,16 +613,20 @@ function speak(text) {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(v => v.lang.startsWith('en') && v.name.includes('Female'))
-                  || voices.find(v => v.lang.startsWith('en'))
-                  || voices[0];
-    if (preferred) u.voice = preferred;
+
+    if (availableVoices.length > 0) {
+      u.voice = availableVoices[currentVoiceIndex];
+    } else {
+      const voices = window.speechSynthesis.getVoices();
+      const preferred = voices.find(v => v.lang && v.lang.startsWith('en'))
+                    || voices[0];
+      if (preferred) u.voice = preferred;
+    }
     currentUtterance = u;
 
     const done = () => {
-      if (currentUtterance !== u) return;   // superseded by newer utterance
-      if (!speaking) return;                // already handled (cancel path)
+      if (currentUtterance !== u) return;
+      if (!speaking) return;
       speaking = false;
       orb.classList.remove('speaking');
       status.textContent = sessionActive ? 'Listening…' : 'Tap the orb to speak';
@@ -494,7 +643,6 @@ function speak(text) {
 
     window.speechSynthesis.speak(u);
   } catch (err) {
-    // TTS failed — let listening resume
     speaking = false;
     orb.classList.remove('speaking');
     resumeListening();
@@ -580,7 +728,6 @@ function initRecognition() {
 
   recognition.onend = () => {
     orb.classList.remove('listening');
-    // Never restart while speaking or busy — TTS gate handles resume
     if (sessionActive && !busy && !speaking) {
       setTimeout(() => {
         if (sessionActive && !busy && !speaking) {
@@ -603,12 +750,13 @@ function startSession() {
   }
   sessionActive = true;
   sessionBar.classList.add('active');
-  sessionLabel.textContent = 'Listening session active (5 min)';
+  sessionLabel.textContent = muted
+    ? 'Listening session active (voice muted)'
+    : 'Listening session active (5 min)';
   orb.classList.add('listening');
   status.textContent = 'Listening…';
 
-  // Prime the TTS engine — iOS requires a user-gesture-triggered speak()
-  // before allowing async speak() calls from speech recognition callbacks.
+  // Prime TTS engine on iOS
   try {
     const prime = new SpeechSynthesisUtterance('');
     prime.volume = 0;
@@ -631,7 +779,6 @@ function stopSession() {
   try { recognition && recognition.stop(); } catch {}
   clearTimeout(sessionTimeout);
   sessionTimeout = null;
-  // Don't cancel TTS here — let the current response finish
   status.textContent = 'Tap the orb to speak';
 }
 
@@ -639,11 +786,10 @@ function stopSession() {
 
 orb.addEventListener('click', () => {
   if (speaking) {
-    // Interrupt TTS and resume listening
     stopSpeaking();
     return;
   }
-  if (busy) return;  // Ignore taps during thinking
+  if (busy) return;
 
   if (sessionActive) {
     stopSession();
@@ -652,6 +798,11 @@ orb.addEventListener('click', () => {
     startSession();
   }
 });
+
+/* ---------------- Header controls ---------------- */
+
+muteBtn.addEventListener('click', toggleMute);
+voiceBtn.addEventListener('click', cycleVoice);
 
 /* ---------------- Auth ---------------- */
 
@@ -680,6 +831,10 @@ function showMain() {
   if (!initRecognition()) {
     status.textContent = 'Voice not supported in this browser. Try Chrome or Safari.';
   }
+
+  // Load voices now and on change
+  loadVoices();
+  updateMuteBtn();
 }
 
 function logout() {
@@ -690,11 +845,20 @@ function logout() {
   location.reload();
 }
 
+$('signOutBtn').addEventListener('click', logout);
+
 /* ---------------- Boot ---------------- */
 
 if (window.speechSynthesis) {
-  window.speechSynthesis.onvoiceschanged = () => {};
+  window.speechSynthesis.onvoiceschanged = loadVoices;
+  // Some browsers (Safari) load voices immediately, Chrome needs a tick
+  loadVoices();
+  setTimeout(loadVoices, 100);
+  setTimeout(loadVoices, 500);
 }
+
+// Apply mute state immediately on load
+updateMuteBtn();
 
 window.addEventListener('load', showMain);
 </script>
