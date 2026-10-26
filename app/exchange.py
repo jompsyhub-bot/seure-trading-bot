@@ -420,6 +420,52 @@ class OKXClient:
             )
         return item
 
+    async def amend_algo_tp(
+        self, *, inst_id: str, algo_clordid: str, new_tp_trigger: Decimal
+    ) -> dict:
+        """Amend the take-profit trigger on a pending algo order."""
+        request_path = "/api/v5/trade/amend-algos"
+        body = json.dumps(
+            {
+                "instId": inst_id,
+                "algoClOrdId": algo_clordid,
+                "newTpTriggerPx": str(new_tp_trigger),
+                "newTpOrdPx": "-1",
+            },
+            separators=(",", ":"),
+        )
+        session = await self._session()
+        async with session.post(
+            f"{self.base_url}{request_path}",
+            data=body,
+            headers=self._headers("POST", request_path, body),
+        ) as response:
+            data = await self._response_json(response)
+        item = data.get("data", [{}])[0]
+        if data.get("code") != "0" or item.get("sCode") not in {None, "0"}:
+            raise OrderRejected(
+                item.get("sMsg") or data.get("msg") or "OKX rejected the TP amend"
+            )
+        return item
+
+    async def list_pending_algo_orders(self, inst_id: str) -> list[dict]:
+        """Return pending conditional algo orders (TP/SL) for one instrument."""
+        request_path = (
+            f"/api/v5/trade/orders-algo-pending"
+            f"?instType=SWAP&instId={inst_id}&ordType=conditional"
+        )
+        session = await self._session()
+        async with session.get(
+            f"{self.base_url}{request_path}",
+            headers=self._headers("GET", request_path),
+        ) as response:
+            data = await self._response_json(response)
+        if data.get("code") != "0":
+            raise ExchangeError(
+                data.get("msg", "Could not list pending algo orders")
+            )
+        return data.get("data", [])
+
     async def order_detail(self, inst_id: str, order_id: str) -> dict | None:
         request_path = f"/api/v5/trade/order?instId={inst_id}&ordId={order_id}"
         session = await self._session()
