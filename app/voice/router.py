@@ -4,8 +4,6 @@ from __future__ import annotations
 import logging
 import time
 import secrets
-from datetime import UTC, datetime
-from decimal import Decimal
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -16,10 +14,14 @@ from . import get_context
 from .handler import (
     build_confirmation_message,
     execute_auto_start,
+    execute_close_all,
+    execute_close_partial,
     execute_query,
     execute_stop,
     execute_trade_close,
     execute_trade_open,
+    execute_update_sl,
+    execute_update_tp,
 )
 from .parser import parse_voice_command
 
@@ -33,10 +35,16 @@ QUERY_INTENTS = {
     "query_pnl", "query_positions", "query_balance", "signal", "help",
     "session_status", "session_history", "signal_history", "order_history",
     "price_check", "leverage_check", "environment", "daily_summary",
+    "win_rate", "best_trade", "worst_trade", "portfolio_breakdown",
+    "period_summary",
 }
 CLIENT_REQUIRED_INTENTS = {
     "query_pnl", "query_positions", "query_balance", "signal",
-    "price_check", "leverage_check",
+    "price_check", "leverage_check", "portfolio_breakdown",
+}
+CONFIRMABLE_INTENTS = {
+    "trade_open", "trade_close", "auto_start", "stop",
+    "update_sl", "update_tp", "close_partial", "close_all",
 }
 
 
@@ -67,6 +75,26 @@ def _make_client(user_id: int, env: str, database, settings) -> OKXClient:
     return OKXDemoClient(api_key, api_secret, passphrase)
 
 
+async def _dispatch_confirmed(inner, client, user_id, database, session_manager, settings) -> str:
+    if inner.intent_type == "trade_open":
+        return await execute_trade_open(inner, client, user_id, database)
+    if inner.intent_type == "trade_close":
+        return await execute_trade_close(inner, client)
+    if inner.intent_type == "auto_start":
+        return await execute_auto_start(inner, client, user_id, session_manager, settings)
+    if inner.intent_type == "stop":
+        return await execute_stop(client, user_id, session_manager)
+    if inner.intent_type == "update_sl":
+        return await execute_update_sl(inner, client)
+    if inner.intent_type == "update_tp":
+        return await execute_update_tp(inner, client)
+    if inner.intent_type == "close_partial":
+        return await execute_close_partial(inner, client)
+    if inner.intent_type == "close_all":
+        return await execute_close_all(client, user_id)
+    return "Nothing to execute."
+
+
 @router.post("/command", response_model=VoiceCommandResponse)
 async def voice_command(
     request: VoiceCommandRequest,
@@ -95,17 +123,10 @@ async def voice_command(
         stored = pending[1]
         client = _make_client(stored["user_id"], stored["env"], database, settings)
         try:
-            inner = stored["intent"]
-            if inner.intent_type == "trade_open":
-                reply = await execute_trade_open(inner, client, stored["user_id"], database)
-            elif inner.intent_type == "trade_close":
-                reply = await execute_trade_close(inner, client)
-            elif inner.intent_type == "auto_start":
-                reply = await execute_auto_start(inner, client, stored["user_id"], session_manager, settings)
-            elif inner.intent_type == "stop":
-                reply = await execute_stop(client, stored["user_id"], session_manager)
-            else:
-                reply = "Nothing to execute."
+            reply = await _dispatch_confirmed(
+                stored["intent"], client, stored["user_id"],
+                database, session_manager, settings,
+            )
         except Exception as exc:
             log.warning("Voice execution failed: %s: %s", type(exc).__name__, exc)
             reply = f"Something went wrong: {exc}"
@@ -117,7 +138,6 @@ async def voice_command(
         return VoiceCommandResponse(say="Cancelled." if pending else "Nothing to cancel.")
 
     if intent.intent_type in QUERY_INTENTS:
-        # Client-required queries need OKX; others work without.
         client = None
         if intent.intent_type in CLIENT_REQUIRED_INTENTS:
             try:
@@ -125,27 +145,38 @@ async def voice_command(
             except HTTPException as exc:
                 return VoiceCommandResponse(say=str(exc.detail))
         else:
-            # Non-client queries may still benefit from a live price check etc.,
-            # but we don't need to spin up a client for them. Try anyway if
-            # OKX is available so the behavior is consistent.
             try:
                 client = _make_client(user_id, env, database, settings)
             except HTTPException:
                 client = None
 
         try:
-            reply = await execute_query(intent, client, user_id, session_manager, database, env)
+            reply = await execute_query(
+                intent, client, user_id, session_manager, database, env
+            )
         finally:
             if client:
                 await client.close()
         return VoiceCommandResponse(say=reply)
 
-    if intent.intent_type in {"trade_open", "trade_close", "auto_start", "stop"}:
+    if intent.intent_type in CONFIRMABLE_INTENTS:
         _pending[token] = (now, {"intent": intent, "user_id": user_id, "env": env})
         return VoiceCommandResponse(
             say=build_confirmation_message(intent),
             pending=True,
             action=intent.intent_type,
+        )
+
+    if intent.intent_type == "unknown":
+        if intent.best_guess:
+            return VoiceCommandResponse(
+                say=(
+                    f"I heard '{request.text}' — did you mean "
+                    f"'{intent.best_guess}'? Try again or say help for options."
+                )
+            )
+        return VoiceCommandResponse(
+            say=f"I didn't understand '{request.text}'. Say help for options."
         )
 
     return VoiceCommandResponse(
