@@ -3,89 +3,381 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b1020">
+<meta name="theme-color" content="#0a0e27">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Relay Voice</title>
-<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22Relay%20Voice%22%2C%22short_name%22%3A%22Voice%22%2C%22start_url%22%3A%22%2Fvoice%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230b1020%22%2C%22theme_color%22%3A%22%230b1020%22%7D">
+<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22Relay%20Voice%22%2C%22short_name%22%3A%22Voice%22%2C%22start_url%22%3A%22%2Fvoice%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230a0e27%22%2C%22theme_color%22%3A%22%230a0e27%22%7D">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@300;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#0b1020;--card:#151e33;--border:#283858;--text:#eef3ff;--muted:#a8b4cd;
-  --accent:#628cff;--good:#4dddac;--danger:#c75161;--field:#202c45;
+  --midnight:#0a0e27;
+  --deep:#0d1233;
+  --text:#eef3ff;
+  --text-dim:#a8b4cd;
+  --accent:#a78bfa;
+  --accent-bright:#c4b5fd;
+  --good:#4dddac;
+  --loss:#ff8997;
+  --glass-bg:rgba(20,25,55,0.55);
+  --glass-border:rgba(150,170,255,0.15);
+  --glass-border-top:rgba(200,220,255,0.25);
 }
-*{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--text);
-  font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-  min-height:100vh;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
-main{max-width:520px;margin:auto;padding:20px 16px;min-height:100vh;
-  display:flex;flex-direction:column;gap:16px}
-h1{font-size:22px;margin:0}
-p{margin:0}
-.muted{color:var(--muted)}
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
-button{width:100%;border:0;border-radius:12px;padding:16px;font-size:16px;
-  font-family:inherit;font-weight:600;cursor:pointer;background:var(--accent);color:#fff}
-button:active{filter:brightness(.9)}
-button:disabled{opacity:.55;cursor:not-allowed}
-button.ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
-button.danger{background:var(--danger)}
-input{width:100%;background:var(--field);color:#fff;border:1px solid var(--border);
-  border-radius:10px;padding:14px;font-size:15px;font-family:inherit}
-input:focus{outline:none;border-color:var(--accent)}
-#talk{font-size:20px;padding:28px;min-height:120px;
-  background:linear-gradient(135deg,#628cff,#9db6ff);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
-  transition:transform .1s, box-shadow .15s}
-#talk.listening{background:linear-gradient(135deg,#c75161,#ff8997);
-  box-shadow:0 0 0 12px rgba(199,81,97,0.2);animation:pulse 1.5s ease-in-out infinite}
-#talk.thinking{background:linear-gradient(135deg,#f3c46c,#ffe4a0);color:#0b1020}
-@keyframes pulse{0%,100%{box-shadow:0 0 0 12px rgba(199,81,97,0.2)}
-  50%{box-shadow:0 0 0 20px rgba(199,81,97,0.05)}}
-#talk .ico{font-size:32px}
-#talk .label{font-size:14px;font-weight:500;opacity:.9}
-#status{font-size:13px;color:var(--muted);text-align:center;min-height:20px}
-#log{display:flex;flex-direction:column;gap:10px;flex:1;overflow-y:auto;
-  max-height:50vh;padding-right:4px}
-.msg{padding:12px 14px;border-radius:12px;font-size:14px;line-height:1.5;
-  max-width:88%;word-wrap:break-word}
-.msg.me{align-self:flex-end;background:rgba(98,140,255,0.15);color:var(--accent-soft)}
-.msg.bot{align-self:flex-start;background:var(--field);color:var(--text)}
-.msg.sys{align-self:center;font-size:12px;color:var(--muted);background:none;padding:6px}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{
+  height:100%;
+  background:#030612;
+  color:var(--text);
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+  -webkit-tap-highlight-color:transparent;
+  overscroll-behavior:none;
+}
+
+/* Aurora background */
+.aurora-bg{
+  position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0;
+}
+.aurora-orb{
+  position:absolute;border-radius:50%;filter:blur(80px);opacity:0.55;
+  will-change:transform;
+}
+.aurora-orb-1{
+  width:500px;height:500px;
+  background:radial-gradient(circle,rgba(139,92,246,0.5) 0%,transparent 70%);
+  top:-150px;left:-150px;
+  animation:drift-a 22s ease-in-out infinite;
+}
+.aurora-orb-2{
+  width:600px;height:600px;
+  background:radial-gradient(circle,rgba(236,72,153,0.35) 0%,transparent 70%);
+  bottom:-250px;right:-250px;
+  animation:drift-b 26s ease-in-out infinite;
+}
+.aurora-orb-3{
+  width:450px;height:450px;
+  background:radial-gradient(circle,rgba(56,189,248,0.4) 0%,transparent 70%);
+  top:45%;left:50%;transform:translate(-50%,-50%);
+  animation:drift-c 30s ease-in-out infinite;
+}
+@keyframes drift-a{
+  0%,100%{transform:translate(0,0) scale(1)}
+  33%{transform:translate(60px,-40px) scale(1.1)}
+  66%{transform:translate(-30px,50px) scale(0.95)}
+}
+@keyframes drift-b{
+  0%,100%{transform:translate(0,0) scale(1)}
+  50%{transform:translate(-80px,-60px) scale(1.15)}
+}
+@keyframes drift-c{
+  0%,100%{transform:translate(-50%,-50%) scale(1);opacity:0.55}
+  50%{transform:translate(-50%,-50%) scale(1.2);opacity:0.4}
+}
+
+/* Layout */
+main{
+  position:relative;z-index:1;
+  max-width:520px;margin:auto;
+  padding:20px 16px;
+  height:100vh;height:100dvh;
+  display:flex;flex-direction:column;gap:14px;
+}
+
+/* Header */
+.app-header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:4px 4px 0;
+}
+.app-title{
+  font-family:'Fraunces',Georgia,serif;
+  font-weight:300;font-size:22px;letter-spacing:0.5px;
+  background:linear-gradient(135deg,#c4b5fd 0%,#f0abfc 50%,#7dd3fc 100%);
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;
+}
+.header-action{
+  background:rgba(20,25,55,0.55);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--glass-border);
+  color:var(--text-dim);font-size:12px;font-weight:500;
+  padding:7px 14px;border-radius:12px;cursor:pointer;
+  font-family:inherit;transition:all 0.15s;
+}
+.header-action:active{background:rgba(30,35,65,0.7)}
+
+/* Session indicator */
+.session-bar{
+  display:none;
+  align-items:center;justify-content:center;gap:8px;
+  padding:8px 16px;
+  background:rgba(139,92,246,0.12);
+  border:1px solid rgba(139,92,246,0.3);
+  border-radius:12px;
+  font-size:12px;font-weight:600;color:var(--accent-bright);
+  animation:session-pulse 2s ease-in-out infinite;
+}
+.session-bar.active{display:flex}
+.session-dot{
+  width:8px;height:8px;border-radius:50%;
+  background:var(--accent);box-shadow:0 0 12px var(--accent);
+}
+@keyframes session-pulse{
+  0%,100%{border-color:rgba(139,92,246,0.3)}
+  50%{border-color:rgba(139,92,246,0.6)}
+}
+
+/* Message log */
+.log{
+  flex:1;overflow-y:auto;
+  display:flex;flex-direction:column;gap:10px;
+  padding:8px 4px;
+  -webkit-overflow-scrolling:touch;
+  scroll-behavior:smooth;
+}
+.log::-webkit-scrollbar{width:4px}
+.log::-webkit-scrollbar-thumb{background:rgba(150,170,255,0.2);border-radius:2px}
+
+.message{
+  padding:12px 16px;
+  border-radius:18px;
+  font-size:15px;line-height:1.5;
+  max-width:85%;word-wrap:break-word;
+  animation:msg-in 0.35s cubic-bezier(0.22,1,0.36,1);
+}
+@keyframes msg-in{
+  from{opacity:0;transform:translateY(10px)}
+  to{opacity:1;transform:translateY(0)}
+}
+.message.user{
+  align-self:flex-end;
+  background:linear-gradient(135deg,rgba(139,92,246,0.35) 0%,rgba(139,92,246,0.18) 100%);
+  border:1px solid rgba(167,139,250,0.3);
+  color:#e0e7ff;
+  border-bottom-right-radius:6px;
+}
+.message.bot{
+  align-self:flex-start;
+  background:rgba(30,35,65,0.65);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--glass-border);
+  border-top:1px solid var(--glass-border-top);
+  color:var(--text);
+  border-bottom-left-radius:6px;
+  box-shadow:0 4px 24px rgba(0,0,0,0.25);
+}
+.message.system{
+  align-self:center;
+  font-size:12px;color:var(--text-dim);
+  padding:6px 12px;
+  background:rgba(20,25,55,0.4);
+  border-radius:12px;
+}
+
+/* Status line */
+.status-line{
+  text-align:center;font-size:12px;color:var(--text-dim);
+  min-height:18px;padding:4px;
+  font-weight:500;letter-spacing:0.3px;
+}
+
+/* Mic orb */
+.orb-wrap{
+  display:flex;justify-content:center;align-items:center;
+  padding:8px 0 24px;
+}
+.mic-orb{
+  position:relative;
+  width:132px;height:132px;
+  border-radius:50%;
+  background:radial-gradient(circle at 30% 30%,
+    #ddd6fe 0%,
+    #a78bfa 30%,
+    #7c3aed 60%,
+    #4c1d95 100%);
+  box-shadow:
+    0 0 40px rgba(139,92,246,0.5),
+    0 0 100px rgba(139,92,246,0.25),
+    inset 0 2px 20px rgba(255,255,255,0.25),
+    inset 0 -8px 20px rgba(0,0,0,0.2);
+  cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  user-select:none;-webkit-user-select:none;
+  transition:transform 0.2s cubic-bezier(0.22,1,0.36,1),
+             box-shadow 0.4s,
+             background 0.4s;
+  touch-action:none;
+}
+.mic-orb::before{
+  content:'';
+  position:absolute;inset:-14px;border-radius:50%;
+  border:2px solid rgba(167,139,250,0.3);
+  animation:pulse-ring 2.8s ease-out infinite;
+  pointer-events:none;
+}
+.mic-orb::after{
+  content:'';
+  position:absolute;inset:-14px;border-radius:50%;
+  border:2px solid rgba(167,139,250,0.15);
+  animation:pulse-ring 2.8s ease-out 1.4s infinite;
+  pointer-events:none;
+}
+@keyframes pulse-ring{
+  0%{transform:scale(1);opacity:1}
+  100%{transform:scale(1.6);opacity:0}
+}
+.mic-orb:active{transform:scale(0.96)}
+
+.mic-orb.listening{
+  background:radial-gradient(circle at 30% 30%,
+    #fecaca 0%,
+    #f472b6 30%,
+    #ec4899 60%,
+    #9f1239 100%);
+  box-shadow:
+    0 0 60px rgba(236,72,153,0.7),
+    0 0 140px rgba(236,72,153,0.35),
+    inset 0 2px 24px rgba(255,255,255,0.35),
+    inset 0 -8px 24px rgba(0,0,0,0.3);
+  animation:mic-breathe 1.6s ease-in-out infinite;
+}
+.mic-orb.listening::before{
+  border-color:rgba(244,114,182,0.5);
+}
+.mic-orb.listening::after{
+  border-color:rgba(244,114,182,0.3);
+}
+@keyframes mic-breathe{
+  0%,100%{transform:scale(1)}
+  50%{transform:scale(1.06)}
+}
+
+.mic-orb.thinking{
+  background:radial-gradient(circle at 30% 30%,
+    #fef3c7 0%,
+    #fcd34d 30%,
+    #f59e0b 60%,
+    #b45309 100%);
+  box-shadow:
+    0 0 60px rgba(245,158,11,0.65),
+    0 0 140px rgba(245,158,11,0.3),
+    inset 0 2px 24px rgba(255,255,255,0.35);
+  animation:mic-rotate 1.8s linear infinite;
+}
+@keyframes mic-rotate{
+  from{transform:rotate(0deg) scale(1.02)}
+  to{transform:rotate(360deg) scale(1.02)}
+}
+
+.mic-icon{
+  font-size:44px;line-height:1;
+  filter:drop-shadow(0 2px 6px rgba(0,0,0,0.35));
+  transition:transform 0.3s;
+}
+.mic-orb.thinking .mic-icon{
+  animation:icon-counter-rotate 1.8s linear infinite;
+}
+@keyframes icon-counter-rotate{
+  from{transform:rotate(0deg)}
+  to{transform:rotate(-360deg)}
+}
+
+/* Bottom hint */
+.hint{
+  text-align:center;font-size:11px;color:var(--text-dim);
+  padding:0 20px;line-height:1.5;opacity:0.7;
+}
+
+/* Auth view */
+#authView{
+  display:flex;flex-direction:column;gap:16px;
+  justify-content:center;flex:1;padding:0 8px;
+}
+.auth-card{
+  background:var(--glass-bg);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--glass-border);
+  border-top:1px solid var(--glass-border-top);
+  border-radius:20px;padding:20px;
+  box-shadow:0 8px 32px rgba(0,0,0,0.3);
+}
+.auth-card h2{
+  font-family:'Fraunces',Georgia,serif;font-weight:600;
+  font-size:18px;margin-bottom:6px;
+}
+.auth-card p{font-size:13px;color:var(--text-dim);margin-bottom:16px;line-height:1.5}
+.auth-input{
+  width:100%;
+  background:rgba(10,14,39,0.6);
+  border:1px solid var(--glass-border);
+  color:var(--text);
+  padding:14px;border-radius:12px;
+  font-size:14px;font-family:'Inter',sans-serif;
+  margin-bottom:12px;
+  transition:border-color 0.15s;
+}
+.auth-input:focus{
+  outline:none;border-color:rgba(167,139,250,0.6);
+}
+.auth-btn{
+  width:100%;padding:14px;
+  background:linear-gradient(135deg,#a78bfa 0%,#7c3aed 100%);
+  border:none;border-radius:12px;
+  color:#fff;font-size:15px;font-weight:600;
+  font-family:inherit;cursor:pointer;
+  transition:filter 0.15s,transform 0.1s;
+}
+.auth-btn:active{filter:brightness(0.9);transform:scale(0.98)}
+.auth-btn:disabled{opacity:0.5;cursor:not-allowed}
+
 .hidden{display:none!important}
-.row{display:flex;gap:8px}
-.row > *{flex:1}
 </style>
 </head>
 <body>
+
+<!-- Aurora background -->
+<div class="aurora-bg">
+  <div class="aurora-orb aurora-orb-1"></div>
+  <div class="aurora-orb aurora-orb-2"></div>
+  <div class="aurora-orb aurora-orb-3"></div>
+</div>
+
 <main>
+  <div class="app-header">
+    <div class="app-title">Relay</div>
+    <button class="header-action" onclick="logout()" id="signOutBtn" style="display:none">Sign out</button>
+  </div>
+
   <div id="authView">
-    <h1>Relay Voice</h1>
-    <p class="muted" style="margin:8px 0 20px">Enter the device token from your Telegram app.</p>
-    <div class="card">
-      <input id="tokenInput" placeholder="Paste token here" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <button id="saveToken" style="margin-top:12px">Save</button>
+    <div class="auth-card">
+      <h2>Welcome back</h2>
+      <p>Enter the device token from your Telegram app to connect.</p>
+      <input id="tokenInput" class="auth-input" placeholder="Paste token"
+             autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="saveToken" class="auth-btn">Connect</button>
     </div>
   </div>
 
-  <div id="mainView" class="hidden">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h1>Relay Voice</h1>
-      <button class="ghost" style="width:auto;padding:8px 14px;font-size:13px" onclick="logout()">Sign out</button>
+  <div id="mainView" class="hidden" style="display:flex;flex-direction:column;flex:1;gap:14px;min-height:0">
+    <div class="session-bar" id="sessionBar">
+      <span class="session-dot"></span>
+      <span id="sessionLabel">Listening session active</span>
     </div>
 
-    <div id="log"></div>
+    <div class="log" id="log"></div>
 
-    <div id="status">Tap and hold to talk</div>
+    <div class="status-line" id="status">Tap the orb to speak</div>
 
-    <button id="talk">
-      <span class="ico">🎤</span>
-      <span class="label">Hold to Talk</span>
-    </button>
+    <div class="orb-wrap">
+      <div class="mic-orb" id="micOrb">
+        <div class="mic-icon" id="micIcon">🎙</div>
+      </div>
+    </div>
 
-    <div class="row">
-      <button class="ghost" onclick="quickCommand('pnl')">PNL</button>
-      <button class="ghost" onclick="quickCommand('positions')">Positions</button>
-      <button class="ghost" onclick="quickCommand('balance')">Balance</button>
+    <div class="hint">
+      Tap to start a listening session (5 min). Talk freely — no need to tap again.
     </div>
   </div>
 </main>
@@ -101,15 +393,24 @@ const store = {
 const $ = id => document.getElementById(id);
 const log = $('log');
 const status = $('status');
-const talk = $('talk');
+const orb = $('micOrb');
+const sessionBar = $('sessionBar');
+const sessionLabel = $('sessionLabel');
+
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognition = null;
-let listening = false;
+let sessionActive = false;
+let sessionTimeout = null;
 let lastSpoken = '';
+let busy = false;
+
+const SESSION_DURATION_MS = 5 * 60 * 1000;
+
+/* ---------------- Messaging ---------------- */
 
 function addMsg(role, text) {
   const d = document.createElement('div');
-  d.className = 'msg ' + role;
+  d.className = 'message ' + role;
   d.textContent = text;
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
@@ -119,19 +420,27 @@ function speak(text) {
   if (!text || text === lastSpoken) return;
   lastSpoken = text;
   try {
+    window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
-    window.speechSynthesis.cancel();
+    // Prefer an English voice if available
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.lang.startsWith('en') && v.name.includes('Female'))
+                  || voices.find(v => v.lang.startsWith('en'))
+                  || voices[0];
+    if (preferred) u.voice = preferred;
     window.speechSynthesis.speak(u);
   } catch {}
 }
 
+/* ---------------- Command dispatch ---------------- */
+
 async function sendCommand(text) {
-  if (!text) return;
-  addMsg('me', text);
-  talk.classList.remove('listening');
-  talk.classList.add('thinking');
-  $('.label', talk) || (talk.querySelector('.label').textContent = 'Thinking…');
+  if (!text || busy) return;
+  busy = true;
+  addMsg('user', text);
+  orb.classList.remove('listening');
+  orb.classList.add('thinking');
   status.textContent = 'Thinking…';
 
   try {
@@ -146,6 +455,7 @@ async function sendCommand(text) {
     const data = await res.json();
     if (!res.ok) {
       addMsg('bot', data.detail || 'Request failed');
+      speak(data.detail || 'Request failed');
       status.textContent = 'Error';
       return;
     }
@@ -154,22 +464,24 @@ async function sendCommand(text) {
     status.textContent = data.pending ? 'Say confirm or cancel' : 'Ready';
   } catch (err) {
     addMsg('bot', 'Network error: ' + err.message);
+    speak('Network error');
     status.textContent = 'Network error';
   } finally {
-    talk.classList.remove('thinking');
-    talk.querySelector('.label').textContent = 'Hold to Talk';
+    busy = false;
+    orb.classList.remove('thinking');
+    if (sessionActive) {
+      orb.classList.add('listening');
+      try { recognition && recognition.start(); } catch {}
+    }
   }
 }
 
-function quickCommand(text) {
-  if (listening) return;
-  sendCommand(text);
-}
+/* ---------------- Recognition ---------------- */
 
 function initRecognition() {
   if (!SR) {
-    status.textContent = 'Speech recognition not supported. Use Chrome or Safari.';
-    return;
+    status.textContent = 'Voice not supported in this browser. Try Chrome or Safari.';
+    return false;
   }
   recognition = new SR();
   recognition.continuous = false;
@@ -178,51 +490,87 @@ function initRecognition() {
   recognition.maxAlternatives = 1;
 
   recognition.onstart = () => {
-    listening = true;
-    talk.classList.add('listening');
-    talk.querySelector('.label').textContent = 'Listening…';
-    status.textContent = 'Speak now';
+    orb.classList.add('listening');
+    status.textContent = sessionActive ? 'Listening… (tap to stop session)' : 'Speak now';
   };
+
   recognition.onresult = (e) => {
     const text = e.results[0][0].transcript.trim();
     if (text) sendCommand(text);
   };
+
   recognition.onerror = (e) => {
-    listening = false;
-    talk.classList.remove('listening');
-    talk.querySelector('.label').textContent = 'Hold to Talk';
     if (e.error === 'not-allowed') {
       status.textContent = 'Microphone permission denied';
-    } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
+      stopSession();
+    } else if (e.error === 'no-speech' || e.error === 'aborted') {
+      // Silent — session mode will restart
+    } else if (e.error === 'network') {
+      status.textContent = 'Network error during recognition';
+    } else {
       status.textContent = 'Error: ' + e.error;
     }
   };
+
   recognition.onend = () => {
-    listening = false;
-    talk.classList.remove('listening');
-    talk.querySelector('.label').textContent = 'Hold to Talk';
+    orb.classList.remove('listening');
+    if (sessionActive && !busy) {
+      // Auto-restart within session
+      setTimeout(() => {
+        if (sessionActive) {
+          try { recognition.start(); } catch {}
+        }
+      }, 250);
+    } else if (!sessionActive) {
+      status.textContent = 'Tap the orb to speak';
+    }
   };
+
+  return true;
 }
 
-function startListening() {
-  if (listening || !recognition) return;
+/* ---------------- Session mode ---------------- */
+
+function startSession() {
+  if (!recognition) {
+    if (!initRecognition()) return;
+  }
+  sessionActive = true;
+  sessionBar.classList.add('active');
+  sessionLabel.textContent = 'Listening session active (5 min)';
+  orb.classList.add('listening');
+  status.textContent = 'Listening…';
   try { recognition.start(); } catch {}
-}
-function stopListening() {
-  if (!listening || !recognition) return;
-  try { recognition.stop(); } catch {}
+
+  clearTimeout(sessionTimeout);
+  sessionTimeout = setTimeout(() => {
+    stopSession();
+    addMsg('system', 'Listening session ended after 5 minutes.');
+  }, SESSION_DURATION_MS);
 }
 
-talk.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  startListening();
+function stopSession() {
+  sessionActive = false;
+  sessionBar.classList.remove('active');
+  orb.classList.remove('listening');
+  try { recognition && recognition.stop(); } catch {}
+  clearTimeout(sessionTimeout);
+  sessionTimeout = null;
+  status.textContent = 'Tap the orb to speak';
+}
+
+/* ---------------- Orb ---------------- */
+
+orb.addEventListener('click', () => {
+  if (sessionActive) {
+    stopSession();
+    addMsg('system', 'Session stopped.');
+  } else {
+    startSession();
+  }
 });
-talk.addEventListener('pointerup', (e) => {
-  e.preventDefault();
-  stopListening();
-});
-talk.addEventListener('pointercancel', stopListening);
-talk.addEventListener('pointerleave', stopListening);
+
+/* ---------------- Auth ---------------- */
 
 $('saveToken').addEventListener('click', () => {
   const t = $('tokenInput').value.trim();
@@ -231,25 +579,38 @@ $('saveToken').addEventListener('click', () => {
   showMain();
 });
 
-function logout() {
-  if (!confirm('Sign out? You can sign in again with a new token from the Telegram app.')) return;
-  store.clear();
-  location.reload();
-}
-
 function showMain() {
   if (!store.token) {
     $('authView').classList.remove('hidden');
     $('mainView').classList.add('hidden');
+    $('signOutBtn').style.display = 'none';
     return;
   }
   $('authView').classList.add('hidden');
   $('mainView').classList.remove('hidden');
-  addMsg('sys', 'Connected. Tap and hold to talk.');
-  initRecognition();
-  if (!SR) {
-    status.textContent = 'Voice not supported in this browser. Try the quick buttons.';
+  $('signOutBtn').style.display = 'block';
+
+  if (!log.children.length) {
+    addMsg('system', 'Connected. Tap the orb to start listening.');
   }
+
+  if (!initRecognition()) {
+    status.textContent = 'Voice not supported in this browser. Try Chrome or Safari.';
+  }
+}
+
+function logout() {
+  if (!confirm('Sign out? You can sign in with a new token from Telegram.')) return;
+  stopSession();
+  store.clear();
+  location.reload();
+}
+
+/* ---------------- Boot ---------------- */
+
+// Load voices on some browsers that need a delay
+if (window.speechSynthesis) {
+  window.speechSynthesis.onvoiceschanged = () => {};
 }
 
 window.addEventListener('load', showMain);
